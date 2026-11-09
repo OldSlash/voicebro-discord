@@ -21,6 +21,7 @@ pub struct Settings {
     pub version: u32,
     pub discord: DiscordSettings,
     pub session: SessionSettings,
+    pub audio: AudioSettings,
     pub wake: WakeSettings,
     pub assistant: AssistantSettings,
     pub codex: CodexSettings,
@@ -36,6 +37,7 @@ impl Default for Settings {
             version: CURRENT_VERSION,
             discord: DiscordSettings::default(),
             session: SessionSettings::default(),
+            audio: AudioSettings::default(),
             wake: WakeSettings::default(),
             assistant: AssistantSettings::default(),
             codex: CodexSettings::default(),
@@ -103,6 +105,28 @@ impl Default for SessionSettings {
             idle_timeout_seconds: 60,
             earcons: true,
             earcon_volume: 0.18,
+        }
+    }
+}
+
+/// The highest gain either direction accepts (400 %), as in the first version.
+pub const MAX_GAIN: f32 = 4.0;
+
+/// How loud the assistant hears the channel and how loud it speaks in it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioSettings {
+    /// Multiplies every sample the session gate sends to the assistant. 0.0..=4.0.
+    pub input_gain: f32,
+    /// Multiplies every sample of the assistant's audio played into Discord. 0.0..=4.0.
+    pub output_gain: f32,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            input_gain: 1.0,
+            output_gain: 1.0,
         }
     }
 }
@@ -263,6 +287,17 @@ impl Settings {
         if !(0.0..=1.0).contains(&self.session.earcon_volume) {
             return Err(invalid("session.earcon_volume", "must be between 0 and 1"));
         }
+        for (field, gain) in [
+            ("audio.input_gain", self.audio.input_gain),
+            ("audio.output_gain", self.audio.output_gain),
+        ] {
+            if !(0.0..=MAX_GAIN).contains(&gain) {
+                return Err(invalid(
+                    field,
+                    format!("{gain} is outside 0 to 4 (0 to 400 %)"),
+                ));
+            }
+        }
 
         // Empty lists are allowed: they are the starting state, and the wake engine shows
         // them as "no phrases configured" rather than the save being refused.
@@ -328,6 +363,9 @@ impl Settings {
         }
         if self.session != other.session {
             changed.push("session");
+        }
+        if self.audio != other.audio {
+            changed.push("audio");
         }
         if self.wake != other.wake {
             changed.push("wake");
@@ -481,6 +519,43 @@ mod tests {
             settings.changed_sections(&patched),
             vec!["session", "codex"]
         );
+    }
+
+    #[test]
+    fn gains_default_to_one_accept_the_range_and_name_the_field_when_outside() {
+        let older: Settings = serde_json::from_str(r#"{ "version": 1, "session": {} }"#).unwrap();
+        assert_eq!(older.audio, AudioSettings::default());
+        assert_eq!(
+            (older.audio.input_gain, older.audio.output_gain),
+            (1.0, 1.0)
+        );
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(
+            written["audio"]["input_gain"], 1.0,
+            "the next save writes it"
+        );
+
+        let patched = older
+            .with_patch(&json!({ "audio": { "input_gain": 3.39, "output_gain": 2.52 } }))
+            .unwrap();
+        patched.validate().expect("339 % and 252 % are valid");
+        assert_eq!(older.changed_sections(&patched), vec!["audio"]);
+        for edge in [0.0, MAX_GAIN] {
+            let mut settings = Settings::default();
+            settings.audio.output_gain = edge;
+            settings
+                .validate()
+                .unwrap_or_else(|e| panic!("{edge}: {e}"));
+        }
+
+        let mut settings = Settings::default();
+        settings.audio.input_gain = 5.0;
+        let error = settings.validate().unwrap_err();
+        assert_eq!(error.field, "audio.input_gain");
+        assert!(error.message.contains("0 to 4"), "{}", error.message);
+        settings.audio.input_gain = 1.0;
+        settings.audio.output_gain = -0.5;
+        assert_eq!(settings.validate().unwrap_err().field, "audio.output_gain");
     }
 
     #[test]

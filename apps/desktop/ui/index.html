@@ -98,15 +98,36 @@
           </div>
           <p class="hint field-message" data-for="idle-timeout"></p>
         </div>
+
+        <h3>Audio</h3>
+        <p class="hint">Changes are saved when you release a slider and apply to a running call at once.</p>
+        <div class="field">
+          <label for="input-gain">What the assistant hears</label>
+          <div class="row">
+            <input id="input-gain" class="gain" type="range" min="0" max="400" step="1" data-path="audio.input_gain" data-kind="percent">
+            <output id="input-gain-label" class="gain-label" for="input-gain">100 %</output>
+          </div>
+          <p class="hint" id="input-gain-level"></p>
+          <p class="hint field-message" data-for="input-gain"></p>
+        </div>
+        <div class="field">
+          <label for="output-gain">How loud the assistant speaks</label>
+          <div class="row">
+            <input id="output-gain" class="gain" type="range" min="0" max="400" step="1" data-path="audio.output_gain" data-kind="percent">
+            <output id="output-gain-label" class="gain-label" for="output-gain">100 %</output>
+          </div>
+          <p class="hint" id="output-gain-level"></p>
+          <p class="hint field-message" data-for="output-gain"></p>
+        </div>
         <div class="field">
           <label class="row"><input id="earcons" type="checkbox" data-path="session.earcons" data-kind="bool"> Play a short tone when a session starts and ends</label>
           <p class="hint field-message" data-for="earcons"></p>
         </div>
         <div class="field">
-          <label for="earcon-volume">Tone volume (0 to 1)</label>
+          <label for="earcon-volume">Tone volume</label>
           <div class="row">
-            <input id="earcon-volume" type="number" min="0" max="1" step="0.01" data-path="session.earcon_volume" data-kind="number">
-            <button class="save" data-for="earcon-volume">Save</button>
+            <input id="earcon-volume" class="gain" type="range" min="0" max="100" step="1" data-path="session.earcon_volume" data-kind="percent">
+            <output id="earcon-volume-label" class="gain-label" for="earcon-volume">18 %</output>
           </div>
           <p class="hint field-message" data-for="earcon-volume"></p>
         </div>

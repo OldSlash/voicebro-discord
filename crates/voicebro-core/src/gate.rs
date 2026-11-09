@@ -10,7 +10,7 @@
 //! - **speaker names**: when enabled, the assistant is told who starts talking.
 
 use crate::assistant::AssistantSession;
-use crate::audio::{peak, Earcon, Frame, FrameSender, OutputHandle};
+use crate::audio::{peak, AudioGains, Earcon, Frame, FrameSender, GainStage, OutputHandle};
 use crate::events::{AppEvent, EventBus};
 use crate::settings::{SessionMode, Settings, SpeakerLabels};
 use crate::wake::{PhraseKind, PhraseSink, WakeFeed};
@@ -196,6 +196,8 @@ struct Effects {
 pub struct RelayGate {
     guild: u64,
     input: FrameSender,
+    /// Scales what is sent to the assistant; the wake feed and the pre-roll stay unscaled.
+    input_gain: Arc<GainStage>,
     output: OutputHandle,
     events: EventBus,
     errors: Option<Arc<dyn ErrorReporter>>,
@@ -209,6 +211,7 @@ impl RelayGate {
     pub fn new(
         guild: u64,
         input: FrameSender,
+        input_gain: Arc<GainStage>,
         output: OutputHandle,
         settings: GateSettings,
         muted: bool,
@@ -236,6 +239,7 @@ impl RelayGate {
         Arc::new(Self {
             guild,
             input,
+            input_gain,
             output,
             events,
             errors,
@@ -414,7 +418,10 @@ impl RelayGate {
                 }
             }
         }
-        if let Some(frame) = frame {
+        if let Some(mut frame) = frame {
+            // Live and replayed frames alike; the pre-roll and the wake feed keep the
+            // channel's own level.
+            self.input_gain.scale_frame(&mut frame);
             if self.input.send(frame) {
                 self.lock().counters.input_dropped += 1;
             }
@@ -580,14 +587,20 @@ impl RelayGate {
 }
 
 /// All gates of guilds the bot is in a voice channel of, plus the app-wide mute state
-/// shared by the hotkey and the mute buttons.
+/// shared by the hotkey and the mute buttons and the two gains shared by every gate and
+/// every output.
 #[derive(Clone, Default)]
 pub struct RelayRegistry {
     gates: Arc<Mutex<BTreeMap<u64, Arc<RelayGate>>>>,
     muted: Arc<AtomicBool>,
+    gains: AudioGains,
 }
 
 impl RelayRegistry {
+    pub fn gains(&self) -> &AudioGains {
+        &self.gains
+    }
+
     pub fn is_muted(&self) -> bool {
         self.muted.load(Ordering::Acquire)
     }
@@ -671,11 +684,13 @@ mod tests {
     use crate::audio::{frame_channel, output_pair, AudioPorts, FrameReceiver, INPUT_CAPACITY};
     use std::sync::atomic::AtomicUsize;
 
-    struct CountingFeed(AtomicUsize);
+    /// Counts the blocks fed to the wake engine and keeps the last one.
+    struct CountingFeed(AtomicUsize, Mutex<Vec<i16>>);
 
     impl WakeFeed for CountingFeed {
-        fn feed(&self, _: u64, _: u32, _: &[i16]) {
+        fn feed(&self, _: u64, _: u32, samples: &[i16]) {
             self.0.fetch_add(1, Ordering::Relaxed);
+            *self.1.lock().unwrap() = samples.to_vec();
         }
     }
 
@@ -703,6 +718,7 @@ mod tests {
         feed: Arc<CountingFeed>,
         stub: Arc<crate::assistant::StubSession>,
         input: FrameReceiver,
+        input_gain: Arc<GainStage>,
         output: OutputHandle,
         errors: Arc<Errors>,
     }
@@ -711,11 +727,13 @@ mod tests {
         let (sender, receiver) = frame_channel(INPUT_CAPACITY);
         let (output, _source) = output_pair();
         std::mem::forget(_source);
-        let feed = Arc::new(CountingFeed(AtomicUsize::new(0)));
+        let feed = Arc::new(CountingFeed(AtomicUsize::new(0), Mutex::new(Vec::new())));
         let errors = Arc::new(Errors::default());
+        let input_gain = Arc::new(GainStage::new());
         let gate = RelayGate::new(
             1,
             sender,
+            Arc::clone(&input_gain),
             output.clone(),
             settings(mode, timeout),
             false,
@@ -743,9 +761,48 @@ mod tests {
             feed,
             stub,
             input: receiver,
+            input_gain,
             output,
             errors,
         }
+    }
+
+    #[test]
+    fn the_input_gain_scales_what_the_assistant_gets_not_what_the_wake_engine_hears() {
+        let rig = rig(SessionMode::WakeWord, None, Duration::ZERO);
+        assert!(rig
+            .gate
+            .on_phrase(PhraseKind::Activate, "luna", 7, Duration::ZERO));
+        let tick = |frame: &Frame| {
+            rig.gate.process_tick(frame, &[(7, frame.as_slice())]);
+            drain(&rig.input)
+                .pop()
+                .expect("a frame reached the assistant")
+        };
+        let level = Frame::from_slice(&[1_000; crate::audio::FRAME_SAMPLES]);
+
+        assert_eq!(tick(&level), level, "1.0 leaves the frame unchanged");
+        rig.input_gain.set_gain(2.0);
+        assert_eq!(tick(&level).as_slice()[0], 2_000);
+        assert_eq!(
+            rig.feed.1.lock().unwrap()[0],
+            1_000,
+            "the wake feed is not scaled"
+        );
+
+        rig.input_gain.set_gain(0.0);
+        assert_eq!(tick(&level).peak(), 0, "0.0 sends silence");
+        assert_eq!(
+            rig.feed.1.lock().unwrap()[0],
+            1_000,
+            "the wake engine still hears"
+        );
+
+        rig.input_gain.set_gain(4.0);
+        let clips = rig.input_gain.clips();
+        let sent = tick(&Frame::from_slice(&[10_000]));
+        assert_eq!(sent.as_slice()[0], 32_767);
+        assert_eq!(rig.input_gain.clips() - clips, 1);
     }
 
     fn voice() -> Frame {

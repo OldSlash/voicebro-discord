@@ -75,9 +75,11 @@ impl VoiceHost for GateHost {
 
     fn on_join(&self, guild: u64, output: OutputHandle) {
         let (sender, receiver) = frame_channel(INPUT_CAPACITY);
+        output.use_gain(Arc::clone(&self.registry.gains().output));
         let gate = RelayGate::new(
             guild,
             sender,
+            Arc::clone(&self.registry.gains().input),
             output.clone(),
             self.gate_settings
                 .lock()
@@ -265,6 +267,7 @@ impl Runtime {
         *self.settings.write().expect("settings lock") = settings;
         *self.host.gate_settings.lock().expect("gate settings lock") =
             GateSettings::from_settings(&self.settings());
+        self.host.registry.gains().apply(&self.settings().audio);
         crate::wake::assets::cleanup_partial(&crate::paths::assets_dir(&self.data_dir));
         self.wake.configure(&self.settings());
         self.assistant.configure(&self.settings());
@@ -353,6 +356,9 @@ impl Runtime {
                     wake_dirty = true;
                     gates_dirty = true;
                 }
+                // Shared atomics: the next frame sent and the next frame played use the
+                // new gains, and nothing is rebuilt.
+                "audio" => self.host.registry.gains().apply(&settings.audio),
                 "wake" => wake_dirty = true,
                 "assistant" => {
                     gates_dirty = true;
@@ -510,6 +516,7 @@ impl Runtime {
             discord: self.discord.status(),
             wake: self.wake.status(),
             gates: self.host.registry.statuses(),
+            audio: self.host.registry.gains().levels(),
             assistant: self.assistant.status(),
             settings: self.settings(),
         }
@@ -669,6 +676,53 @@ mod tests {
         assert!(runtime.status().gates.is_empty());
         assert!(runtime.status().assistant.calls.is_empty());
         assert_eq!(host.assistant_state(42), AssistantState::Off);
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn a_saved_audio_section_reaches_the_next_frames_without_rebuilding() {
+        use crate::audio::FRAME_SAMPLES;
+        use std::io::Read;
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({ "session": { "mode": "always", "earcons": false } }))
+            .unwrap();
+        let (output, mut source) = output_pair();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.on_join(42, output.clone());
+        let gate = runtime.host.registry.get(42).unwrap();
+
+        runtime
+            .save_settings(&json!({ "audio": { "input_gain": 4.0, "output_gain": 2.5 } }))
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&gate, &runtime.host.registry.get(42).unwrap()),
+            "the gate is not rebuilt"
+        );
+
+        let loud = Frame::from_slice(&[10_000; FRAME_SAMPLES]);
+        host.on_tick(42, &loud, &[(7, loud.as_slice())]);
+        let audio = runtime.status().audio;
+        assert_eq!((audio.input.gain, audio.output.gain), (4.0, 2.5));
+        assert_eq!(
+            audio.input.clips, FRAME_SAMPLES as u64,
+            "the next frame sent used the new input gain"
+        );
+
+        for _ in 0..3 {
+            output.push(Frame::from_slice(&[1_000; FRAME_SAMPLES]));
+        }
+        let mut bytes = vec![0u8; FRAME_SAMPLES * 4];
+        source.read_exact(&mut bytes).unwrap();
+        let first = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        assert!(
+            (first - 2_500.0 / 32_768.0).abs() < 1e-6,
+            "the next frame played used the new output gain: {first}"
+        );
+        assert_eq!(runtime.status().audio.output.clips, 0);
         runtime.shutdown();
     }
 

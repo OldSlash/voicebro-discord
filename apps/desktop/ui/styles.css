@@ -48,6 +48,8 @@ input {
   padding: 6px 10px; font: inherit; min-width: 320px;
 }
 input[type="number"] { min-width: 120px; }
+input.gain { padding: 0; min-width: 320px; accent-color: var(--accent); }
+.gain-label { min-width: 56px; font-variant-numeric: tabular-nums; }
 button {
   background: var(--accent); color: white; border: none; border-radius: 6px;
   padding: 6px 14px; font: inherit; cursor: pointer;

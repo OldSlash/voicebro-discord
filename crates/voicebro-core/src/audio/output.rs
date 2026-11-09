@@ -3,6 +3,7 @@
 
 use super::earcon::{self, Earcon};
 use super::frame::{Frame, FRAME_SAMPLES};
+use super::gain::GainStage;
 use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
@@ -53,10 +54,13 @@ struct Inner {
     last_signal: Option<Instant>,
     counters: OutputCounters,
     provider: Option<Arc<dyn FrameProvider>>,
+    /// The output gain, applied to the assistant's audio and not to earcons.
+    gain: Arc<GainStage>,
 }
 
 /// Creates the queue and both ends of it: the handle the assistant and the gate hold, and
-/// the source songbird reads.
+/// the source songbird reads. The gain starts at 1.0 until [`OutputHandle::use_gain`]
+/// shares the app's output gain.
 pub fn output_pair() -> (OutputHandle, PcmSource) {
     let inner = Arc::new(Mutex::new(Inner {
         frames: VecDeque::with_capacity(CAPACITY),
@@ -71,6 +75,7 @@ pub fn output_pair() -> (OutputHandle, PcmSource) {
         last_signal: None,
         counters: OutputCounters::default(),
         provider: None,
+        gain: Arc::new(GainStage::new()),
     }));
     (
         OutputHandle {
@@ -151,6 +156,11 @@ impl OutputHandle {
         self.inner.lock().expect("output lock").provider = None;
     }
 
+    /// Scales everything the assistant says by `stage`'s gain from the next read on.
+    pub fn use_gain(&self, stage: Arc<GainStage>) {
+        self.inner.lock().expect("output lock").gain = stage;
+    }
+
     pub fn is_muted(&self) -> bool {
         self.inner.lock().expect("output lock").muted
     }
@@ -210,9 +220,9 @@ impl PcmSource {
         // frames are pulled and discarded, so nothing said during a mute plays later.
         if let Some(provider) = inner.provider.clone() {
             if provider.next_frame(&mut self.pulled) && !inner.muted {
-                for (out, sample) in self.scratch.iter_mut().zip(self.pulled.as_slice()) {
-                    *out = *sample as f32 / 32_768.0;
-                }
+                inner
+                    .gain
+                    .scale_to_f32(self.pulled.as_slice(), &mut self.scratch);
                 inner.counters.played += 1;
                 if self.pulled.peak() >= SIGNAL_PEAK {
                     inner.last_signal = Some(Instant::now());
@@ -233,9 +243,7 @@ impl PcmSource {
         };
         if ready && !inner.muted {
             if let Some((_, frame)) = inner.frames.pop_front() {
-                for (out, sample) in self.scratch.iter_mut().zip(frame.as_slice()) {
-                    *out = *sample as f32 / 32_768.0;
-                }
+                inner.gain.scale_to_f32(frame.as_slice(), &mut self.scratch);
                 inner.counters.played += 1;
                 inner.stable_frames += 1;
                 if inner.stable_frames >= STABLE_FRAMES_BEFORE_RELAX {
@@ -507,6 +515,66 @@ mod tests {
         handle.detach_provider();
         handle.set_muted(false);
         assert!(read_packet(&mut source).is_some());
+    }
+
+    #[test]
+    fn the_output_gain_scales_pushed_and_pulled_frames_but_not_earcons() {
+        let stage = Arc::new(GainStage::new());
+        stage.set_gain(2.5);
+        let (handle, mut source) = output_pair();
+        handle.use_gain(Arc::clone(&stage));
+        for _ in 0..3 {
+            handle.push(loud(1000));
+        }
+        let pushed = read_packet(&mut source).unwrap();
+        assert!(
+            (pushed[0] - 2_500.0 / 32_768.0).abs() < 1e-6,
+            "pushed: {}",
+            pushed[0]
+        );
+
+        let provider = Arc::new(Countdown {
+            left: Mutex::new(2),
+            resets: Mutex::new(0),
+        });
+        handle.attach_provider(provider);
+        let pulled = read_packet(&mut source).unwrap();
+        assert!(
+            (pulled[0] - 10_000.0 / 32_768.0).abs() < 1e-6,
+            "pulled: {}",
+            pulled[0]
+        );
+        stage.set_gain(4.0);
+        let louder = read_packet(&mut source).unwrap();
+        assert!(
+            (louder[0] - 16_000.0 / 32_768.0).abs() < 1e-6,
+            "a new gain reaches the next read: {}",
+            louder[0]
+        );
+        handle.detach_provider();
+
+        // Earcons keep their own volume whatever the gain.
+        let earcon_at = |gain: f32| {
+            let stage = Arc::new(GainStage::new());
+            stage.set_gain(gain);
+            let (handle, mut source) = output_pair();
+            handle.use_gain(stage);
+            handle.play_earcon(Earcon::Activate, 0.18);
+            read_packet(&mut source).unwrap()
+        };
+        let plain = earcon_at(1.0);
+        assert!(plain.iter().any(|s| *s != 0.0), "the earcon plays");
+        assert_eq!(earcon_at(4.0), plain);
+
+        // A sample pushed past full scale is clamped and counted.
+        handle.flush();
+        let clips = stage.clips();
+        for _ in 0..3 {
+            handle.push(loud(20_000));
+        }
+        let clamped = read_packet(&mut source).unwrap();
+        assert_eq!(clamped[0], 1.0);
+        assert_eq!(stage.clips() - clips, FRAME_SAMPLES as u64);
     }
 
     #[test]

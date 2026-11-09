@@ -150,7 +150,18 @@ Owns the formats, queues and conversions shared by everything else.
   stream, and the track ends with it. Nothing else may end it.
 - **Earcons**: short tones generated in Rust (rising on activation, falling on session end),
   mixed into the output even while muted, at volume 0.18.
-- **Queue budget**: about 80 ms toward the assistant, about 160 ms toward Discord. Deeper
+- **Gains** (`gain.rs`): `audio.input_gain` and `audio.output_gain`, 0.0 to 4.0, default
+  1.0, as in the first version. `AudioGains` holds one `GainStage` per direction (the gain
+  in an atomic, a clip counter, the peak of the last second), owned by the
+  `RelayRegistry` and shared by every gate and output, so a saved change reaches the next
+  frame without rebuilding anything. The input gain scales the frame the gate is about to
+  send to the assistant (live and replayed alike) in `f32` and clamps to `i16`; the wake
+  feed and the pre-roll keep the channel's own level. The output gain scales the
+  assistant's samples where `PcmSource` turns them into floats (pushed frames and the
+  call's jitter buffer alike) and clamps to -1.0..1.0, before earcons are mixed in, so an
+  earcon keeps its own volume. Every clamped sample counts as a clip. The status carries
+  both gains, peaks and clip counts (`Status.audio`).
+- **Queue budget**: about 100 ms toward the assistant, about 160 ms toward Discord. Deeper
   buffering is voice latency and is not added without a measurement.
 
 ### 4.2 Discord adapter (`discord/`)
@@ -444,6 +455,7 @@ pub struct Settings {
     pub version: u32,                      // schema version, migrated on load
     pub discord: DiscordSettings,          // auto_connect
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
+    pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog), activation_phrases, deactivation_phrases
     pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off
     pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default)
@@ -509,7 +521,11 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     voice are selects filled from `capabilities` when the engine has them and text inputs
     with a datalist otherwise; the effort list follows the chosen model. Phrases are one
     per line or comma-separated and are shown trimmed and lower-cased after save; the words
-    the model does not know are listed under the field.
+    the model does not know are listed under the field. The Audio group has sliders of kind
+    `percent` (shown 0 to 400 %, stored as the multiplier): "What the assistant hears",
+    "How loud the assistant speaks" and the tone volume, saved on release without a Save
+    button, with the earcon switch, and under each gain the last second's peak and the clip
+    count from `Status.audio`.
   - Chat lists the chat log entries (pulled at start, then one event per entry) with
     filters (names and notes, agent work, call events), auto-scroll, Copy and Open log
     folder.
@@ -566,7 +582,7 @@ mute (app button | hotkey | Discord panel) ─► Runtime::toggle_mute ─► Re
 
 ```text
 UI patch ─► command save_settings ─► Settings::validate ─► store ─► Runtime::apply(diff)
-   ─► gates (mode, timeout, earcons, labels), wake engine (phrases, model),
+   ─► gates (mode, timeout, earcons, labels), gains (shared atomics), wake engine (phrases, model),
       Codex (thread settings), Discord (restart on token change), hotkey (re-register)
 ```
 
@@ -582,7 +598,8 @@ Values that worked in the first version. Change them only with a measurement or 
 | Opus toward the call | mono VOIP, complexity 10, 32 kbit/s, in-band FEC, 5 % expected loss |
 | Call receive jitter buffer | target 3..8 frames, relaxes after 750 stable frames; at most 25 packets; concealment at most 5 frames in a row |
 | Queue toward Discord | 8 frames (~160 ms), drop oldest; jitter target 3..8 frames (stub and tests; the call uses its own jitter buffer) |
-| Speech threshold | peak ≥ 700 |
+| Gains | input and output 0.0..4.0, default 1.0; input applied at the gate's send, output in `PcmSource` before earcons |
+| Speech threshold | peak ≥ 700 (measured on the unscaled channel audio) |
 | Utterance gap | 700 ms |
 | Pre-roll / replay cap | 250 frames (~5 s) / 300 frames (~6 s) |
 | Lookback without timing | 1 s + 80 ms margin |
