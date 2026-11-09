@@ -8,17 +8,7 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [
-      {
-        "label": "main",
-        "title": "VoiceBro",
-        "width": 1040,
-        "height": 720,
-        "minWidth": 860,
-        "minHeight": 560,
-        "resizable": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

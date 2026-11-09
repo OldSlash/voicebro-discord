@@ -76,12 +76,21 @@ pub struct VoiceChannelStatus {
     pub output: OutputCounters,
 }
 
+/// A server the bot is in, as the Status tab lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GuildInfo {
+    pub id: String,
+    pub name: String,
+}
+
 /// What the UI shows about Discord. Measured values only.
 #[derive(Debug, Clone, Serialize)]
 pub struct DiscordStatus {
     pub state: ConnectionState,
     pub user_name: Option<String>,
     pub guild_count: usize,
+    /// The servers in the cache, by name. Filled when the status is read.
+    pub guilds: Vec<GuildInfo>,
     /// Guild id → the voice channel the bot is in.
     pub voice_channels: BTreeMap<String, VoiceChannelStatus>,
     pub last_error: Option<String>,
@@ -94,6 +103,7 @@ impl Default for DiscordStatus {
             state: ConnectionState::Disconnected,
             user_name: None,
             guild_count: 0,
+            guilds: Vec::new(),
             voice_channels: BTreeMap::new(),
             last_error: None,
             counters: VoiceCounters::default(),
@@ -258,6 +268,23 @@ impl DiscordRuntime {
             if let Some(entry) = status.voice_channels.get_mut(&guild.to_string()) {
                 entry.output = session.output.counters();
                 entry.participants = session.participants.clone();
+            }
+        }
+        if status.state == ConnectionState::Connected {
+            if let Some(cache) = self.shared.cache() {
+                let mut guilds: Vec<GuildInfo> = cache
+                    .guilds()
+                    .into_iter()
+                    .map(|id| GuildInfo {
+                        id: id.get().to_string(),
+                        name: cache
+                            .guild(id)
+                            .map(|guild| guild.name.clone())
+                            .unwrap_or_else(|| id.get().to_string()),
+                    })
+                    .collect();
+                guilds.sort_by_key(|guild| guild.name.to_lowercase());
+                status.guilds = guilds;
             }
         }
         status

@@ -26,6 +26,7 @@ pub struct Settings {
     pub assistant: AssistantSettings,
     pub codex: CodexSettings,
     pub hotkey: HotkeySettings,
+    pub ui: UiSettings,
     /// Fields this build does not know (from a newer version). Kept through load and save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -42,7 +43,32 @@ impl Default for Settings {
             assistant: AssistantSettings::default(),
             codex: CodexSettings::default(),
             hotkey: HotkeySettings::default(),
+            ui: UiSettings::default(),
             extra: Map::new(),
+        }
+    }
+}
+
+/// The window's themes, as in the first version.
+pub const THEMES: &[&str] = &["dark", "darcula", "light", "intellij"];
+/// The window's font size range in pixels.
+pub const FONT_SIZES: std::ops::RangeInclusive<u32> = 11..=20;
+
+/// How the window looks. Kept in the settings file so it travels with the portable app.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiSettings {
+    /// One of [`THEMES`].
+    pub theme: String,
+    /// Pixels, within [`FONT_SIZES`].
+    pub font_size: u32,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            theme: "dark".to_owned(),
+            font_size: 13,
         }
     }
 }
@@ -333,6 +359,27 @@ impl Settings {
         }
         // An empty voice is valid: the call then uses the server's default voice.
         validate_shortcut("hotkey.mute", &self.hotkey.mute)?;
+        if !THEMES.contains(&self.ui.theme.as_str()) {
+            return Err(invalid(
+                "ui.theme",
+                format!(
+                    "«{}» is not a theme; use one of {}",
+                    self.ui.theme,
+                    THEMES.join(", ")
+                ),
+            ));
+        }
+        if !FONT_SIZES.contains(&self.ui.font_size) {
+            return Err(invalid(
+                "ui.font_size",
+                format!(
+                    "{} is outside {} to {}",
+                    self.ui.font_size,
+                    FONT_SIZES.start(),
+                    FONT_SIZES.end()
+                ),
+            ));
+        }
         Ok(())
     }
 
@@ -370,6 +417,9 @@ impl Settings {
         if self.hotkey != other.hotkey {
             changed.push("hotkey");
         }
+        if self.ui != other.ui {
+            changed.push("ui");
+        }
         changed
     }
 }
@@ -400,6 +450,29 @@ mod tests {
     #[test]
     fn defaults_validate() {
         Settings::default().validate().expect("defaults are valid");
+    }
+
+    #[test]
+    fn appearance_takes_the_four_themes_and_font_sizes_11_to_20() {
+        let older: Settings = serde_json::from_str(r#"{ "version": 1 }"#).unwrap();
+        assert_eq!(older.ui, UiSettings::default());
+        assert_eq!((older.ui.theme.as_str(), older.ui.font_size), ("dark", 13));
+        let patched = older
+            .with_patch(&json!({ "ui": { "theme": "intellij", "font_size": 15 } }))
+            .unwrap();
+        patched.validate().expect("IntelliJ at 15 px is valid");
+        assert_eq!(older.changed_sections(&patched), vec!["ui"]);
+
+        let mut settings = Settings::default();
+        settings.ui.theme = "pink".to_owned();
+        let error = settings.validate().unwrap_err();
+        assert_eq!(error.field, "ui.theme");
+        assert!(error.message.contains("darcula"), "{}", error.message);
+        let mut settings = Settings::default();
+        settings.ui.font_size = 25;
+        assert_eq!(settings.validate().unwrap_err().field, "ui.font_size");
+        settings.ui.font_size = 11;
+        settings.validate().expect("11 is the smallest size");
     }
 
     #[test]

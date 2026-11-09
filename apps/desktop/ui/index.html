@@ -1,266 +1,256 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
-    <meta charset="utf-8">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:">
     <title>VoiceBro</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <header class="tabs" role="tablist">
-      <button class="tab active" data-tab="status" role="tab">Status</button>
-      <button class="tab" data-tab="settings" role="tab">Settings</button>
-      <button class="tab" data-tab="chat" role="tab">Chat</button>
-    </header>
+    <div class="app-shell">
+      <nav class="tab-bar" role="tablist" aria-label="Views">
+        <button type="button" role="tab" class="tab-button active" data-tab="console">Console</button>
+        <button type="button" role="tab" class="tab-button" data-tab="chat">Codex chat</button>
+        <button type="button" role="tab" class="tab-button" data-tab="status">Status</button>
+        <button type="button" role="tab" class="tab-button" data-tab="performance">Performance</button>
+        <button type="button" role="tab" class="tab-button" data-tab="system">System</button>
+        <button type="button" role="tab" class="tab-button" data-tab="settings">Settings</button>
+        <button type="button" role="tab" class="tab-button" data-tab="config">Config</button>
+      </nav>
 
-    <main>
-      <section id="tab-status" class="panel active">
-        <h2>Status</h2>
-        <dl class="facts">
-          <dt>Discord</dt>
-          <dd id="status-discord">…</dd>
-          <dt>Voice channels</dt>
-          <dd id="status-voice">none</dd>
-          <dt>Assistant</dt>
-          <dd id="status-mute">not muted</dd>
-          <dt>Sessions</dt>
-          <dd id="status-gates">none</dd>
-          <dt>Mute hotkey</dt>
-          <dd id="status-hotkey">…</dd>
-          <dt>Codex</dt>
-          <dd id="status-assistant">…</dd>
-          <dt>Discord token</dt>
-          <dd id="status-token">unknown</dd>
-          <dt>Wake word</dt>
-          <dd id="status-wake">…</dd>
-          <dt>Data directory</dt>
-          <dd id="status-data-dir">…</dd>
-        </dl>
-        <div class="row">
-          <button id="discord-connect">Connect</button>
-          <button id="discord-disconnect" class="secondary">Disconnect</button>
-          <button id="mute-toggle">Mute</button>
-          <button id="codex-sign-in" class="secondary">Sign in to Codex</button>
-          <button id="codex-check" class="secondary">Check Codex</button>
-        </div>
-        <h3>Connection errors</h3>
-        <ul id="status-errors" class="errors"><li class="muted-text">none</li></ul>
-        <details>
-          <summary>Counters</summary>
-          <pre id="status-counters" class="counters"></pre>
-        </details>
-      </section>
+      <main class="tab-panels">
+        <section class="tab-panel active" data-panel="console" role="tabpanel">
+          <div class="panel-toolbar">
+            <span class="toolbar-group">
+              <button type="button" class="button" id="console-clear">Clear</button>
+              <button type="button" class="button" id="console-copy">Copy</button>
+            </span>
+            <span class="toolbar-spacer"></span>
+            <label class="checkbox compact"><input type="checkbox" id="console-autoscroll" checked> Auto-scroll</label>
+          </div>
+          <pre class="console-output" id="log" aria-label="Application log"></pre>
+        </section>
 
-      <section id="tab-settings" class="panel">
-        <h2>Settings</h2>
+        <section class="tab-panel" data-panel="chat" role="tabpanel">
+          <div class="panel-toolbar console-toolbar">
+            <div class="toolbar-group">
+              <button class="button" id="chat-copy">Copy</button>
+              <button class="button" id="chat-open-folder">Open log folder</button>
+            </div>
+            <label class="checkbox compact"><input id="chat-filter-context" type="checkbox" checked><span>Names and notes</span></label>
+            <label class="checkbox compact"><input id="chat-filter-agent" type="checkbox" checked><span>Codex agent work</span></label>
+            <label class="checkbox compact"><input id="chat-filter-system" type="checkbox" checked><span>Call events</span></label>
+            <label class="checkbox compact"><input id="chat-autoscroll" type="checkbox" checked><span>Auto-scroll</span></label>
+          </div>
+          <div id="chat" class="chat-log" role="log" aria-label="Codex chat"></div>
+        </section>
 
-        <h3>Discord</h3>
-        <div class="field">
-          <label for="token-input">Bot token</label>
-          <div class="row">
-            <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="paste the token; it is stored in the Windows Credential Manager">
-            <button id="token-set">Set</button>
-            <button id="token-clear" class="secondary">Clear</button>
-            <span id="token-badge" class="badge">unknown</span>
+        <section class="tab-panel" data-panel="status" role="tabpanel">
+          <div class="split-layout">
+            <article class="card guild-card">
+              <header class="card-title-row"><h2>Servers</h2><span class="badge" id="guild-count">0</span></header>
+              <div class="list" id="guild-list"><p class="empty-state">Not connected to Discord yet.</p></div>
+            </article>
+            <article class="card details-card">
+              <h2>Bot and assistant</h2>
+              <div class="detail-grid">
+                <p><span class="detail-label">Discord</span><strong id="status-discord">Disconnected</strong></p>
+                <p><span class="detail-label">Bot account</span><strong id="status-bot">—</strong></p>
+                <p><span class="detail-label">Voice channel</span><strong id="status-voice">none</strong></p>
+                <p><span class="detail-label">People in the channel</span><strong id="status-people">—</strong></p>
+                <p><span class="detail-label">Assistant engine</span><strong id="status-engine">—</strong></p>
+                <p><span class="detail-label">Assistant</span><strong id="status-gates">—</strong></p>
+                <p><span class="detail-label">Wake word</span><strong id="status-wake">—</strong></p>
+                <p><span class="detail-label">Mute</span><strong id="status-mute">not muted</strong></p>
+                <p><span class="detail-label">Codex account</span><strong id="status-codex">—</strong></p>
+                <p><span class="detail-label">Call</span><strong id="status-call">—</strong></p>
+                <p><span class="detail-label">Codex thread</span><strong id="status-thread">—</strong></p>
+                <p><span class="detail-label">Mute hotkey</span><strong id="status-hotkey">—</strong></p>
+                <p><span class="detail-label">Discord token</span><strong id="status-token">unknown</strong></p>
+                <p><span class="detail-label">Build</span><strong id="status-build">—</strong></p>
+              </div>
+              <div class="status-actions">
+                <button type="button" class="button" id="mute-toggle">Mute GPT</button>
+                <button type="button" class="button primary" id="discord-connect">Connect</button>
+                <button type="button" class="button" id="discord-disconnect">Disconnect</button>
+                <button type="button" class="button primary" id="codex-sign-in">Sign in to Codex</button>
+                <button type="button" class="button" id="codex-check">Check Codex</button>
+                <button type="button" class="button" id="status-refresh">Refresh</button>
+              </div>
+              <h3 class="subhead">Connection errors</h3>
+              <ul class="errors" id="status-errors"><li class="muted">none</li></ul>
+              <details class="counters-box">
+                <summary>Counters</summary>
+                <pre class="counters" id="status-counters"></pre>
+              </details>
+            </article>
           </div>
-          <p class="hint">The token never appears in the settings file, the log or this window again. With a stored token the bot connects whenever the app starts; storing a token connects it now.</p>
-        </div>
-        <div class="field">
-          <label for="guild-id">Server id (digits; the slash commands are registered globally, which can take up to an hour to appear, and also in this server, where they appear at once)</label>
-          <div class="row">
-            <input id="guild-id" type="text" inputmode="numeric" data-path="discord.guild_id" data-kind="string">
-            <button class="save" data-for="guild-id">Save</button>
-          </div>
-          <p class="hint field-message" data-for="guild-id"></p>
-        </div>
+          <p class="status-note" id="status-feedback">The window refreshes on every change and every 5 seconds.</p>
+        </section>
 
-        <h3>Session</h3>
-        <div class="field">
-          <label for="session-mode">Mode</label>
-          <div class="row">
-            <select id="session-mode" data-path="session.mode" data-kind="string">
-              <option value="wake_word">Wake word: the assistant listens after an activation phrase</option>
-              <option value="always">Always: the assistant hears the channel whenever the bot is in it</option>
-            </select>
-            <button class="save" data-for="session-mode">Save</button>
+        <section class="tab-panel" data-panel="performance" role="tabpanel">
+          <div class="panel-toolbar">
+            <label>Window
+              <select id="performance-window" disabled>
+                <option value="30">30 seconds</option>
+                <option value="60" selected>60 seconds</option>
+                <option value="300">5 minutes</option>
+              </select>
+            </label>
+            <button type="button" class="button" id="performance-refresh" disabled>Refresh</button>
+            <span class="health-dot muted" id="performance-health">●</span>
+            <strong id="performance-quality">Quality: —</strong>
           </div>
-          <p class="hint field-message" data-for="session-mode"></p>
-        </div>
-        <div class="field">
-          <label for="idle-timeout">Idle timeout, seconds (0 disables; otherwise 5 to 3600)</label>
-          <div class="row">
-            <input id="idle-timeout" type="number" min="0" max="3600" step="1" data-path="session.idle_timeout_seconds" data-kind="number">
-            <button class="save" data-for="idle-timeout">Save</button>
+          <div class="chart-grid">
+            <article class="card chart-card">
+              <header class="card-title-row"><h2>Voice latency</h2><span class="muted">live</span></header>
+              <canvas id="latency-chart" width="560" height="190"></canvas>
+            </article>
+            <article class="card chart-card">
+              <header class="card-title-row"><h2>Call audio</h2><span class="muted">live</span></header>
+              <canvas id="audio-chart" width="560" height="190"></canvas>
+            </article>
           </div>
-          <p class="hint field-message" data-for="idle-timeout"></p>
-        </div>
+          <div class="stat-grid" id="performance-stats"></div>
+          <p class="muted performance-note">The measurements arrive with the performance statistics build.</p>
+        </section>
 
-        <h3>Audio</h3>
-        <p class="hint">Changes are saved when you release a slider and apply to a running call at once.</p>
-        <div class="field">
-          <label for="input-gain">What the assistant hears</label>
-          <div class="row">
-            <input id="input-gain" class="gain" type="range" min="0" max="400" step="1" data-path="audio.input_gain" data-kind="percent">
-            <output id="input-gain-label" class="gain-label" for="input-gain">100 %</output>
+        <section class="tab-panel" data-panel="system" role="tabpanel">
+          <div class="system-grid">
+            <article class="card">
+              <h2>Application</h2>
+              <dl class="info-list">
+                <div><dt>Version</dt><dd id="system-version">—</dd></div>
+                <div><dt>Build</dt><dd id="system-build">—</dd></div>
+                <div><dt>Process ID</dt><dd id="system-pid">—</dd></div>
+                <div><dt>Uptime</dt><dd id="system-uptime">—</dd></div>
+                <div><dt>Runtime</dt><dd id="system-runtime">—</dd></div>
+              </dl>
+            </article>
+            <article class="card">
+              <h2>Operating system</h2>
+              <dl class="info-list">
+                <div><dt>Platform</dt><dd id="system-platform">—</dd></div>
+                <div><dt>Architecture</dt><dd id="system-arch">—</dd></div>
+                <div><dt>CPU cores</dt><dd id="system-cpus">—</dd></div>
+                <div><dt>Memory</dt><dd id="system-memory">—</dd></div>
+              </dl>
+            </article>
+            <article class="card">
+              <h2>Files</h2>
+              <dl class="info-list">
+                <div><dt>Data folder</dt><dd class="path-value" id="system-data-dir">—</dd></div>
+                <div><dt>Settings</dt><dd class="path-value" id="system-settings-path">—</dd></div>
+                <div><dt>Codex CLI</dt><dd class="path-value" id="system-codex">—</dd></div>
+              </dl>
+            </article>
           </div>
-          <p class="hint" id="input-gain-level"></p>
-          <p class="hint field-message" data-for="input-gain"></p>
-        </div>
-        <div class="field">
-          <label for="output-gain">How loud the assistant speaks</label>
-          <div class="row">
-            <input id="output-gain" class="gain" type="range" min="0" max="400" step="1" data-path="audio.output_gain" data-kind="percent">
-            <output id="output-gain-label" class="gain-label" for="output-gain">100 %</output>
-          </div>
-          <p class="hint" id="output-gain-level"></p>
-          <p class="hint field-message" data-for="output-gain"></p>
-        </div>
-        <div class="field">
-          <label class="row"><input id="earcons" type="checkbox" data-path="session.earcons" data-kind="bool"> Play a short tone when a session starts and ends</label>
-          <p class="hint field-message" data-for="earcons"></p>
-        </div>
-        <div class="field">
-          <label for="earcon-volume">Tone volume</label>
-          <div class="row">
-            <input id="earcon-volume" class="gain" type="range" min="0" max="100" step="1" data-path="session.earcon_volume" data-kind="percent">
-            <output id="earcon-volume-label" class="gain-label" for="earcon-volume">18 %</output>
-          </div>
-          <p class="hint field-message" data-for="earcon-volume"></p>
-        </div>
+        </section>
 
-        <h3>Wake word</h3>
-        <div class="field">
-          <label for="wake-engine">Engine</label>
-          <div class="row">
-            <select id="wake-engine" data-path="wake.engine" data-kind="string"></select>
-            <button class="save" data-for="wake-engine">Save</button>
-          </div>
-          <p class="hint field-message" data-for="wake-engine"></p>
-        </div>
-        <div class="field">
-          <label for="wake-model">Model (downloaded on first use)</label>
-          <div class="row">
-            <select id="wake-model" data-path="wake.model" data-kind="string"></select>
-            <button class="save" data-for="wake-model">Save</button>
-          </div>
-          <p class="hint field-message" data-for="wake-model"></p>
-        </div>
-        <div class="field">
-          <label for="activation-phrases">Activation phrases (one per line or comma-separated; words the model knows)</label>
-          <div class="row">
-            <textarea id="activation-phrases" rows="3" spellcheck="false" data-path="wake.activation_phrases" data-kind="list"></textarea>
-            <button class="save" data-for="activation-phrases">Save</button>
-          </div>
-          <p class="hint field-message" data-for="activation-phrases"></p>
-          <p class="hint" id="unknown-words"></p>
-        </div>
-        <div class="field">
-          <label for="deactivation-phrases">Deactivation phrases (empty: sessions end on the idle timeout only)</label>
-          <div class="row">
-            <textarea id="deactivation-phrases" rows="2" spellcheck="false" data-path="wake.deactivation_phrases" data-kind="list"></textarea>
-            <button class="save" data-for="deactivation-phrases">Save</button>
-          </div>
-          <p class="hint field-message" data-for="deactivation-phrases"></p>
-        </div>
+        <section class="tab-panel" data-panel="settings" role="tabpanel">
+          <div class="settings-column">
+            <div class="card settings-section"><h2>Appearance</h2>
+              <div class="form-grid">
+                <label>Theme<select id="setting-theme" data-path="ui.theme" data-kind="string"><option value="dark">Dark</option><option value="darcula">Darcula</option><option value="light">Light</option><option value="intellij">IntelliJ</option></select></label>
+                <label>Font size<input id="setting-font-size" type="number" min="11" max="20" data-path="ui.font_size" data-kind="number"></label>
+              </div>
+              <p class="form-note">Theme and font size apply at once and are stored in settings.json, so they travel with the app folder.</p>
+              <p class="field-message" data-for="setting-theme"></p>
+              <p class="field-message" data-for="setting-font-size"></p>
+            </div>
 
-        <h3>Assistant</h3>
-        <div class="field">
-          <label for="speaker-labels">Speaker names</label>
-          <div class="row">
-            <select id="speaker-labels" data-path="assistant.speaker_labels" data-kind="string">
-              <option value="start">At call start: who called and who is in the channel</option>
-              <option value="changes">Also a note when another person starts talking</option>
-              <option value="off">Off: no names reach the model</option>
-            </select>
-            <button class="save" data-for="speaker-labels">Save</button>
-          </div>
-          <p class="hint field-message" data-for="speaker-labels"></p>
-        </div>
-        <div class="field">
-          <label for="codex-executable">Codex executable (empty: found automatically)</label>
-          <div class="row">
-            <input id="codex-executable" type="text" spellcheck="false" placeholder="C:\path\to\codex.exe" data-path="codex.executable" data-kind="string">
-            <button class="save" data-for="codex-executable">Save</button>
-          </div>
-          <p class="hint field-message" data-for="codex-executable"></p>
-        </div>
-        <div class="field">
-          <label for="codex-model">Model (empty: the account default)</label>
-          <div class="row">
-            <select id="codex-model-select" class="listed" data-for="codex-model"></select>
-            <input id="codex-model" type="text" spellcheck="false" list="codex-model-list" data-path="codex.model" data-kind="string">
-            <datalist id="codex-model-list"></datalist>
-            <button class="save" data-for="codex-model">Save</button>
-          </div>
-          <p class="hint">The model and the reasoning effort apply only to the work the voice model delegates to the Codex agent; the voice itself is the realtime model.</p>
-          <p class="hint field-message" data-for="codex-model"></p>
-        </div>
-        <div class="field">
-          <label for="codex-effort">Reasoning effort (empty: the model default)</label>
-          <div class="row">
-            <select id="codex-effort-select" class="listed" data-for="codex-effort"></select>
-            <input id="codex-effort" type="text" spellcheck="false" list="codex-effort-list" data-path="codex.reasoning_effort" data-kind="string">
-            <datalist id="codex-effort-list"></datalist>
-            <button class="save" data-for="codex-effort">Save</button>
-          </div>
-          <p class="hint field-message" data-for="codex-effort"></p>
-        </div>
-        <div class="field">
-          <label for="codex-voice">Voice</label>
-          <div class="row">
-            <select id="codex-voice-select" class="listed" data-for="codex-voice"></select>
-            <input id="codex-voice" type="text" spellcheck="false" list="codex-voice-list" data-path="codex.voice" data-kind="string">
-            <datalist id="codex-voice-list"></datalist>
-            <button class="save" data-for="codex-voice">Save</button>
-          </div>
-          <p class="hint field-message" data-for="codex-voice"></p>
-        </div>
-        <div class="field">
-          <label for="codex-instructions">Instructions for the assistant (sent at the start of every call; empty sends nothing)</label>
-          <div class="row">
-            <textarea id="codex-instructions" rows="5" data-path="codex.instructions" data-kind="string"></textarea>
-            <button class="save" data-for="codex-instructions">Save</button>
-          </div>
-          <p class="hint field-message" data-for="codex-instructions"></p>
-        </div>
+            <div class="card settings-section"><h2>Audio</h2>
+              <div class="form-grid">
+                <label>What the assistant hears <output id="input-gain-label" for="input-gain">100 %</output><input id="input-gain" type="range" min="0" max="400" step="1" data-path="audio.input_gain" data-kind="percent"><small class="field-help" id="input-gain-level"></small><small class="field-message" data-for="input-gain"></small></label>
+                <label>How loud the assistant speaks <output id="output-gain-label" for="output-gain">100 %</output><input id="output-gain" type="range" min="0" max="400" step="1" data-path="audio.output_gain" data-kind="percent"><small class="field-help" id="output-gain-level"></small><small class="field-message" data-for="output-gain"></small></label>
+                <label class="inline-check">Earcons<input id="earcons" type="checkbox" data-path="session.earcons" data-kind="bool"><small class="field-message" data-for="earcons"></small></label>
+                <label>Earcon volume <output id="earcon-volume-label" for="earcon-volume">18 %</output><input id="earcon-volume" type="range" min="0" max="100" step="1" data-path="session.earcon_volume" data-kind="percent"><small class="field-message" data-for="earcon-volume"></small></label>
+              </div>
+              <p class="form-note">Changes save when you release a slider and apply to a running call at once. Earcons are the short tones for session start and end, mute and unmute.</p>
+            </div>
 
-        <h3>Hotkey</h3>
-        <div class="field">
-          <label for="hotkey-mute">Mute toggle (for example Ctrl+Alt+M; empty disables it)</label>
-          <div class="row">
-            <input id="hotkey-mute" type="text" spellcheck="false" data-path="hotkey.mute" data-kind="string">
-            <button class="save" data-for="hotkey-mute">Save</button>
+            <div class="card settings-section"><h2>Assistant</h2>
+              <div class="form-grid">
+                <label>Engine<select id="assistant-engine" data-path="assistant.engine" data-kind="string"><option value="codex">Codex CLI (official app-server)</option></select><small class="field-message" data-for="assistant-engine"></small></label>
+                <label>Activation<select id="session-mode" data-path="session.mode" data-kind="string"><option value="wake_word">Wake word (offline, Vosk)</option><option value="always">Always listening</option></select><small class="field-message" data-for="session-mode"></small></label>
+                <label class="wide">Activation phrases<textarea id="activation-phrases" rows="2" spellcheck="false" data-path="wake.activation_phrases" data-kind="list"></textarea><small class="field-help">One per line or comma-separated. Every word must exist in the wake model's vocabulary. Repeating an activation phrase during a session does nothing.</small><small class="field-help warning-text" id="unknown-words"></small><small class="field-message" data-for="activation-phrases"></small></label>
+                <label class="wide">Deactivation phrases<textarea id="deactivation-phrases" rows="2" spellcheck="false" data-path="wake.deactivation_phrases" data-kind="list"></textarea><small class="field-help">Ends the session at once and cuts off the current answer. Avoid words that come up in normal game talk.</small><small class="field-message" data-for="deactivation-phrases"></small></label>
+                <label>Auto-stop after no input, seconds<input id="idle-timeout" type="number" min="0" max="3600" step="1" data-path="session.idle_timeout_seconds" data-kind="number"><small class="field-help">0 = only the deactivation phrase ends a session; otherwise 5 to 3600. The assistant's own answer does not count as silence.</small><small class="field-message" data-for="idle-timeout"></small></label>
+                <label>Wake engine<select id="wake-engine" data-path="wake.engine" data-kind="string"></select><small class="field-message" data-for="wake-engine"></small></label>
+                <label class="wide">Wake model<select id="wake-model" data-path="wake.model" data-kind="string"></select><small class="field-help">The model and the Vosk library download the first time wake-word activation is enabled.</small><small class="field-message" data-for="wake-model"></small></label>
+              </div>
+            </div>
+
+            <div class="card settings-section"><h2>Codex</h2>
+              <div class="form-grid">
+                <label>Model<select id="codex-model-select" class="listed" data-for="codex-model"></select><input id="codex-model" type="text" spellcheck="false" list="codex-model-list" placeholder="account default" data-path="codex.model" data-kind="string"><datalist id="codex-model-list"></datalist><small class="field-help">For the work the voice assistant hands to Codex (searching, longer reasoning). The voice itself stays the realtime voice model. Applies from the next call.</small><small class="field-message" data-for="codex-model"></small></label>
+                <label>Reasoning<select id="codex-effort-select" class="listed" data-for="codex-effort"></select><input id="codex-effort" type="text" spellcheck="false" list="codex-effort-list" placeholder="model default" data-path="codex.reasoning_effort" data-kind="string"><datalist id="codex-effort-list"></datalist><small class="field-help">How long Codex thinks about a handed-off task. Higher levels answer better but take longer.</small><small class="field-message" data-for="codex-effort"></small></label>
+                <label>Voice<select id="codex-voice-select" class="listed" data-for="codex-voice"></select><input id="codex-voice" type="text" spellcheck="false" list="codex-voice-list" placeholder="server default" data-path="codex.voice" data-kind="string"><datalist id="codex-voice-list"></datalist><small class="field-message" data-for="codex-voice"></small></label>
+                <label>Speaker names<select id="speaker-labels" data-path="assistant.speaker_labels" data-kind="string"><option value="start">At call start (recommended)</option><option value="changes">At call start and when the speaker changes</option><option value="off">Off</option></select><small class="field-help">At call start the assistant gets the people in the voice channel and who said the activation phrase. Discord nicknames go to OpenAI.</small><small class="field-message" data-for="speaker-labels"></small></label>
+                <label class="wide">Instructions<textarea id="codex-instructions" class="prompt-input" rows="5" data-path="codex.instructions" data-kind="string"></textarea><small class="field-help">Your instructions for the assistant. There is no built-in default.</small><small class="field-message" data-for="codex-instructions"></small></label>
+              </div>
+              <p class="form-note">Threads are read-only and ephemeral, the shell tool is disabled, and VoiceBro declines every request to run commands or change files. The agent may search the web. Codex starts at /join and stops when the bot leaves its last voice channel.</p>
+            </div>
+
+            <div class="card settings-section"><h2>Hotkey</h2>
+              <div class="form-grid">
+                <label>Mute hotkey<input id="hotkey-mute" type="text" spellcheck="false" placeholder="Ctrl+Alt+M" data-path="hotkey.mute" data-kind="string"><small class="field-help">Works system-wide, also in games. Empty disables it. Mutes both what the assistant hears and what it says, and ends the session.</small><small class="field-message" data-for="hotkey-mute"></small></label>
+              </div>
+            </div>
+            <div class="settings-actions"><span class="form-feedback" id="settings-feedback">Changes save automatically.</span></div>
           </div>
-          <p class="hint field-message" data-for="hotkey-mute"></p>
+        </section>
+
+        <section class="tab-panel" data-panel="config" role="tabpanel">
+          <article class="card config-card">
+            <header class="card-title-row">
+              <div><h2>Discord and Codex</h2><p class="muted">The bot token, the server and the Codex program. A stored token is never shown again.</p></div>
+              <span class="badge ok" id="config-autostart-badge">Auto-start enabled</span>
+            </header>
+            <div class="form-grid config-grid">
+              <label>Discord bot token <span class="badge" id="token-badge">unknown</span>
+                <small class="field-help">To get one, open discord.com/developers/applications, pick or create your application, go to Bot and press Reset Token; copy the token right away and keep it private.</small>
+                <input type="password" id="config-token" placeholder="****************" autocomplete="off" spellcheck="false">
+                <span class="row-actions"><button type="button" class="button" id="token-clear">Clear stored token</button></span>
+              </label>
+              <label>Discord guild ID
+                <small class="field-help">Turn on Developer Mode (User Settings → Advanced), then right-click your server and pick Copy Server ID. Slash commands are registered globally and in this server too, where they show up at once.</small>
+                <input type="text" id="config-guild-id" inputmode="numeric" spellcheck="false" data-config-path="discord.guild_id">
+              </label>
+              <label class="wide">Codex executable
+                <small class="field-help">Empty finds Codex CLI by itself (npm install -g @openai/codex).</small>
+                <input type="text" id="config-codex-executable" spellcheck="false" placeholder="Automatic" data-config-path="codex.executable">
+              </label>
+            </div>
+            <p class="form-note">Enter a token to replace the stored one; leave the field empty to keep it. The token is kept in the Windows Credential Manager, never in settings.json. VoiceBro connects to Discord at every start while a token is stored.</p>
+            <div class="config-actions">
+              <button type="button" class="button primary" id="config-save">Save changes</button>
+              <button type="button" class="button" id="config-reset">Reset</button>
+              <span class="form-feedback" id="config-feedback"></span>
+            </div>
+            <div class="stored-config">
+              <h3>Settings file</h3>
+              <pre id="config-preview">Waiting for the runtime...</pre>
+              <p class="muted">Location: <span class="path-value" id="config-path">—</span></p>
+            </div>
+          </article>
+        </section>
+
+      </main>
+
+      <footer class="status-bar">
+        <div class="status-bar-left">
+          <span class="connection-state disconnected" id="footer-connection">Disconnected</span><span class="separator"></span>
+          <span>Guilds: <strong id="footer-guilds">0</strong></span><span class="separator"></span>
+          <span>Voice: <strong id="footer-voice">0</strong></span><span class="separator"></span>
+          <span>Uptime: <strong id="footer-uptime">—</strong></span>
         </div>
-      </section>
-
-      <section id="tab-chat" class="panel">
-        <h2>Chat</h2>
-        <div class="row">
-          <label class="row"><input id="chat-filter-context" type="checkbox" checked> Names and notes</label>
-          <label class="row"><input id="chat-filter-agent" type="checkbox" checked> Agent work</label>
-          <label class="row"><input id="chat-filter-system" type="checkbox" checked> Call events</label>
-          <label class="row"><input id="chat-autoscroll" type="checkbox" checked> Auto-scroll</label>
-          <button id="chat-copy" class="secondary small">Copy</button>
-          <button id="chat-open-folder" class="secondary small">Open log folder</button>
+        <div class="status-bar-right">
+          <span>Memory: <strong id="footer-memory">—</strong></span><span class="separator"></span><span id="build-stamp">build …</span>
         </div>
-        <div id="chat"></div>
-      </section>
-    </main>
-
-    <section class="log">
-      <div class="log-header">
-        <span>Log</span>
-        <button id="log-clear" class="secondary small">Clear</button>
-      </div>
-      <pre id="log"></pre>
-    </section>
-
-    <footer>
-      <span id="build-stamp">build …</span>
-    </footer>
-
+      </footer>
+    </div>
     <script src="main.js"></script>
   </body>
 </html>
