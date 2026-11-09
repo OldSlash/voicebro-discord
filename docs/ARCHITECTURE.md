@@ -246,7 +246,10 @@ pub struct Recognition { pub text: String, pub is_final: bool, pub words: Vec<Wo
 - A recognizer exists only while its speaker is talking and is dropped after 30 s idle. The
   whole engine is loaded only in wake-word mode.
 - **Model catalog** (`catalog.rs`): vetted entries with engine, language, display name,
-  download URLs, SHA-256, license and default phrases. The settings refer to a catalog id.
+  download URLs, SHA-256 and license. The settings refer to a catalog id. The catalog
+  carries no phrases: the activation and deactivation phrases are the user's, live in the
+  settings file and start empty; the wake engine shows "no phrases configured" until the
+  user enters them.
   Today: `vosk-model-small-ru-0.22` plus the Vosk 0.3.45 Windows library.
 - **Asset store**: downloads to a temp name, verifies the hash, extracts with the system
   `tar.exe`, writes a marker file, cleans up partial files at start. Progress goes to the
@@ -342,9 +345,9 @@ pub struct Settings {
 }
 ```
 
-Every string the app shows or sends (UI, log, notes to the model) is English. Wake phrases
-are the one exception: they are in the language of the recognizer's model and come from
-the model catalog.
+Every string in the project (UI, log, notes to the model, code, docs) is English. The wake
+phrases are user data in the settings file, in whatever language the user's model
+recognizes; the code ships none.
 
 - Stored as JSON at `%LOCALAPPDATA%\VoiceBro\settings.json`. Written to a temp file and
   renamed over the old one. Unknown fields are kept; missing fields take defaults.
@@ -494,7 +497,7 @@ Values that worked in the first version. Change them only with a measurement or 
 | To add | Touch |
 |---|---|
 | A wake engine (sherpa-onnx, a KWS) | `wake/<engine>/` implementing `WakeEngine`, `LoadedModel`, `SpeechRecognizer`; catalog entries; nothing in `PhraseSpotter` or the gate |
-| A model or language | A `ModelEntry` in the catalog (URL, SHA-256, license, default phrases) |
+| A model or language | A `ModelEntry` in the catalog (URL, SHA-256, license) |
 | An assistant or an auth path (API key, another provider) | `assistant/<engine>/` implementing `Assistant` and `AssistantSession` over `AudioPorts`; nothing in the gate or Discord |
 | A setting | One field in `Settings`, its validation, its `apply` branch, its UI control |
 | A UI | Anything that can call the commands and subscribe to the event; the core is unchanged |

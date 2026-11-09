@@ -102,21 +102,15 @@ pub struct WakeSettings {
 }
 
 impl Default for WakeSettings {
+    /// No phrases by default: the user chooses them in the settings. The wake engine
+    /// reports an empty list in its status instead of listening for nothing.
     fn default() -> Self {
         let model = catalog::default_entry();
         Self {
             engine: model.engine.to_owned(),
             model: model.id.to_owned(),
-            activation_phrases: model
-                .default_activation_phrases
-                .iter()
-                .map(|phrase| (*phrase).to_owned())
-                .collect(),
-            deactivation_phrases: model
-                .default_deactivation_phrases
-                .iter()
-                .map(|phrase| (*phrase).to_owned())
-                .collect(),
+            activation_phrases: Vec::new(),
+            deactivation_phrases: Vec::new(),
         }
     }
 }
@@ -255,20 +249,10 @@ impl Settings {
             return Err(invalid("session.earcon_volume", "must be between 0 and 1"));
         }
 
+        // Empty lists are allowed: they are the starting state, and the wake engine shows
+        // them as "no phrases configured" rather than the save being refused.
         let activation = normalize_phrases(&self.wake.activation_phrases);
         let deactivation = normalize_phrases(&self.wake.deactivation_phrases);
-        if activation.is_empty() {
-            return Err(invalid(
-                "wake.activation_phrases",
-                "at least one phrase is needed",
-            ));
-        }
-        if deactivation.is_empty() {
-            return Err(invalid(
-                "wake.deactivation_phrases",
-                "at least one phrase is needed",
-            ));
-        }
         if let Some(shared) = activation
             .iter()
             .find(|phrase| deactivation.contains(phrase))
@@ -391,12 +375,22 @@ mod tests {
     #[test]
     fn overlapping_phrases_are_rejected_with_both_lists_named() {
         let mut settings = Settings::default();
-        let shared = settings.wake.activation_phrases[0].clone();
-        settings.wake.deactivation_phrases = vec![format!(" {} ", shared.to_uppercase())];
+        settings.wake.activation_phrases = vec!["alpha".to_owned(), "beta".to_owned()];
+        settings.wake.deactivation_phrases = vec![" BETA ".to_owned()];
         let error = settings.validate().unwrap_err();
         assert_eq!(error.field, "wake.deactivation_phrases");
-        assert!(error.message.contains(&shared), "{}", error.message);
+        assert!(error.message.contains("beta"), "{}", error.message);
         assert!(error.message.contains("activation"), "{}", error.message);
+    }
+
+    #[test]
+    fn phrase_lists_start_empty_and_that_is_valid() {
+        let settings = Settings::default();
+        assert!(settings.wake.activation_phrases.is_empty());
+        assert!(settings.wake.deactivation_phrases.is_empty());
+        settings
+            .validate()
+            .expect("empty lists are the starting state");
     }
 
     #[test]

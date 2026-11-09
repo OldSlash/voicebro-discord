@@ -1,18 +1,16 @@
 //! Vetted wake-word models. Settings refer to a model by its `id`; the engine that loads it
-//! is named by `engine`.
+//! is named by `engine`. The catalog describes models only; the phrases to spot are the
+//! user's and live in the settings file.
 
 /// One model the app knows how to download, verify and load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelEntry {
     pub id: &'static str,
     pub engine: &'static str,
-    /// BCP 47 language tag.
+    /// BCP 47 language tag of the speech the model recognizes.
     pub language: &'static str,
     pub display_name: &'static str,
     pub license: &'static str,
-    /// Phrases in the model's own language: a recognizer can only spot words it knows.
-    pub default_activation_phrases: &'static [&'static str],
-    pub default_deactivation_phrases: &'static [&'static str],
 }
 
 pub const VOSK_ENGINE: &str = "vosk";
@@ -23,8 +21,6 @@ const ENTRIES: &[ModelEntry] = &[ModelEntry {
     language: "ru",
     display_name: "Vosk small Russian 0.22 (45 MB)",
     license: "Apache-2.0",
-    default_activation_phrases: &["джи пи ти", "джи пити", "джи пети", "луна"],
-    default_deactivation_phrases: &["отбой"],
 }];
 
 pub fn entries() -> &'static [ModelEntry] {

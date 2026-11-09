@@ -134,7 +134,7 @@ type ModelFree = unsafe extern "C" fn(*mut c_void);
 type ModelFindWord = unsafe extern "C" fn(*mut c_void, *const c_char) -> c_int;
 
 /// Loads the DLL and the model, checks a few vocabulary words, frees everything.
-fn load_model(library: &Path, model_dir: &Path) -> anyhow::Result<Vec<String>> {
+fn load_model(library: &Path, model_dir: &Path, words: &[String]) -> anyhow::Result<Vec<String>> {
     use libloading::os::windows::{Library, LOAD_WITH_ALTERED_SEARCH_PATH};
     let mut lines = Vec::new();
     let started = std::time::Instant::now();
@@ -163,16 +163,10 @@ fn load_model(library: &Path, model_dir: &Path) -> anyhow::Result<Vec<String>> {
         bail!("vosk_model_new returned null for {}", model_dir.display());
     }
     lines.push(format!("vosk_model_new ok in {:.1?}", started.elapsed()));
-    // Every word of the catalog's default phrases must be in the model's vocabulary.
-    let entry = voicebro_core::wake::catalog::default_entry();
-    let words: Vec<&str> = entry
-        .default_activation_phrases
-        .iter()
-        .chain(entry.default_deactivation_phrases)
-        .flat_map(|phrase| phrase.split_whitespace())
-        .collect();
+    // Optional: words passed after the directory are looked up in the model's vocabulary,
+    // so a planned wake phrase can be checked before it goes into the settings.
     for word in words {
-        let c_word = CString::new(word)?;
+        let c_word = CString::new(word.as_str())?;
         // SAFETY: valid model pointer and C string.
         let index = unsafe { find_word(model, c_word.as_ptr()) };
         lines.push(format!(
@@ -189,7 +183,8 @@ pub fn assets(args: &[String]) -> anyhow::Result<Outcome> {
     let dir = args
         .first()
         .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("usage: probe vosk-assets <dir>"))?;
+        .ok_or_else(|| anyhow!("usage: probe vosk-assets <dir> [word ...]"))?;
+    let words: Vec<String> = args.iter().skip(1).cloned().collect();
     std::fs::create_dir_all(&dir)?;
     let mut details = Vec::new();
     let mut pass = true;
@@ -209,6 +204,7 @@ pub fn assets(args: &[String]) -> anyhow::Result<Outcome> {
         match load_model(
             &dir.join(VOSK_LIBRARY.directory).join("libvosk.dll"),
             &dir.join(VOSK_MODEL.directory),
+            &words,
         ) {
             Ok(lines) => details.extend(lines),
             Err(error) => {

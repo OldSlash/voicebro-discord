@@ -242,9 +242,10 @@ tested.
   `probe credential --read-only`) and the Control Panel view; both are the user's step.
 - **Vosk assets** (2026-11-09) **PASS.** Both pins still hold (hashes above). Downloaded with
   the system `curl.exe`, extracted with `tar.exe`, `libvosk.dll` loads with
-  `LOAD_WITH_ALTERED_SEARCH_PATH` in 138 ms, `vosk_model_new` in 367 ms. Vocabulary: every
-  word of the catalog's default phrases is known to the model; transliterations of "GPT"
-  are not, as in v1. Not tested: recognition itself (that is the `wake-word-engine` corpus).
+  `LOAD_WITH_ALTERED_SEARCH_PATH` in 138 ms, `vosk_model_new` in 367 ms. The probe looks up
+  words passed on its command line in the model's vocabulary; the v1 wake words were known,
+  transliterations of "GPT" were not. Not tested: recognition itself (that is the
+  `wake-word-engine` corpus).
 - **Discord lifecycle and receive timing** — code complete (`probe discord-lifecycle`,
   `probe receive-timing`), **not run yet**: they need the Discord bot token, a test guild and
   a voice channel with two people, which only the user can provide. Commands are in
@@ -345,8 +346,8 @@ corpus runs again.
 1. `wake/mod.rs`: traits `WakeEngine`, `LoadedModel`, `SpeechRecognizer`, `Recognition`,
    `Word`, `PhraseEvent`, `WakeStatus`, `WakeError`.
 2. `wake/catalog.rs`: `ModelEntry` and the one entry (`vosk-model-small-ru-0.22`, Russian,
-   Apache-2.0, default phrases in the model's language), plus the library asset for the
-   `vosk` engine.
+   Apache-2.0), plus the library asset for the `vosk` engine. The catalog carries no phrases;
+   the user's phrases live in the settings file and start empty.
 3. `wake/assets.rs`: download to `<name>.part`, hash, extract with `tar.exe`
    (`CREATE_NO_WINDOW`), marker file, cleanup of `.part` at start, progress events every 20 %.
 4. `wake/vosk/ffi.rs`, `wake/vosk/mod.rs`: v1 `VoskApi`, `Model`, `Recognizer` wrappers
