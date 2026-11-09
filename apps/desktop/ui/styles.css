@@ -162,7 +162,11 @@ output { float: right; color: var(--accent); font-weight: 600; }
   font: 12px/1.5 Consolas, "Cascadia Mono", monospace;
   white-space: pre-wrap;
   word-break: break-all;
+  resize: none;
 }
+.log-filter { display: flex; flex: 1; align-items: center; gap: 6px; color: var(--ink-dim); }
+.log-filter input { flex: 1; min-width: 120px; }
+.log-filter-count { font-size: 0.85em; white-space: nowrap; }
 
 /* ---- Codex chat */
 .chat-log { height: calc(100% - 42px); overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--log-bg); padding: 6px; color: var(--log-ink); }

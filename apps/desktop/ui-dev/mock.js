@@ -136,7 +136,7 @@
       const next = merge(clone(settings), patch);
       validate(next);
       settings = next;
-      setTimeout(() => emit("app-event", { kind: "settings_changed" }), 0);
+      setTimeout(() => emit("app-event", { event: "settings_changed" }), 0);
       return clone(settings);
     },
     set_secret: ({ value }) => {
@@ -154,8 +154,8 @@
     wake_models: () => clone(wakeModels),
     capabilities: () => clone(capabilities),
     chat_log: () => [
-      { at: "12:00:01", guild_id: "1091401169441656933", kind: "user", who: "Alex", text: "What time is it?" },
-      { at: "12:00:03", guild_id: "1091401169441656933", kind: "assistant", who: "assistant", text: "It is noon." },
+      { id: 1, at: "12:00:01", guild_id: "1091401169441656933", kind: "user", who: "Alex", text: "What time is it?" },
+      { id: 2, at: "12:00:03", guild_id: "1091401169441656933", kind: "assistant", who: null, text: "It is noon." },
     ],
     log_history: () => ["[2026-11-10][12:00:00][INFO][voicebro] VoiceBro 0.2.0+mock (mock log)"],
     set_muted: ({ muted: next }) => {
@@ -194,7 +194,7 @@
   let tick = 0;
   setInterval(() => {
     tick += 1;
-    emit("app-event", { kind: tick % 2 ? "discord" : "gate" });
+    emit("app-event", { event: tick % 2 ? "discord" : "gate" });
     emit("app-log", `[2026-11-10][12:00:${String(tick % 60).padStart(2, "0")}][INFO][mock] status tick ${tick}`);
   }, 1000);
 
@@ -209,7 +209,28 @@
         id: "model-c", display_name: "Model C", description: "", reasoning_efforts: ["minimal", "low"],
         default_reasoning_effort: "low", is_default: false,
       });
-      emit("app-event", { kind: "assistant" });
+      emit("app-event", { event: "assistant" });
+    },
+    // One chat entry of each kind, as the app sends them: `event` names the event and
+    // `kind` the entry.
+    emitChatOfEveryKind() {
+      const kinds = [
+        ["user", "Alex", "Find where the rope gun is"],
+        ["context", null, "In the channel: Alex, Sam"],
+        ["assistant", null, "Let me check."],
+        ["task", null, "Find the rope gun location in Sons of the Forest"],
+        ["reasoning", null, "Searching the web for the location"],
+        ["tool", null, "Web search: Sons of the Forest rope gun location"],
+        ["agent", null, "It is in the maintenance bunker."],
+        ["system", null, "Call started"],
+        ["error", null, "The call ended unexpectedly"],
+      ];
+      kinds.forEach(([kind, who, text], index) => {
+        emit("app-event", {
+          event: "chat", id: 100 + index, guild_id: "1091401169441656933",
+          at: `12:01:${String(index).padStart(2, "0")}`, kind, who, text,
+        });
+      });
     },
   };
 })();

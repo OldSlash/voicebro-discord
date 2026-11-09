@@ -25,11 +25,15 @@
             <span class="toolbar-group">
               <button type="button" class="button" id="console-clear">Clear</button>
               <button type="button" class="button" id="console-copy">Copy</button>
+              <button type="button" class="button" id="console-copy-selection">Copy selected</button>
             </span>
-            <span class="toolbar-spacer"></span>
+            <label class="log-filter">Find
+              <input type="search" id="console-search" placeholder="text in a line">
+              <span class="log-filter-count" id="console-match-count">0 matches</span>
+            </label>
             <label class="checkbox compact"><input type="checkbox" id="console-autoscroll" checked> Auto-scroll</label>
           </div>
-          <pre class="console-output" id="log" aria-label="Application log"></pre>
+          <textarea class="console-output" id="console-output" readonly spellcheck="false" aria-label="Application log"></textarea>
         </section>
 
         <section class="tab-panel" data-panel="chat" role="tabpanel">
@@ -43,7 +47,7 @@
             <label class="checkbox compact"><input id="chat-filter-system" type="checkbox" checked><span>Call events</span></label>
             <label class="checkbox compact"><input id="chat-autoscroll" type="checkbox" checked><span>Auto-scroll</span></label>
           </div>
-          <div id="chat" class="chat-log" role="log" aria-label="Codex chat"></div>
+          <div id="chat-log" class="chat-log" role="log" aria-label="Codex chat"></div>
         </section>
 
         <section class="tab-panel" data-panel="status" role="tabpanel">

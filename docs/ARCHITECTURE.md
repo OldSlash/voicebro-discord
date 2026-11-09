@@ -117,7 +117,10 @@ pub enum AppEvent {
 }
 ```
 
-Serialized with a `kind` tag in `snake_case`, so the UI switches on one string.
+Serialized with an `event` tag in `snake_case`, so the UI switches on `payload.event`. The
+tag is not `kind`: a chat entry carries its own `kind` (user, assistant, task, …), and a
+`kind` tag collided with it, so the window read every chat entry as some other event. A unit
+test serializes every variant and checks that `event` appears exactly once.
 
 ## 4. Components
 
@@ -552,8 +555,11 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
   keeps each tab's content and scroll position. Four themes (Dark, Darcula, Light,
   IntelliJ) as CSS variables on `html[data-theme]` and a font size, both from the `ui`
   settings section, applied at once and at load.
-  - Console shows the app log (`app-log` events plus `log_history`) with Clear, Copy and
-    Auto-scroll.
+  - Console, as in the first version, is a read-only text area with the app log
+    (`log_history` at load, then each `app-log` record; at most 2 000 lines in the view),
+    search that filters the lines and shows the match count, Clear (the view only), Copy
+    (the shown lines), Copy Selection and Auto-scroll (off keeps the view where the user
+    scrolled).
   - Status renders from one `status` snapshot (`renderStatus`): the connected guilds on the
     left (`DiscordStatus.guilds`, read from the serenity cache), and fact tiles on the right:
     Discord state, bot account, voice channel, people in it, assistant engine, the gates
@@ -596,9 +602,13 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     an "Auto-start enabled" badge, Save changes (one settings patch for the edited fields
     plus `set_secret` when a token was typed) and Reset (back to the stored values), and the
     stored `settings.json` read-only with its path. The token is never in that view.
-  - Codex chat lists the chat log entries (pulled at start, then one event per entry) with
-    filters (names and notes, agent work, call events), auto-scroll, Copy and Open log
-    folder.
+  - Codex chat is the first version's chat view: the chat log entries (pulled at start,
+    then one `chat` event per entry, at most 600 rows), one row each with the time, a
+    coloured source label and the text. Labels: the speaker's name for a user transcript,
+    `GPT` (the voice answer), `Context → GPT`, `Task → Codex`, `Codex`, `Codex thinking`,
+    `Codex tool`, `Call`, `Error`; the voice answer and delegated tasks are highlighted.
+    Filters for names and notes, agent work and call events, Auto-scroll, Copy (one
+    `[time] label: text` line per shown row) and Open log folder.
   - Commands: `get_settings`, `save_settings`, `set_secret`, `clear_secret`, `status`,
     `app_info`, `system_status`, `set_muted`, `toggle_mute`, `discord_connect`,
     `discord_disconnect`, `codex_sign_in`, `codex_check`, `codex_models`, `capabilities`,
