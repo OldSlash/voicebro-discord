@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod log_ring;
+mod memory;
 mod system;
 
 use log_ring::LogRing;
@@ -68,6 +69,8 @@ struct AppState {
     log: Arc<LogRing>,
     /// When the app started, for the uptime.
     started: Instant,
+    /// The latest memory reading of the app's processes, renewed every 3 s.
+    memory: Arc<Mutex<Option<memory::MemoryReading>>>,
 }
 
 fn codex(state: &AppState) -> Result<CodexAssistant, String> {
@@ -266,6 +269,13 @@ fn system_status(state: State<'_, AppState>) -> system::SystemFacts {
     system::facts(BUILD_STAMP, state.started, Instant::now())
 }
 
+/// The latest memory reading (private working set of the app, WebView2 and Codex); `None`
+/// until the first reading is taken.
+#[tauri::command]
+fn memory_status(state: State<'_, AppState>) -> Option<memory::MemoryReading> {
+    state.memory.lock().expect("memory slot lock").clone()
+}
+
 /// The main window, built here rather than in `tauri.conf.json` so its WebView2 data stays
 /// next to the app (`webview-data`) instead of under `%LOCALAPPDATA%`.
 fn build_main_window(app: &tauri::App, data_dir: &std::path::Path) -> tauri::Result<()> {
@@ -365,6 +375,7 @@ fn main() {
             hotkey: Mutex::new(None),
             log: Arc::clone(&log),
             started: Instant::now(),
+            memory: memory::start(),
         })
         .setup(move |app| {
             log.attach(app.handle().clone());
@@ -434,6 +445,7 @@ fn main() {
             chat_log,
             log_history,
             system_status,
+            memory_status,
             open_log_folder
         ])
         .build(tauri::generate_context!())

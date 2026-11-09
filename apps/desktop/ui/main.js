@@ -953,6 +953,28 @@
     }
   }
 
+  // ---------- Memory: the private working set, read by the shell every 3 s ----------
+  async function refreshMemory() {
+    if (!invoke) return;
+    try {
+      const memory = await invoke("memory_status");
+      if (!memory) return;
+      const mb = (value) => `${Number(value).toFixed(1)} MB`;
+      $("footer-memory").textContent = mb(memory.total_mb);
+      setText("system-memory", `${mb(memory.total_mb)} (${memory.metric})`);
+      setText("memory-app", mb(memory.app_mb));
+      setText("memory-webview", `${mb(memory.webview_mb)} in ${memory.webview_processes} processes`);
+      setText("memory-codex", memory.codex_mb == null ? "not running" : mb(memory.codex_mb));
+      setText("memory-total", mb(memory.total_mb));
+      const share = (value) => `${memory.total_mb > 0 ? (100 * (value || 0)) / memory.total_mb : 0}%`;
+      $("memory-meter-app").style.width = share(memory.app_mb);
+      $("memory-meter-webview").style.width = share(memory.webview_mb);
+      $("memory-meter-codex").style.width = share(memory.codex_mb);
+    } catch (error) {
+      appendLog(`memory_status failed: ${error}`);
+    }
+  }
+
   // ---------- Actions ----------
   $("mute-toggle").addEventListener("click", async () => {
     const status = await invoke("status");
@@ -1050,6 +1072,8 @@
     await loadChat();
     // Once a second: the status values and a Performance sample.
     setInterval(refresh, 1000);
+    await refreshMemory();
+    setInterval(refreshMemory, 3000);
     setInterval(renderUptime, 1000);
   }
 

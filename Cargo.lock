@@ -7333,6 +7333,7 @@ dependencies = [
  "tauri-plugin-log",
  "tokio",
  "voicebro-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -257,6 +257,12 @@ output { float: right; color: var(--accent); font-weight: 600; }
 .info-list dt { color: var(--ink-dim); }
 .info-list dd { margin: 0; overflow-wrap: anywhere; }
 .path-value { font: 12px Consolas, "Cascadia Mono", monospace; }
+.memory-bar { display: flex; height: 12px; margin: 2px 0 10px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: var(--field); }
+.memory-bar span { width: 0; transition: width 0.3s ease; }
+.bar-app { background: var(--accent); }
+.bar-webview { background: var(--ok); }
+.bar-codex { background: var(--warn); }
+.system-help { margin: 8px 0 0; font-size: 0.85em; }
 
 /* ---- Settings and Config forms */
 .settings-column { max-width: 880px; margin: 0 auto; display: grid; gap: var(--gap); }
