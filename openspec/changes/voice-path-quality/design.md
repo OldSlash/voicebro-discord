@@ -45,8 +45,10 @@ the tick jitters, and the RTP timing would carry that jitter into the remote jit
 Incoming RTP packets are stored by sequence number. `PcmSource`, which songbird reads every
 20 ms on its own dedicated thread, asks the call's jitter buffer for the next frame when the
 call is the active producer: the buffer starts playing once it holds the target depth
-(3 frames, growing to 8 after late arrivals, relaxing after a long stable run, the same
-policy as the existing output queue), returns the next packet decoded, and for a missing
+(3 frames, growing by one up to 8 after a late arrival or a playout underrun, relaxing after
+a long stable run, the same policy as the existing output queue; growth on underruns was
+added after the live call on 2026-11-09 showed 4 underruns in one answer with growth on late
+arrivals only, and 2 with it), returns the next packet decoded, and for a missing
 sequence number decodes the following packet with `fec = true` if it is buffered, else runs
 the decoder's concealment (empty input). A gap in sequence numbers is loss; a pause with
 contiguous sequence numbers is not (the server may stop sending in silence) and plays
@@ -56,6 +58,13 @@ a second buffer stacked on the first, adding 60 to 160 ms of latency. Before wri
 buffer, check `rtc::media::io::sample_builder` in the `rtc` 0.21 source; reuse it for
 reordering only if it gives sequence numbers and does not hold frames back longer than the
 target depth.
+
+*Checked on 2026-11-09 (`rtc-media` 0.21.1, `src/io/sample_builder/mod.rs`):* own code.
+`SampleBuilder` is push-driven (a sample is released only after `max_late` later packets
+arrived, not on a clock), drops lost packets without handing their neighbours to the caller
+(no way to decode FEC from the next packet), and allocates two 65 536-entry vectors per
+stream. The buffer in `assistant/codex/jitter.rs` keeps packets in a `BTreeMap` by
+extended sequence number instead.
 
 **D3. Mute, flush and the stub still work through the same output.** A flush (mute,
 deactivation, session not wanted) also clears the jitter buffer and resets its target.

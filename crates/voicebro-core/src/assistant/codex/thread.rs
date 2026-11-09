@@ -43,11 +43,14 @@ pub struct ThreadInfo {
     pub requested: ThreadSettings,
 }
 
+/// `untrusted` as in the first version's working code (its rewrite spec said `never`): the
+/// agent keeps its server-side tools, web search included, and every approval request that
+/// reaches the app is declined.
 pub fn thread_start_params(workspace: &Path, settings: &ThreadSettings) -> Value {
     let mut params = json!({
         "cwd": workspace,
         "sandbox": "read-only",
-        "approvalPolicy": "never",
+        "approvalPolicy": "untrusted",
         "ephemeral": true,
         "developerInstructions": settings.instructions,
     });
@@ -133,7 +136,7 @@ mod tests {
         assert_eq!(params["model"], "gpt-6.1-sol");
         assert_eq!(params["config"]["model_reasoning_effort"], "high");
         assert_eq!(params["sandbox"], "read-only");
-        assert_eq!(params["approvalPolicy"], "never");
+        assert_eq!(params["approvalPolicy"], "untrusted");
         assert_eq!(params["ephemeral"], true);
         let defaults = thread_start_params(Path::new("C:/w"), &ThreadSettings::default());
         assert!(defaults.get("model").is_none());

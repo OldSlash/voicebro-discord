@@ -4,6 +4,8 @@
 pub mod account;
 pub mod app_server;
 pub mod conversation;
+pub mod jitter;
+pub mod pacing;
 pub mod rtc;
 pub mod session;
 pub mod thread;
@@ -510,8 +512,10 @@ mod tests {
             .collect()
     }
 
-    /// Feeds a 48 kHz mono WAV as 20 ms stereo frames at real-time pace, then silence
-    /// until the assistant has answered and been quiet for 1.5 s (or `limit` passes).
+    /// Feeds a 48 kHz mono WAV as 20 ms stereo frames with the jitter of songbird's tick
+    /// (each frame due at 20 k ms plus -7..7 ms, intervals between 6 and 34 ms), then
+    /// silence until the assistant has answered and been quiet for 1.5 s (or `limit`
+    /// passes).
     fn speak_and_wait(
         sender: &crate::audio::FrameSender,
         output: &crate::audio::OutputHandle,
@@ -520,8 +524,15 @@ mod tests {
         samples: &[i16],
         limit: Duration,
     ) -> Option<String> {
-        let mut next = Instant::now();
-        for chunk in samples.chunks(FRAME_SAMPLES / 2) {
+        let started = Instant::now();
+        let mut seed = 5u32;
+        for (index, chunk) in samples.chunks(FRAME_SAMPLES / 2).enumerate() {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let jitter = ((seed >> 16) % 15) as i64 - 7;
+            let due = started + Duration::from_millis((20 * index as i64 + 10 + jitter) as u64);
+            if let Some(rest) = due.checked_duration_since(Instant::now()) {
+                std::thread::sleep(rest);
+            }
             let mut stereo = Vec::with_capacity(FRAME_SAMPLES);
             for sample in chunk {
                 stereo.push(*sample);
@@ -529,10 +540,6 @@ mod tests {
             }
             stereo.resize(FRAME_SAMPLES, 0);
             sender.send(Frame::from_slice(&stereo));
-            next += Duration::from_millis(20);
-            if let Some(rest) = next.checked_duration_since(Instant::now()) {
-                std::thread::sleep(rest);
-            }
         }
         let deadline = Instant::now() + limit;
         loop {
@@ -557,10 +564,56 @@ mod tests {
         }
     }
 
+    /// Reads the output every 20 ms like songbird's mixer, counting the frames with signal,
+    /// until `stop` is set.
+    fn spawn_reader(
+        mut source: crate::audio::PcmSource,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        voiced: Arc<std::sync::atomic::AtomicU64>,
+    ) -> std::thread::JoinHandle<()> {
+        use std::io::Read as _;
+        std::thread::spawn(move || {
+            let mut bytes = vec![0u8; FRAME_SAMPLES * 4];
+            let mut next = Instant::now();
+            while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                next += Duration::from_millis(20);
+                let mut filled = 0;
+                while filled < bytes.len() {
+                    match source.read(&mut bytes[filled..]) {
+                        Ok(0) | Err(_) => return,
+                        Ok(read) => filled += read,
+                    }
+                }
+                let loud = bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|sample| f32::from_le_bytes(*sample).abs() > 256.0 / 32_768.0);
+                if loud {
+                    voiced.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                if let Some(rest) = next.checked_duration_since(Instant::now()) {
+                    std::thread::sleep(rest);
+                }
+            }
+        })
+    }
+
+    fn matches_any(text: &str, options: &str) -> bool {
+        let lowered = text.to_lowercase();
+        options
+            .split('|')
+            .any(|option| lowered.contains(&option.trim().to_lowercase()))
+    }
+
     /// A real call through the engine when `VOICEBRO_CODEX_CALL_WAV` names a 48 kHz mono
-    /// question: the canary word in the instructions must start the answer and audio must
-    /// come back. With `VOICEBRO_CODEX_CALL_WAV2` a second call follows a stop, and its
-    /// answer must contain `VOICEBRO_CODEX_EXPECT2` (continuity across calls).
+    /// question, fed with songbird-like jitter: the canary word in the instructions must
+    /// start the answer, answer audio must play, and no frame toward the call may be dropped;
+    /// with `VOICEBRO_CODEX_EXPECT1` the user transcript must contain one of its options.
+    /// With `VOICEBRO_CODEX_CALL_WAV2` a second call follows a stop, and its answer must
+    /// contain `VOICEBRO_CODEX_EXPECT2` (continuity across calls). With
+    /// `VOICEBRO_CODEX_CALL_WAV3` (a question about current facts) the agent must search
+    /// the web.
     #[test]
     fn live_call_when_enabled() {
         let Ok(wav) = std::env::var("VOICEBRO_CODEX_CALL_WAV") else {
@@ -583,7 +636,10 @@ mod tests {
         assert!(account.signed_in, "sign in to Codex first");
         eprintln!("status: {:?}", assistant.status());
         let (sender, input) = frame_channel(INPUT_CAPACITY);
-        let (output, _source) = output_pair();
+        let (output, source) = output_pair();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let voiced = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let reader = spawn_reader(source, Arc::clone(&stop), Arc::clone(&voiced));
         let session = assistant
             .attach(
                 1,
@@ -617,10 +673,17 @@ mod tests {
             &wav_48k_mono(&wav),
             Duration::from_secs(45),
         );
+        let heard = chat
+            .entries()
+            .iter()
+            .find(|entry| entry.kind == "user")
+            .map(|entry| entry.text.clone());
+        let audio = assistant.status().calls[0].audio.unwrap_or_default();
         eprintln!(
-            "first answer: {answer:?}; output frames pushed {}",
-            output.counters().pushed
+            "first question heard as {heard:?}; first answer: {answer:?}; voiced frames played {}",
+            voiced.load(std::sync::atomic::Ordering::Relaxed)
         );
+        eprintln!("{}", audio.log_line(1));
         let answer = answer.expect("the assistant answered");
         assert!(
             answer
@@ -629,7 +692,18 @@ mod tests {
                 .starts_with("banana"),
             "canary not followed: {answer}"
         );
-        assert!(output.counters().pushed > 25, "no answer audio");
+        assert!(
+            voiced.load(std::sync::atomic::Ordering::Relaxed) > 25,
+            "no answer audio played"
+        );
+        assert_eq!(audio.input_drops, 0, "a frame toward the call was dropped");
+        if let Ok(expected) = std::env::var("VOICEBRO_CODEX_EXPECT1") {
+            let heard = heard.expect("the question was transcribed");
+            assert!(
+                matches_any(&heard, &expected),
+                "the question was misheard: {heard}"
+            );
+        }
 
         if let Ok(wav2) = std::env::var("VOICEBRO_CODEX_CALL_WAV2") {
             session.session_wanted(false);
@@ -657,17 +731,47 @@ mod tests {
             eprintln!("second answer: {answer:?}");
             let answer = answer.expect("the second answer arrived");
             if let Ok(expected) = std::env::var("VOICEBRO_CODEX_EXPECT2") {
-                let lowered = answer.to_lowercase();
                 assert!(
-                    expected
-                        .split('|')
-                        .any(|option| lowered.contains(&option.trim().to_lowercase())),
+                    matches_any(&answer, &expected),
                     "the second answer does not continue the conversation: {answer}"
                 );
             }
         }
+        if let Ok(wav3) = std::env::var("VOICEBRO_CODEX_CALL_WAV3") {
+            let before = chat.entries().len();
+            let answer = speak_and_wait(
+                &sender,
+                &output,
+                chat,
+                before,
+                &wav_48k_mono(&wav3),
+                Duration::from_secs(60),
+            );
+            // The agent's answer comes back through the voice model; give it time.
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < deadline
+                && !chat
+                    .entries()
+                    .iter()
+                    .skip(before)
+                    .any(|entry| entry.kind == "agent")
+            {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let searches: Vec<String> = chat
+                .entries()
+                .iter()
+                .skip(before)
+                .filter(|entry| entry.kind == "tool" && entry.text.starts_with("Web search"))
+                .map(|entry| entry.text.clone())
+                .collect();
+            eprintln!("third answer: {answer:?}; searches: {searches:?}");
+            assert!(!searches.is_empty(), "the agent did not search the web");
+        }
         session.session_wanted(false);
         std::thread::sleep(Duration::from_millis(500));
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        let _ = reader.join();
         for entry in chat.entries() {
             eprintln!(
                 "chat {} {} {:?}: {}",

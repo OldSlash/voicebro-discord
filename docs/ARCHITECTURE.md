@@ -88,7 +88,9 @@ The realtime call (WebRTC) lives inside the Rust process.
 | Receive path: `VoiceTick` → mix → gate → assistant input, wake feed | Songbird's event task (tokio) | Must return within a fraction of 20 ms: no blocking calls, no locks held across awaits, no allocation after warm-up. |
 | Discord output: songbird's mixer pulls `PcmSource::read` | Songbird's mixer thread | A read never blocks for more than a few ms; on underrun it returns silence and counts it. |
 | Wake worker: recognizers, trailing silence, phrase detectors | One dedicated OS thread per engine, 20 ms tick | Fed through a bounded channel; a full queue drops and counts. |
-| WebRTC call: ICE/DTLS/SRTP, Opus encode/decode | The webrtc crate's runtime tasks | Decoded output is pushed into the output queue without blocking. |
+| WebRTC call: ICE/DTLS/SRTP, RTP in and out | The webrtc crate's runtime tasks | Incoming RTP packets are only inserted into the call's jitter buffer; nothing is decoded here. |
+| WebRTC send: pacing and Opus encode | One dedicated OS thread per call (`voicebro-rtc-send`), 20 ms tick | Sends exactly one packet per tick: the oldest waiting frame or silence. |
+| WebRTC receive: Opus decode, FEC, concealment | Songbird's mixer thread, through `PcmSource::read` | One decode per 20 ms read, pulled from the jitter buffer. |
 | JSON-RPC to `codex app-server` | tokio task reading stdout line by line | Requests have timeouts; server-initiated requests are answered automatically. |
 | Global hotkey | The desktop app's main thread (Tauri plugin) | Only toggles the app-wide mute through `Runtime`. |
 
@@ -137,7 +139,11 @@ Owns the formats, queues and conversions shared by everything else.
   jitter buffer (3 to 8 frames), drop-oldest when full, a flush epoch (so a cut answer never
   plays after unmute), an output mute that still lets earcons through, and counters
   (supplied silence, drops, underruns). `PcmSource` implements songbird's `MediaSource`
-  through `RawAdapter`.
+  through `RawAdapter`. A producer with its own clock-free buffer (the Codex call's jitter
+  buffer) attaches as a `FrameProvider`: while attached, `PcmSource` pulls one frame from it
+  per read before the queue, flush and mute changes reset it, and a muted read still pulls
+  and discards so the provider's playout keeps time. `OutputHandle::push` stays for the stub
+  assistant and the tests.
 - **Source lifetime.** One output track per join. An empty queue (session over, nothing to
   say) produces silence, so a temporary underrun never ends the track. Only leaving the
   channel closes the source: `OutputHandle::close()` makes the next `read` return end of
@@ -348,8 +354,10 @@ assistant is given, so the app never panics on an unknown engine setting.
   process), and automatic decline of every approval, tool call and user-input request.
   Account: `account/read`, `account/login/start` and `account/login/completed`. Models:
   `model/list` with their reasoning efforts. Voices: `thread/realtime/listVoices`.
-- `thread.rs`: one ephemeral, read-only thread per guild (`sandbox: read-only`, approvals
-  never granted, `developerInstructions`, optional `model` and
+- `thread.rs`: one ephemeral, read-only thread per guild (`sandbox: read-only`,
+  `approvalPolicy: "untrusted"` as in the first version's working code, so the agent's
+  server-side tools such as web search run; client-side approval requests are still
+  declined), `developerInstructions`, optional `model` and
   `config.model_reasoning_effort`). A changed model or effort opens a new thread and remaps
   the guild's session; history carries over through `initialItems`. A rejected model falls
   back to the account defaults.
@@ -358,9 +366,28 @@ assistant is given, so the app never panics on an unknown engine setting.
   2 channels in SDP, `minptime=10;useinbandfec=1`), one data channel named `oai-events`
   created before the offer, a non-trickle offer (ICE gathering waited for, at most 2 s),
   `thread/realtime/start` with `transport: {type: webrtc, sdp}` and `version: "v3"`, the
-  answer from the `thread/realtime/sdp` notification. Incoming Discord frames are downmixed
-  and Opus-encoded into `TrackLocalStaticSample` samples; the remote track (its `on_track`
-  fires with the first RTP packet) is decoded to 48 kHz and pushed to the output queue. The
+  answer from the `thread/realtime/sdp` notification. The `voice` field is sent only when
+  `codex.voice` is set; empty means the server's default voice ("server default" in the
+  log and chat).
+  *Send:* the gate's frames wait in a FIFO of 5 frames (100 ms, drop-oldest, drops
+  counted). The `voicebro-rtc-send` thread keeps a 20 ms clock and sends exactly one
+  packet per tick: the oldest waiting frame, downmixed to mono and Opus-encoded
+  (complexity 10, 32 kbit/s, in-band FEC, 5 % expected loss), or encoded silence when the
+  FIFO is empty. After the call connects and after every underrun it waits for 2 queued
+  frames (40 ms) before sending speech again (`pacing.rs`, a pure function with its own
+  tests), so a late songbird tick does not starve the next send tick.
+  *Receive:* the remote track (its `on_track` fires with the first RTP packet) only inserts
+  packets into the call's jitter buffer (`jitter.rs`), keyed by extended sequence number.
+  The buffer is attached to the output as its `FrameProvider` and is pulled by songbird's
+  mixer thread: it starts playing at its target depth (3 frames, growing by one up to 8
+  after a late packet or a playout underrun, relaxing after 750 stable frames), decodes the
+  next packet, slices 10 or 40 ms packets into 20 ms frames, decodes a missing packet from
+  the next one's FEC or conceals it (at most 5 frames in a row), and plays silence without
+  concealment for a pause with contiguous sequence numbers. Late packets are dropped.
+  *Counters* (`CallAudioCounters`): frames sent, input drops, input underruns, packets
+  received, late, concealed, concealed by FEC, playout underruns, output drops, decode
+  errors. They are part of `CallStatus.audio` while a call runs (the last call's after it)
+  and are logged in one `[rtc] call audio for guild …` line when the call closes. The
   `oai-events` channel carries the realtime server's JSON events (`session.started`,
   `input_transcript.added`, `turn.created`, `output_transcript.added`, with millisecond
   timing); they are logged and available for speech timing. The call exists only while a
@@ -392,10 +419,17 @@ assistant is given, so the app never panics on an unknown engine setting.
   (not on Discord connect) so the Status tab shows the account before the first `/join`;
   `attach` while it is still starting fails with "Codex is starting" and the gate logs it.
   `stop` kills the child at app exit after stopping every call.
-- Live check: `VOICEBRO_CODEX_CALL_WAV=<q1.wav> [VOICEBRO_CODEX_CALL_WAV2=<q2.wav>
-  VOICEBRO_CODEX_EXPECT2="a|b"] cargo test -p voicebro-core live_call_when_enabled --
-  --nocapture` runs a real call through the engine without Discord (canary, audio back,
-  continuity). `VOICEBRO_CODEX_SMOKE=1` runs the handshake only.
+- Live check: `VOICEBRO_CODEX_CALL_WAV=<q1.wav> [VOICEBRO_CODEX_EXPECT1="a|b"
+  VOICEBRO_CODEX_CALL_WAV2=<q2.wav> VOICEBRO_CODEX_EXPECT2="a|b"
+  VOICEBRO_CODEX_CALL_WAV3=<q3.wav>] cargo test -p voicebro-core live_call_when_enabled --
+  --nocapture` runs a real call through the engine without Discord: the question frames
+  are fed on a jittery tick (20 ms ± 7 ms), the output is read every 20 ms like songbird
+  does, and the test checks the canary, audio back, zero input drops, continuity and prints
+  the call's counters and the chat log (a delegated question shows the agent's web search).
+  `VOICEBRO_CODEX_SMOKE=1` runs the handshake only. `VOICEBRO_RTC_LOOPBACK=1 cargo test -p
+  voicebro-core loopback_call_loses_nothing` sends a 10 s tone between two peers in one
+  process through the same send path and jitter buffer and checks zero drops, zero late,
+  zero concealed frames and the correlation both ways.
 
 The thread's `model` and reasoning effort affect only work the voice model delegates to
 the Codex agent; the voice itself is the realtime model. The UI says so next to the setting.
@@ -412,7 +446,7 @@ pub struct Settings {
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub wake: WakeSettings,                // engine id, model id (catalog), activation_phrases, deactivation_phrases
     pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off
-    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice, instructions (no default)
+    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default)
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
     pub extra: Map<String, Value>,         // flattened: unknown fields from a newer version, kept as they are
 }
@@ -501,16 +535,19 @@ Discord UDP ─► songbird (DAVE, Opus decode) ─► VoiceTick: per-SSRC 48 k 
    ─► mix (i32 sum, clamp) ─► RelayGate.process_tick(mixed, per_speaker)
         ├─► per speaker ─► WakeFeed (bounded channel) ─► wake worker thread
         │                     ─► 16 k mono ─► recognizer ─► PhraseSpotter ─► gate.on_phrase
-        └─► if session active and not muted: Frame ─► AudioPorts.input ─► assistant
-                                                     (Codex: downmix, Opus, RTP)
+        └─► if session active and not muted: Frame ─► AudioPorts.input (FIFO, 5 frames)
+               ─► assistant (Codex: send thread, 20 ms clock, 2-frame prefill,
+                  oldest frame or silence ─► downmix ─► Opus ─► RTP)
 ```
 
 ### Audio out
 
 ```text
-assistant (Codex: remote track ─► Opus decode 48 k) ─► OutputHandle.push(Frame)
-   ─► OutputQueue (jitter 3..8 frames, flush epoch, mute, earcons)
-   ─► PcmSource::read ◄─ songbird mixer thread ─► Opus, DAVE ─► Discord
+Codex: remote track ─► RTP packets ─► JitterBuffer (by sequence number, target 3..8)
+   ◄─ pulled as FrameProvider: decode, FEC, concealment, 20 ms frames
+stub assistant, tests ─► OutputHandle.push(Frame) ─► OutputQueue (jitter 3..8 frames)
+   both ─► PcmSource::read (flush epoch, mute, earcons) ◄─ songbird mixer thread
+   ─► Opus, DAVE ─► Discord
 ```
 
 ### Control
@@ -541,8 +578,10 @@ Values that worked in the first version. Change them only with a measurement or 
 |---|---|
 | Discord frame | 48 kHz, 2 ch, 20 ms, 1920 `i16` |
 | Wake input | 16 kHz mono, 320 samples per 20 ms |
-| Queue toward assistant | 4 frames (~80 ms), drop oldest |
-| Queue toward Discord | 8 frames (~160 ms), drop oldest; jitter target 3..8 frames |
+| Queue toward assistant | 5 frames (~100 ms) FIFO, drop oldest; the Codex send thread prefills 2 frames |
+| Opus toward the call | mono VOIP, complexity 10, 32 kbit/s, in-band FEC, 5 % expected loss |
+| Call receive jitter buffer | target 3..8 frames, relaxes after 750 stable frames; at most 25 packets; concealment at most 5 frames in a row |
+| Queue toward Discord | 8 frames (~160 ms), drop oldest; jitter target 3..8 frames (stub and tests; the call uses its own jitter buffer) |
 | Speech threshold | peak ≥ 700 |
 | Utterance gap | 700 ms |
 | Pre-roll / replay cap | 250 frames (~5 s) / 300 frames (~6 s) |

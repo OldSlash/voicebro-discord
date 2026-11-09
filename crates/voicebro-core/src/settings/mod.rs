@@ -159,7 +159,7 @@ impl Default for AssistantSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CodexSettings {
     /// Path to `codex.exe`; empty means auto-detect.
@@ -168,21 +168,11 @@ pub struct CodexSettings {
     pub model: String,
     /// Empty means the model default.
     pub reasoning_effort: String,
+    /// Empty (the default) means the server's default voice, which is what the first
+    /// version effectively used.
     pub voice: String,
     /// Instructions for the assistant. There is no default: the user writes their own.
     pub instructions: String,
-}
-
-impl Default for CodexSettings {
-    fn default() -> Self {
-        Self {
-            executable: String::new(),
-            model: String::new(),
-            reasoning_effort: String::new(),
-            voice: "juniper".to_owned(),
-            instructions: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -315,9 +305,7 @@ impl Settings {
                 ),
             ));
         }
-        if self.codex.voice.trim().is_empty() {
-            return Err(invalid("codex.voice", "a voice is needed"));
-        }
+        // An empty voice is valid: the call then uses the server's default voice.
         validate_shortcut("hotkey.mute", &self.hotkey.mute)?;
         Ok(())
     }
@@ -391,7 +379,17 @@ mod tests {
         let settings: Settings = serde_json::from_str(text).expect("parses");
         assert_eq!(settings.session.idle_timeout_seconds, 120);
         assert!(settings.session.earcons, "missing field takes the default");
-        assert_eq!(settings.codex.voice, "juniper");
+        assert_eq!(
+            settings.codex.voice, "",
+            "new files use the server's default voice"
+        );
+        let kept: Settings =
+            serde_json::from_str(r#"{ "codex": { "voice": "juniper" } }"#).expect("parses");
+        assert_eq!(kept.codex.voice, "juniper", "an existing voice is kept");
+        assert!(
+            Settings::default().validate().is_ok(),
+            "an empty voice is valid"
+        );
         let back = serde_json::to_value(&settings).expect("serializes");
         assert_eq!(back["future_field"]["a"], 1);
         assert_eq!(back["hotkey"]["mute"], DEFAULT_MUTE_HOTKEY);

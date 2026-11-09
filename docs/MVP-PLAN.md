@@ -114,6 +114,11 @@ tick. Both are about 1.2 % of the 20 ms budget; `3` is 6 % faster, so the profil
 `opt-level = 3`. The difference is small because Opus (C, built by `cmake` at its own
 optimization level) dominates the tick.
 
+Re-measured on 2026-11-09 for change `voice-path-quality` with the call's new encoder
+settings (complexity 10, 32 kbit/s, in-band FEC, 5 % expected loss) and one jitter-buffer
+decode per tick for the assistant's voice: 329.8 µs per tick, about 1.6 % of the 20 ms
+budget.
+
 ### External assets (downloaded at first use, pinned)
 
 | Asset | Source | SHA-256 |
@@ -211,7 +216,9 @@ tested.
   `experimentalApi`, `account/read` → signed in, type `chatgpt`; `model/list` → 8 models
   (`gpt-6.1-sol` default, efforts low…ultra); `listVoices` v1 = juniper, maple, spruce,
   ember, vale, breeze, arbor, sol, cove, `defaultV1` = cove, 25 v3 voices;
-  `thread/start` with `approvalPolicy: never`, `sandbox: read-only` accepted. The native
+  `thread/start` with `approvalPolicy: never`, `sandbox: read-only` accepted (the app sends
+  `untrusted` since change `voice-path-quality`: with `never` the agent never searched the
+  web). The native
   `codex.exe` is found in the npm vendor folder, so `kill_on_drop` kills the real process.
 - **Opus round trip** (2026-11-09) **PASS.** `opus2` 0.4 (libopus built by CMake from the VS
   Build Tools copy): 100 mono 20 ms frames at 48 kHz, VOIP mode, complexity 5, in-band FEC
@@ -253,6 +260,18 @@ tested.
   forty-two": continuity across calls confirmed with the same thread, the same voice
   session id and the transcript history as initial items. The chat log recorded the call
   context, both transcripts and the call events; the daily file was written.
+- **Call audio path after `voice-path-quality`** (2026-11-09, late evening) **PASS.**
+  In-process loopback with two real peers (`VOICEBRO_RTC_LOOPBACK=1`), a 10 s tone each way,
+  the gate's frames sent with -7..7 ms of jitter: 0 input drops, no input underrun while the
+  producer ran, 0 late, 0 concealed, correlation 1.000 in both directions. Live call through
+  the engine with the same jitter on the question: the user transcript was exactly the
+  spoken sentence ("remember the number forty-two"), 0 input drops, 0 late, 0 concealed,
+  playout underruns 4 with the jitter target growing only on late packets and 2 once it also
+  grows on underruns; continuity across two calls held; a question about current facts made
+  the agent run a web search (`Web search: Sons of the Forest rope gun location …`) with
+  `approvalPolicy: untrusted`, answered correctly, 11.1 s for the delegated task. The voice
+  was the server default (no `voice` field). Not tested: a real Discord channel, packet loss
+  on a real network.
 - **Credential Manager** (2026-11-09) **PASS.** `CredWriteW`/`CredReadW`/`CredDeleteW` through
   `windows-sys` 0.61: generic credential `VoiceBro/test`, `CRED_PERSIST_LOCAL_MACHINE`,
   UTF-16 blob of 178 bytes round-trips and is deleted. `ERROR_NOT_FOUND` (1168) maps to
