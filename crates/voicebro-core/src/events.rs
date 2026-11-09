@@ -32,6 +32,10 @@ pub enum AppEvent {
     Gate(Box<crate::gate::GateStatus>),
     /// The global hotkey was registered, re-registered or failed.
     Hotkey(Box<crate::status::HotkeyStatus>),
+    /// One new line of the assistant chat log.
+    Chat(Box<crate::assistant::chat_log::ChatEntry>),
+    /// The assistant's account, process or call state changed.
+    Assistant(Box<crate::assistant::AssistantStatus>),
     /// Progress of a first-use asset download, in steps of at least 20 %.
     Assets {
         label: String,

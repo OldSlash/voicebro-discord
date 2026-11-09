@@ -8,8 +8,11 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
+use voicebro_core::assistant::chat_log::ChatEntry;
+use voicebro_core::assistant::codex::CodexAssistant;
+use voicebro_core::assistant::{Assistant, Capabilities, StubAssistant};
 use voicebro_core::settings::store::SettingsStore;
-use voicebro_core::status::HotkeyStatus;
+use voicebro_core::status::{ConnectionErrors, HotkeyStatus};
 use voicebro_core::{paths, secrets, AppEvent, EventBus, Runtime, Settings, Status};
 
 const BUILD_STAMP: &str = env!("VOICEBRO_BUILD_STAMP");
@@ -35,8 +38,70 @@ const CHATTY_CRATES: &[&str] = &[
 
 struct AppState {
     runtime: Arc<Runtime>,
+    /// The Codex engine, for its own commands (sign-in, check, models, chat log). `None`
+    /// when the settings name another engine and the stub runs instead.
+    codex: Option<CodexAssistant>,
     /// The shortcut currently registered with the system, if any.
     hotkey: Mutex<Option<Shortcut>>,
+}
+
+fn codex(state: &AppState) -> Result<CodexAssistant, String> {
+    state
+        .codex
+        .clone()
+        .ok_or_else(|| "the Codex assistant is not the configured engine".to_owned())
+}
+
+#[tauri::command]
+async fn codex_sign_in(state: State<'_, AppState>) -> Result<String, String> {
+    codex(&state)?.sign_in().await
+}
+
+#[tauri::command]
+async fn codex_check(state: State<'_, AppState>) -> Result<Value, String> {
+    let account = codex(&state)?.check().await?;
+    Ok(json!({
+        "signed_in": account.signed_in,
+        "kind": account.kind,
+        "email": account.email,
+        "plan": account.plan,
+    }))
+}
+
+#[tauri::command]
+async fn codex_models(state: State<'_, AppState>) -> Result<Vec<Value>, String> {
+    let models = codex(&state)?.models().await?;
+    Ok(models
+        .into_iter()
+        .map(|model| serde_json::to_value(model).unwrap_or(Value::Null))
+        .collect())
+}
+
+#[tauri::command]
+fn capabilities(state: State<'_, AppState>) -> Capabilities {
+    state.runtime.assistant().capabilities()
+}
+
+#[tauri::command]
+fn chat_log(state: State<'_, AppState>) -> Vec<ChatEntry> {
+    state
+        .codex
+        .as_ref()
+        .map(|codex| codex.chat_log().entries())
+        .unwrap_or_default()
+}
+
+/// Opens the log folder (app log and chat logs) in Explorer.
+#[tauri::command]
+fn open_log_folder(state: State<'_, AppState>) -> Result<String, String> {
+    let dir = paths::logs_dir(std::path::Path::new(&state.runtime.status().data_dir));
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
+    std::process::Command::new("explorer.exe")
+        .arg(&dir)
+        .spawn()
+        .map_err(|error| format!("could not open {}: {error}", dir.display()))?;
+    Ok(dir.display().to_string())
 }
 
 /// Registers the mute hotkey from the settings, unregistering the previous one first. An
@@ -170,13 +235,34 @@ fn log_plugin(data_dir: &std::path::Path) -> tauri::plugin::TauriPlugin<tauri::W
 fn main() {
     let data_dir = paths::data_dir();
     let handle = tauri::async_runtime::handle().inner().clone();
-    let runtime = Arc::new(Runtime::new(
+    let events = EventBus::default();
+    let errors = Arc::new(ConnectionErrors::new(events.clone()));
+    let store = SettingsStore::new(paths::settings_path(&data_dir));
+    // The engine is chosen from the settings file before the runtime loads it, so the
+    // runtime can own it as a trait object from the start.
+    let initial_settings = store.load().ok().flatten().unwrap_or_default();
+    let codex = (initial_settings.assistant.engine == "codex").then(|| {
+        CodexAssistant::new(
+            handle.clone(),
+            events.clone(),
+            Arc::clone(&errors),
+            &data_dir,
+            &initial_settings,
+        )
+    });
+    let assistant: Arc<dyn Assistant> = match codex.clone() {
+        Some(codex) => Arc::new(codex),
+        None => Arc::new(StubAssistant::default()),
+    };
+    let runtime = Arc::new(Runtime::with_assistant(
         BUILD_STAMP,
         data_dir.clone(),
-        SettingsStore::new(paths::settings_path(&data_dir)),
+        store,
         Arc::from(secrets::platform_store()),
-        EventBus::default(),
+        events,
         handle,
+        errors,
+        assistant,
     ));
 
     tauri::Builder::default()
@@ -196,6 +282,7 @@ fn main() {
         )
         .manage(AppState {
             runtime: Arc::clone(&runtime),
+            codex,
             hotkey: Mutex::new(None),
         })
         .setup(move |app| {
@@ -247,7 +334,13 @@ fn main() {
             set_muted,
             toggle_mute,
             discord_connect,
-            discord_disconnect
+            discord_disconnect,
+            codex_sign_in,
+            codex_check,
+            codex_models,
+            capabilities,
+            chat_log,
+            open_log_folder
         ])
         .build(tauri::generate_context!())
         .expect("error while building the VoiceBro application")

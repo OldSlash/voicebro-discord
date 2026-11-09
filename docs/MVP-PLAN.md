@@ -235,6 +235,17 @@ tested.
   call), which the assistant implementation can use for speech and transcript timing
   instead of guessing. Not tested: `prompt` alone, `realtimeStartInstructions`,
   continuity across two calls (that is the `codex-assistant` change).
+- **Codex engine live call** (2026-11-09, `codex-assistant` change, the core's gated test
+  `assistant::codex::tests::live_call_when_enabled`) **PASS.** Through the real engine
+  (`CodexAssistant` → `CodexSession` → `rtc.rs`), without Discord: ready 2.4 s after the
+  session was wanted; the question "remember the number forty-two" (Russian TTS, 48 kHz)
+  got "Banana, Alex, remembered the number forty-two" (the canary word first, the caller's
+  name from the call context used), 318 output frames (6.4 s) pushed to the output queue;
+  after `session_wanted(false)` and a new session (ready in 1.7 s) the question "which
+  number did I ask you to remember" got "Banana, you asked me to remember the number
+  forty-two": continuity across calls confirmed with the same thread, the same voice
+  session id and the transcript history as initial items. The chat log recorded the call
+  context, both transcripts and the call events; the daily file was written.
 - **Credential Manager** (2026-11-09) **PASS.** `CredWriteW`/`CredReadW`/`CredDeleteW` through
   `windows-sys` 0.61: generic credential `VoiceBro/test`, `CRED_PERSIST_LOCAL_MACHINE`,
   UTF-16 blob of 178 bytes round-trips and is deleted. `ERROR_NOT_FOUND` (1168) maps to

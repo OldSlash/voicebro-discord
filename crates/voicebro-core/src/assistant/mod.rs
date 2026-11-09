@@ -1,9 +1,13 @@
 //! The assistant behind a trait: the gate talks to an [`AssistantSession`] per guild and
-//! never knows which engine answers. Codex is one implementation; [`StubAssistant`] is the
-//! one tests and an unknown engine setting fall back to, so the app never panics.
-//! See `docs/ARCHITECTURE.md` 4.5.
+//! never knows which engine answers. Codex is one implementation ([`codex`]);
+//! [`StubAssistant`] is the one tests and an unknown engine setting fall back to, so the app
+//! never panics. See `docs/ARCHITECTURE.md` 4.5.
+
+pub mod chat_log;
+pub mod codex;
 
 use crate::audio::AudioPorts;
+use crate::settings::Settings;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +25,8 @@ pub enum AssistantError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModelInfo {
     pub id: String,
+    pub display_name: String,
+    pub description: String,
     pub reasoning_efforts: Vec<String>,
     pub default_reasoning_effort: Option<String>,
     pub is_default: bool,
@@ -31,7 +37,21 @@ pub struct ModelInfo {
 pub struct Capabilities {
     pub models: Vec<ModelInfo>,
     pub voices: Vec<String>,
+    pub default_voice: Option<String>,
     pub signed_in: bool,
+}
+
+/// One guild's call, as the status shows it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct CallStatus {
+    pub guild_id: String,
+    /// idle, starting, live or stopping.
+    pub state: String,
+    pub connected: bool,
+    pub thread_id: Option<String>,
+    pub last_user_text: Option<String>,
+    pub last_assistant_text: Option<String>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -40,8 +60,19 @@ pub struct AssistantStatus {
     /// Free text for the UI: "signed in as …", "not signed in", "codex not found", …
     pub summary: String,
     pub signed_in: bool,
-    /// Guilds with a live call, by id.
-    pub calls: Vec<String>,
+    pub account_type: Option<String>,
+    pub email: Option<String>,
+    pub plan: Option<String>,
+    pub executable: Option<String>,
+    pub version: Option<String>,
+    /// The engine's process is running.
+    pub running: bool,
+    pub error: Option<String>,
+    /// The model and reasoning effort the current thread was opened with; empty means
+    /// the account default.
+    pub model_in_use: Option<String>,
+    pub reasoning_effort_in_use: Option<String>,
+    pub calls: Vec<CallStatus>,
 }
 
 /// An assistant engine. One per app.
@@ -56,6 +87,12 @@ pub trait Assistant: Send + Sync {
     fn detach(&self, guild: u64);
     fn capabilities(&self) -> Capabilities;
     fn status(&self) -> AssistantStatus;
+    /// The settings changed; the engine applies what concerns it at the next call.
+    fn configure(&self, _settings: &Settings) {}
+    /// Starts the engine's process, if it has one. Called at runtime start.
+    fn start(&self) {}
+    /// Stops every call and the engine's process. Called at app exit.
+    fn stop(&self) {}
 }
 
 /// What the gate talks to. One per guild.
@@ -139,15 +176,20 @@ impl Assistant for StubAssistant {
         AssistantStatus {
             engine: self.id().to_owned(),
             summary: "stub assistant: hears the channel and answers nothing".to_owned(),
-            signed_in: false,
             calls: self
                 .sessions
                 .lock()
                 .expect("stub sessions lock")
                 .iter()
                 .filter(|(_, session)| session.wanted.load(Ordering::Acquire))
-                .map(|(id, _)| id.to_string())
+                .map(|(id, _)| CallStatus {
+                    guild_id: id.to_string(),
+                    state: "live".to_owned(),
+                    connected: true,
+                    ..CallStatus::default()
+                })
                 .collect(),
+            ..AssistantStatus::default()
         }
     }
 }
@@ -285,7 +327,7 @@ mod tests {
                 vec!["Alex".to_owned(), "Bob".to_owned()]
             )]
         );
-        assert_eq!(assistant.status().calls, vec!["7".to_owned()]);
+        assert_eq!(assistant.status().calls[0].guild_id, "7");
         assistant.detach(7);
         assert!(assistant.session(7).is_none());
     }
