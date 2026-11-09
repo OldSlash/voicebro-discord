@@ -13,7 +13,6 @@ use serde_json::{Map, Value};
 /// The schema version this build writes.
 pub const CURRENT_VERSION: u32 = 1;
 
-pub const DEFAULT_INSTRUCTIONS: &str = "Ты голосовой помощник в голосовом канале Discord, где играют в игры. Отвечай коротко и по делу, на языке собеседника. Не выполняй команды на компьютере и не трогай файлы.";
 pub const DEFAULT_MUTE_HOTKEY: &str = "Ctrl+Alt+M";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -158,6 +157,7 @@ pub struct CodexSettings {
     /// Empty means the model default.
     pub reasoning_effort: String,
     pub voice: String,
+    /// Instructions for the assistant. There is no default: the user writes their own.
     pub instructions: String,
 }
 
@@ -168,7 +168,7 @@ impl Default for CodexSettings {
             model: String::new(),
             reasoning_effort: String::new(),
             voice: "juniper".to_owned(),
-            instructions: DEFAULT_INSTRUCTIONS.to_owned(),
+            instructions: String::new(),
         }
     }
 }
@@ -212,7 +212,9 @@ pub fn normalize_phrases(phrases: &[String]) -> Vec<String> {
         .collect()
 }
 
-const MODIFIERS: &[&str] = &["ctrl", "control", "alt", "shift", "super", "win", "cmd", "meta"];
+const MODIFIERS: &[&str] = &[
+    "ctrl", "control", "alt", "shift", "super", "win", "cmd", "meta",
+];
 
 /// `Ctrl+Alt+M`: one or more modifiers plus exactly one key, or empty.
 fn validate_shortcut(field: &str, shortcut: &str) -> Result<(), ValidationError> {
@@ -256,12 +258,21 @@ impl Settings {
         let activation = normalize_phrases(&self.wake.activation_phrases);
         let deactivation = normalize_phrases(&self.wake.deactivation_phrases);
         if activation.is_empty() {
-            return Err(invalid("wake.activation_phrases", "at least one phrase is needed"));
+            return Err(invalid(
+                "wake.activation_phrases",
+                "at least one phrase is needed",
+            ));
         }
         if deactivation.is_empty() {
-            return Err(invalid("wake.deactivation_phrases", "at least one phrase is needed"));
+            return Err(invalid(
+                "wake.deactivation_phrases",
+                "at least one phrase is needed",
+            ));
         }
-        if let Some(shared) = activation.iter().find(|phrase| deactivation.contains(phrase)) {
+        if let Some(shared) = activation
+            .iter()
+            .find(|phrase| deactivation.contains(phrase))
+        {
             return Err(invalid(
                 "wake.deactivation_phrases",
                 format!("«{shared}» is in both the activation and the deactivation list"),
@@ -289,7 +300,10 @@ impl Settings {
         if self.assistant.engine != "codex" {
             return Err(invalid(
                 "assistant.engine",
-                format!("«{}» is not a known assistant engine", self.assistant.engine),
+                format!(
+                    "«{}» is not a known assistant engine",
+                    self.assistant.engine
+                ),
             ));
         }
         if self.codex.voice.trim().is_empty() {
@@ -377,10 +391,11 @@ mod tests {
     #[test]
     fn overlapping_phrases_are_rejected_with_both_lists_named() {
         let mut settings = Settings::default();
-        settings.wake.deactivation_phrases = vec![" Луна ".to_owned()];
+        let shared = settings.wake.activation_phrases[0].clone();
+        settings.wake.deactivation_phrases = vec![format!(" {} ", shared.to_uppercase())];
         let error = settings.validate().unwrap_err();
         assert_eq!(error.field, "wake.deactivation_phrases");
-        assert!(error.message.contains("луна"), "{}", error.message);
+        assert!(error.message.contains(&shared), "{}", error.message);
         assert!(error.message.contains("activation"), "{}", error.message);
     }
 
@@ -414,7 +429,11 @@ mod tests {
         }
         for bad in ["M", "Ctrl+", "Ctrl+Alt", "Ctrl+A+B"] {
             settings.hotkey.mute = bad.to_owned();
-            assert_eq!(settings.validate().unwrap_err().field, "hotkey.mute", "{bad}");
+            assert_eq!(
+                settings.validate().unwrap_err().field,
+                "hotkey.mute",
+                "{bad}"
+            );
         }
     }
 
@@ -427,8 +446,11 @@ mod tests {
         assert_eq!(patched.session.idle_timeout_seconds, 90);
         assert!(patched.session.earcons);
         assert_eq!(patched.codex.voice, "maple");
-        assert_eq!(patched.codex.instructions, DEFAULT_INSTRUCTIONS);
-        assert_eq!(settings.changed_sections(&patched), vec!["session", "codex"]);
+        assert_eq!(patched.codex.instructions, settings.codex.instructions);
+        assert_eq!(
+            settings.changed_sections(&patched),
+            vec!["session", "codex"]
+        );
     }
 
     #[test]

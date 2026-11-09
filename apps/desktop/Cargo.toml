@@ -1,0 +1,24 @@
+[package]
+name = "voicebro-desktop"
+version = "0.1.0"
+description = "VoiceBro: a Discord voice bot with a wake word and the Codex assistant, as a Windows desktop app."
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "voicebro"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+voicebro-core.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.12", features = [] }
+tauri-plugin-log = "2.10"
+tokio.workspace = true

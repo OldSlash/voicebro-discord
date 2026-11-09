@@ -163,16 +163,15 @@ fn load_model(library: &Path, model_dir: &Path) -> anyhow::Result<Vec<String>> {
         bail!("vosk_model_new returned null for {}", model_dir.display());
     }
     lines.push(format!("vosk_model_new ok in {:.1?}", started.elapsed()));
-    for word in [
-        "джи",
-        "пи",
-        "ти",
-        "луна",
-        "отбой",
-        "братан",
-        "джипити",
-        "гпт",
-    ] {
+    // Every word of the catalog's default phrases must be in the model's vocabulary.
+    let entry = voicebro_core::wake::catalog::default_entry();
+    let words: Vec<&str> = entry
+        .default_activation_phrases
+        .iter()
+        .chain(entry.default_deactivation_phrases)
+        .flat_map(|phrase| phrase.split_whitespace())
+        .collect();
+    for word in words {
         let c_word = CString::new(word)?;
         // SAFETY: valid model pointer and C string.
         let index = unsafe { find_word(model, c_word.as_ptr()) };

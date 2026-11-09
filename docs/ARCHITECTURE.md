@@ -100,17 +100,22 @@ subscribes and forwards them to the webview as one Tauri event; the UI also pull
 
 ```rust
 pub enum AppEvent {
-    Log(String),                       // human-readable line for the UI log pane
+    Log { line: String },              // human-readable line for the UI log pane
+    MuteChanged { muted: bool },       // the app-wide mute, from any of its three sources
+    SettingsChanged,
+    SecretChanged { name: String, is_set: bool },   // never the value
+    ConnectionError { source: String, message: Option<String> }, // None = recovered
+    // Added by later changes:
     Discord(DiscordStatus),
     Gate { guild: GuildId, status: GateStatus },
     Wake(WakeStatus),
     Assistant(AssistantStatus),
     Chat(ChatEntry),                   // one assistant chat-log entry
     Assets(AssetProgress),             // downloads: label, percent, error
-    MuteChanged(bool),                 // the app-wide mute, from any of its three sources
-    SettingsChanged,
 }
 ```
+
+Serialized with a `kind` tag in `snake_case`, so the UI switches on one string.
 
 ## 4. Components
 
@@ -331,10 +336,15 @@ pub struct Settings {
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub wake: WakeSettings,                // engine id, model id (catalog), activation_phrases, deactivation_phrases
     pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off
-    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice, instructions
+    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice, instructions (no default)
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
+    pub extra: Map<String, Value>,         // flattened: unknown fields from a newer version, kept as they are
 }
 ```
+
+Every string the app shows or sends (UI, log, notes to the model) is English. Wake phrases
+are the one exception: they are in the language of the recognizer's model and come from
+the model catalog.
 
 - Stored as JSON at `%LOCALAPPDATA%\VoiceBro\settings.json`. Written to a temp file and
   renamed over the old one. Unknown fields are kept; missing fields take defaults.

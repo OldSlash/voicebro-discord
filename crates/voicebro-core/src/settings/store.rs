@@ -182,6 +182,9 @@ mod tests {
         let mut changed = Settings::default();
         changed.session.idle_timeout_seconds = 300;
         store.save(&changed).unwrap();
-        assert_eq!(store.load().unwrap().unwrap().session.idle_timeout_seconds, 300);
+        assert_eq!(
+            store.load().unwrap().unwrap().session.idle_timeout_seconds,
+            300
+        );
     }
 }

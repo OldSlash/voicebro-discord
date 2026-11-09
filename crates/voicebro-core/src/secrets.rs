@@ -57,7 +57,12 @@ pub struct MemoryStore {
 
 impl SecretStore for MemoryStore {
     fn get(&self, key: SecretKey) -> Result<Option<String>, SecretError> {
-        Ok(self.values.lock().expect("memory store lock").get(&key).cloned())
+        Ok(self
+            .values
+            .lock()
+            .expect("memory store lock")
+            .get(&key)
+            .cloned())
     }
 
     fn set(&self, key: SecretKey, value: &str) -> Result<(), SecretError> {
@@ -216,7 +221,10 @@ mod tests {
         let store = MemoryStore::default();
         assert_eq!(store.get(SecretKey::DiscordToken).unwrap(), None);
         store.set(SecretKey::DiscordToken, "abc").unwrap();
-        assert_eq!(store.get(SecretKey::DiscordToken).unwrap().as_deref(), Some("abc"));
+        assert_eq!(
+            store.get(SecretKey::DiscordToken).unwrap().as_deref(),
+            Some("abc")
+        );
         store.delete(SecretKey::DiscordToken).unwrap();
         assert_eq!(store.get(SecretKey::DiscordToken).unwrap(), None);
     }
@@ -231,7 +239,10 @@ mod tests {
         let store = windows::CredentialManagerStore;
         let value = format!("live-test-{}", std::process::id());
         store.set(SecretKey::DiscordToken, &value).unwrap();
-        assert_eq!(store.get(SecretKey::DiscordToken).unwrap().as_deref(), Some(value.as_str()));
+        assert_eq!(
+            store.get(SecretKey::DiscordToken).unwrap().as_deref(),
+            Some(value.as_str())
+        );
         store.delete(SecretKey::DiscordToken).unwrap();
         assert_eq!(store.get(SecretKey::DiscordToken).unwrap(), None);
     }

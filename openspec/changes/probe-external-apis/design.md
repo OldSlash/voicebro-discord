@@ -66,7 +66,7 @@ one too many.
 
 **D6. Codex probes use a disposable, read-only thread and the real account.** Same settings
 the product will use (`sandbox: read-only`, approvals declined, `ephemeral: true`). The
-canary instruction is «начинай каждый ответ со слова Банан» in the last developer item of
+canary instruction is "start every reply with the English word Banana" in the last developer item of
 `initialItems`, and the probe checks the transcript, not the audio.
 
 **D7. Credential Manager through `windows-sys` directly.** `CredWriteW`/`CredReadW`/

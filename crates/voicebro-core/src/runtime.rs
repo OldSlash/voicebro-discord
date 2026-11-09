@@ -68,8 +68,9 @@ impl Runtime {
             Some(settings) => {
                 if let Err(error) = settings.validate() {
                     // A document edited by hand can be invalid; keep running with it but say so.
-                    self.events
-                        .log(format!("settings file has a problem ({error}); fix it in Settings"));
+                    self.events.log(format!(
+                        "settings file has a problem ({error}); fix it in Settings"
+                    ));
                 }
                 settings
             }
@@ -131,7 +132,9 @@ impl Runtime {
     fn apply(&self, changed: &[&'static str]) {
         for section in changed {
             match *section {
-                "discord" => log::info!("settings: discord changed (connection policy applies at next start)"),
+                "discord" => log::info!(
+                    "settings: discord changed (connection policy applies at next start)"
+                ),
                 "session" | "wake" | "assistant" | "codex" | "hotkey" => {
                     log::info!("settings: {section} changed")
                 }
@@ -252,11 +255,16 @@ mod tests {
         let runtime = runtime(&dir);
         runtime.start().unwrap();
         assert!(dir.path().join("settings.json").exists());
-        runtime.set_secret("discord_token", "  super-secret-token ").unwrap();
+        runtime
+            .set_secret("discord_token", "  super-secret-token ")
+            .unwrap();
         let status = runtime.status();
         assert!(status.secrets["discord_token"].is_set);
         let json = serde_json::to_string(&status).unwrap();
-        assert!(!json.contains("super-secret-token"), "status must never carry the value");
+        assert!(
+            !json.contains("super-secret-token"),
+            "status must never carry the value"
+        );
         assert_eq!(
             runtime.secret(SecretKey::DiscordToken).unwrap().as_deref(),
             Some("super-secret-token"),
@@ -289,7 +297,11 @@ mod tests {
             .save_settings(&json!({ "session": { "idle_timeout_seconds": 1 } }))
             .unwrap_err();
         assert!(error.to_string().contains("session.idle_timeout_seconds"));
-        assert_eq!(runtime.settings().session.idle_timeout_seconds, 120, "rejected save changes nothing");
+        assert_eq!(
+            runtime.settings().session.idle_timeout_seconds,
+            120,
+            "rejected save changes nothing"
+        );
     }
 
     #[test]
@@ -300,9 +312,24 @@ mod tests {
         assert!(runtime.toggle_mute());
         assert!(!runtime.toggle_mute());
         runtime.set_muted(false);
-        assert_eq!(events.try_recv().ok().map(|e| matches!(e, AppEvent::MuteChanged { muted: true })), Some(true));
-        assert_eq!(events.try_recv().ok().map(|e| matches!(e, AppEvent::MuteChanged { muted: false })), Some(true));
-        assert!(events.try_recv().is_err(), "no event when the state did not change");
+        assert_eq!(
+            events
+                .try_recv()
+                .ok()
+                .map(|e| matches!(e, AppEvent::MuteChanged { muted: true })),
+            Some(true)
+        );
+        assert_eq!(
+            events
+                .try_recv()
+                .ok()
+                .map(|e| matches!(e, AppEvent::MuteChanged { muted: false })),
+            Some(true)
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "no event when the state did not change"
+        );
     }
 
     #[test]

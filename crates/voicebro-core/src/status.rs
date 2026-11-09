@@ -39,7 +39,14 @@ mod tests {
 
     #[test]
     fn log_used_names_all_three_parts() {
-        let line = log_used("voice", "cedar", "juniper", "not available with a ChatGPT sign-in");
-        assert!(line.contains("cedar") && line.contains("juniper") && line.contains("not available"));
+        let line = log_used(
+            "voice",
+            "cedar",
+            "juniper",
+            "not available with a ChatGPT sign-in",
+        );
+        assert!(
+            line.contains("cedar") && line.contains("juniper") && line.contains("not available")
+        );
     }
 }

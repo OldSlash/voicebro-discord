@@ -14,7 +14,7 @@ Sources: `REWRITE-SPEC.md`, `REWRITE-NOTES.md` and `STACK-DECISION.md` in
 `feature/codex-voice-assistant`), rebuilt on the new architecture, with the API-key path left
 out. A user installs the app, pastes a Discord bot token, signs in to Codex with a ChatGPT
 account, says `/join` in Discord, and talks to the assistant with a wake phrase. The session
-ends on «отбой» or after a configurable idle time. Mute works from the app, a hotkey and the
+ends on the deactivation phrase or after a configurable idle time. Mute works from the app, a hotkey and the
 Discord member panel.
 
 ### In scope
@@ -167,7 +167,7 @@ changes the plan, not the report.
 |---|---|---|---|---|
 | `codex-schema`, `codex-smoke` | Does Codex 0.167.0 still expose `thread/realtime/*` with `transport: webrtc`, `version: v3`? | `codex app-server generate-json-schema --experimental --out <dir>`; diff the realtime types against v1's assumptions (`initialItems`, `voiceSessionId`, `realtimeSessionId`, `thread/realtime/sdp`, the approval-policy values); then a live handshake | Fields present with the expected names | Adjust `rtc.rs` and `conversation.rs` to the schema before porting |
 | `rtc-loopback`, `rtc-call` | Can `webrtc` 0.21 complete the call? | Two peers in one process first; then a real call: `PeerConnectionBuilder`, Opus audio track, data channel `oai-events`, wait for ICE gathering, offer → `thread/realtime/start`, set answer, send a 48 kHz WAV as Opus, receive the remote track, decode, write a WAV | DTLS connected, remote audio decoded, answer audible in the WAV | Try `str0m` 0.25 with the same flow; if that fails too, the plan stops here and the decision goes back to the user. |
-| canary (inside `rtc-call`) | Does the canary instruction in `initialItems` still reach the model? | Last developer item «начинай каждый ответ со слова Банан» | The reply starts with «Банан» | Find the channel that works before building continuity on it |
+| canary (inside `rtc-call`) | Does the canary instruction in `initialItems` still reach the model? | Last developer item: "start every reply with the English word Banana" | The reply starts with the canary word | Find the channel that works before building continuity on it |
 | `opus-roundtrip` | Does `opus2` 0.4 expose an encoder and decoder usable for 48 kHz 20 ms frames? | Encode/decode round trip | Decoded signal within tolerance | Use `audiopus` only if songbird's Opus crate cannot encode; note the second libopus build |
 | `credential` | Credential Manager round trip | `CredWriteW`/`CredReadW`/`CredDeleteW` through `windows-sys` for a `VoiceBro/test` generic credential | Value round-trips; entry visible in Control Panel; deleted cleanly; survives a reboot | Fall back to DPAPI (`CryptProtectData`) blobs in the data directory |
 | `vosk-assets` | Vosk assets still match the pins | Download both, hash, load `libvosk.dll` with `libloading` 0.9 | Hashes match, `vosk_model_new` succeeds | Update the pins; if the model URL moved, the mirror decision goes to the user |
@@ -225,10 +225,11 @@ tested.
   samples go through `TrackLocalStaticSample::sample_writer`; the data channel is created
   before the offer. `str0m` was not tried. Not tested: TCP/TURN fallback, reconnection, more
   than one call per process, a stereo send track.
-- **Canary** (2026-11-09) **PASS.** The last `initialItems` entry (role `developer`,
-  «…Начинай каждый ответ со слова Банан») is followed: transcript `assistant: Банан,
-  привет!`. Also observed: the model answered «Привет» before the question had finished
-  (the barge-in from v1, section 7 of REWRITE-SPEC, is reproduced); the `oai-events`
+- **Canary** (2026-11-09) **PASS.** The last `initialItems` entry (role `developer`, the
+  instruction to start every reply with the canary word) is followed: the assistant
+  transcript starts with the canary word. Also observed: the model answered the greeting
+  before the question had finished (the barge-in from v1, section 7 of REWRITE-SPEC, is
+  reproduced); the `oai-events`
   channel delivers JSON events with millisecond timing, among them `session.started`,
   `input_transcript.added`, `turn.created`, `output_transcript.added` (33 events in one
   call), which the assistant implementation can use for speech and transcript timing
@@ -241,9 +242,9 @@ tested.
   `probe credential --read-only`) and the Control Panel view; both are the user's step.
 - **Vosk assets** (2026-11-09) **PASS.** Both pins still hold (hashes above). Downloaded with
   the system `curl.exe`, extracted with `tar.exe`, `libvosk.dll` loads with
-  `LOAD_WITH_ALTERED_SEARCH_PATH` in 138 ms, `vosk_model_new` in 367 ms. Vocabulary: «джи»,
-  «пи», «ти», «луна», «отбой», «братан» known; «джипити», «гпт» unknown, as in v1. Not
-  tested: recognition itself (that is the `wake-word-engine` corpus).
+  `LOAD_WITH_ALTERED_SEARCH_PATH` in 138 ms, `vosk_model_new` in 367 ms. Vocabulary: every
+  word of the catalog's default phrases is known to the model; transliterations of "GPT"
+  are not, as in v1. Not tested: recognition itself (that is the `wake-word-engine` corpus).
 - **Discord lifecycle and receive timing** — code complete (`probe discord-lifecycle`,
   `probe receive-timing`), **not run yet**: they need the Discord bot token, a test guild and
   a voice channel with two people, which only the user can provide. Commands are in
@@ -344,8 +345,8 @@ corpus runs again.
 1. `wake/mod.rs`: traits `WakeEngine`, `LoadedModel`, `SpeechRecognizer`, `Recognition`,
    `Word`, `PhraseEvent`, `WakeStatus`, `WakeError`.
 2. `wake/catalog.rs`: `ModelEntry` and the one entry (`vosk-model-small-ru-0.22`, Russian,
-   Apache-2.0, default activation phrases «джи пи ти, джи пити, джи пети, луна», default
-   deactivation «отбой»), plus the library asset for the `vosk` engine.
+   Apache-2.0, default phrases in the model's language), plus the library asset for the
+   `vosk` engine.
 3. `wake/assets.rs`: download to `<name>.part`, hash, extract with `tar.exe`
    (`CREATE_NO_WINDOW`), marker file, cleanup of `.part` at start, progress events every 20 %.
 4. `wake/vosk/ffi.rs`, `wake/vosk/mod.rs`: v1 `VoskApi`, `Model`, `Recognizer` wrappers
@@ -384,7 +385,8 @@ assistant; the stub proves the replay timing.
 ### Codex assistant
 
 Deliverable: a wake phrase opens a real call, the question after the phrase is answered in
-the channel, «отбой» cuts the answer at once, the next activation continues the conversation.
+the channel, the deactivation phrase cuts the answer at once, the next activation continues
+the conversation.
 
 1. `assistant/codex/app_server.rs`: port `AppServer` (`find_codex`, spawn with
    `--disable shell_tool`, `kill_on_drop`, line-delimited JSON-RPC, 30 s request timeout,
@@ -419,7 +421,7 @@ Tests: JSON-RPC framing and auto-decline, `parse_models`, `initialItems` orderin
 `delegated_task_text` unwrapping; the smoke test gated by `VOICEBRO_CODEX_SMOKE=1`
 (handshake, `account/read`, read-only thread); the probe binary runs
 `q1.wav;q2.wav` through two calls with a restart in between and checks that q2 can refer to
-q1 (the «запомни 42» test).
+q1 (the remember-a-number test).
 
 ### UI, hotkey and chat tab
 
@@ -491,9 +493,8 @@ pub enum SecretKey { DiscordToken }   // target name "VoiceBro/discord_token"
   `CRED_PERSIST_SESSION` is lost at logoff and `CRED_PERSIST_ENTERPRISE` roams with a domain
   profile). The blob is UTF-16 as the Windows tools expect; the limit is 2560 bytes, far above
   a Discord token.
-- Default instructions: «Ты голосовой помощник в голосовом канале Discord, где играют в игры.
-  Отвечай коротко и по делу, на языке собеседника. Не выполняй команды на компьютере и не
-  трогай файлы.»
+- No default instructions: `codex.instructions` starts empty and the user writes their own.
+  Every string the app sends to the model or shows in the UI is English.
 - `validate`: phrases trimmed, lower-cased, non-empty, no overlap between the two lists;
   timeout 0 or 5..=3600; `wake.model` in the catalog and its engine equals `wake.engine`;
   `earcon_volume` 0..=1; `hotkey.mute` empty or parseable by the shortcut plugin.
@@ -538,7 +539,8 @@ together with `Songbird::remove`.
 ### 5.4 Member panel
 
 - Posted by `/join` in the channel of the command; the message id is kept per guild.
-- Embed fields: engine (`Codex`), state (`ждёт фразу` / `слушает` / `выключен`), channel,
+- Embed fields: engine (`Codex`), state (`waiting for the wake word` / `listening` /
+  `muted`), channel,
   participants count.
 - One button row: `Mute GPT` (style changes with the state), custom id
   `voicebro:mute:<guild_id>`. The interaction is acknowledged with a deferred update, then
@@ -590,10 +592,10 @@ that only applies when exactly one person speaks; the MVP always decodes, mixes 
   "ephemeral": true, "developerInstructions": "<instructions>",
   "model": "<optional>", "config": { "model_reasoning_effort": "<optional>" } }
 // initialItems order (v3): [ developer: HISTORY_HINT ] + history[..cap] + [ developer: instructions + call context ]
-// HISTORY_HINT: "Ниже — начало этого разговора до паузы. Продолжай его как один разговор и не здоровайся заново."
-// call context text: "В канале: A, B. К тебе только что обратился X" (omitted in always-on mode without a caller)
+// HISTORY_HINT: "Below is the beginning of this conversation before a pause. Continue it as one conversation and do not greet again."
+// call context text: "In the channel: A, B. X has just addressed you." (omitted in always-on mode without a caller)
 // `changes` mode mid-call note (role developer, only on speaker change):
-//   "Служебная заметка, не отвечай на неё и ничего не проверяй: сейчас говорит X"
+//   "Service note, do not answer it and do not check anything: X is speaking now."
 // auto-declined server requests: item/commandExecution/requestApproval, item/fileChange/requestApproval,
 //   item/permissions/requestApproval, item/tool/call, item/tool/requestUserInput, mcpServer/elicitation/request,
 //   execCommandApproval, applyPatchApproval; currentTime/read is answered with the clock
@@ -626,7 +628,8 @@ via `cargo:rustc-env`; the UI footer and the log's first line print it. The vers
 
 - **Unit tests** in every core module; `cargo test -p voicebro-core` needs no assets.
 - **Vosk corpus** (environment-gated): a positive WAV per activation phrase, negatives
-  («лунная», ordinary speech), sequences (`a.wav=Deactivate;b.wav=Activate`), steady noise
+  (a look-alike of an activation word, ordinary speech), sequences
+  (`a.wav=Deactivate;b.wav=Activate`), steady noise
   at 1500 and 3000 with no trailing silence, recordings from a real Discord channel once the
   real-channel test produces them. Kept outside the repository (size); the paths come from
   environment variables.
@@ -644,13 +647,15 @@ game has focus; the panel button, the app button and the hotkey toggle the same 
 the panel, the app and `/status` all show it.
 
 Wake word, on recordings with steady noise and no trailing silence: each activation phrase
-fires and «лунная» does not; «всё, давай, пока, отбой» deactivates within about 0.5 s; «всё,
-братан, отбой» deactivates; «Отбой, братан» does not restart; an activation phrase during a
+fires and a look-alike word does not; a sentence that ends with the deactivation phrase
+deactivates within about 0.5 s of the phrase; a wake word followed by the deactivation
+phrase in the same sentence deactivates; the deactivation phrase followed by a wake word does
+not restart; an activation phrase during a
 session does nothing; the idle timeout ends the session and a long answer is not cut by it;
 the question after the phrase reaches the assistant and the phrase does not.
 
-Codex: the canary instruction is followed; «Как меня зовут?» returns the caller's nickname;
-«Запомни 42», end the call, start a new one, «Какое число?» → 42; changing the model between
+Codex: the canary instruction is followed; "What is my name?" returns the caller's nickname;
+"Remember 42", end the call, start a new one, "Which number?" → 42; changing the model between
 calls keeps the conversation.
 
 App: closing the window exits the app and `codex.exe`; `/leave` ends the output track and

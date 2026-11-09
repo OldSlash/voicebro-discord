@@ -42,7 +42,10 @@ mod tests {
         assert_eq!(settings_path(dir), Path::new("X:/data/settings.json"));
         assert_eq!(logs_dir(dir), Path::new("X:/data/logs"));
         assert_eq!(assets_dir(dir), Path::new("X:/data/assets"));
-        assert_eq!(codex_workspace_dir(dir), Path::new("X:/data/codex-workspace"));
+        assert_eq!(
+            codex_workspace_dir(dir),
+            Path::new("X:/data/codex-workspace")
+        );
     }
 
     #[test]

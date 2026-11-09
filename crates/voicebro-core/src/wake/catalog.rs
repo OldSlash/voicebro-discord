@@ -10,6 +10,7 @@ pub struct ModelEntry {
     pub language: &'static str,
     pub display_name: &'static str,
     pub license: &'static str,
+    /// Phrases in the model's own language: a recognizer can only spot words it knows.
     pub default_activation_phrases: &'static [&'static str],
     pub default_deactivation_phrases: &'static [&'static str],
 }
