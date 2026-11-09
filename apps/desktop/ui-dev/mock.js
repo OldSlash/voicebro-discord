@@ -44,6 +44,31 @@
   const started = Date.now();
   const listeners = {};
   const calls = [];
+  // A connected call: 50 packets a second each way; `setLoss` conceals a share of them.
+  let lossRate = 0;
+  let concealed = 0;
+  let lastTick = Date.now();
+  const callAudio = { frames_sent: 0, input_drops: 0, input_underruns: 0, packets_received: 0, late: 0, concealed: 0, concealed_fec: 0, playout_underruns: 0, output_drops: 0, decode_errors: 0 };
+  function advanceCall() {
+    const now = Date.now();
+    const packets = ((now - lastTick) / 1000) * 50;
+    lastTick = now;
+    callAudio.frames_sent += Math.round(packets);
+    callAudio.packets_received += Math.round(packets);
+    concealed += packets * lossRate;
+    callAudio.concealed = Math.round(concealed);
+    callAudio.concealed_fec = Math.floor(callAudio.concealed / 2);
+  }
+  const turns = [];
+  function addTurn() {
+    const n = turns.length + 1;
+    turns.push({
+      at: new Date().toLocaleTimeString(), turn: n, kind: "response",
+      first_speech_to_answer_ms: 3000 + 100 * (n % 5), last_speech_to_answer_ms: 1400 + 50 * (n % 3),
+      answer_to_playback_ms: 60, first_speech_to_playback_ms: 3060 + 100 * (n % 5),
+    });
+    if (turns.length > 50) turns.shift();
+  }
 
   function merge(target, patch) {
     for (const [key, value] of Object.entries(patch)) {
@@ -123,8 +148,13 @@
       assistant: {
         engine: "codex", summary: "signed in (chatgpt)", signed_in: true, account_type: "chatgpt",
         email: null, plan: "plus", executable: "C:\\codex\\codex.exe", version: "codex-cli 0.167.0",
-        running: true, error: null, model_in_use: null, reasoning_effort_in_use: null, calls: [],
+        running: true, error: null, model_in_use: null, reasoning_effort_in_use: null,
+        calls: [{
+          guild_id: "1091401169441656933", state: "live", connected: true, audio: (advanceCall(), clone(callAudio)),
+          thread_id: "mock-thread", last_user_text: null, last_assistant_text: null, last_error: null,
+        }],
       },
+      latency: { "1091401169441656933": clone(turns) },
       settings: clone(settings),
     };
   }
@@ -199,10 +229,15 @@
   }, 1000);
 
   window.__TAURI__ = { core: { invoke }, event: { listen } };
+  setInterval(addTurn, 4000);
   window.__mock = {
     calls,
     settings: () => clone(settings),
     emit,
+    // The share of received packets the call conceals from now on (0.03 = 3 %).
+    setLoss(rate) {
+      lossRate = rate;
+    },
     changeCapabilities() {
       capabilities = clone(capabilities);
       capabilities.models.push({

@@ -840,10 +840,11 @@ mod tests {
     /// Feeds a 48 kHz mono WAV as 20 ms stereo frames with the jitter of songbird's tick
     /// (each frame due at 20 k ms plus -7..7 ms, intervals between 6 and 34 ms), then
     /// silence until the assistant has answered and been quiet for 1.5 s (or `limit`
-    /// passes).
+    /// passes). Frames with speech are reported to `latency` as the gate does.
     fn speak_and_wait(
         sender: &crate::audio::FrameSender,
         output: &crate::audio::OutputHandle,
+        latency: &crate::latency::SharedLatency,
         chat: &ChatLog,
         before: usize,
         samples: &[i16],
@@ -864,7 +865,11 @@ mod tests {
                 stereo.push(*sample);
             }
             stereo.resize(FRAME_SAMPLES, 0);
-            sender.send(Frame::from_slice(&stereo));
+            let frame = Frame::from_slice(&stereo);
+            if frame.peak() >= crate::gate::VOICE_PEAK_THRESHOLD {
+                latency.lock().unwrap().speech(Instant::now());
+            }
+            sender.send(frame);
         }
         let deadline = Instant::now() + limit;
         loop {
@@ -966,6 +971,10 @@ mod tests {
         eprintln!("status: {:?}", assistant.status());
         let (sender, input) = frame_channel(INPUT_CAPACITY);
         let (output, source) = output_pair();
+        // The turn latency as the app measures it: speech fed by `speak_and_wait`, the
+        // answer's playback reported by the output the reader pulls.
+        let latency = crate::latency::SharedLatency::default();
+        output.use_latency(Arc::clone(&latency), 1);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let voiced = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let reader = spawn_reader(source, Arc::clone(&stop), Arc::clone(&voiced));
@@ -997,6 +1006,7 @@ mod tests {
         let answer = speak_and_wait(
             &sender,
             &output,
+            &latency,
             chat,
             chat.entries().len(),
             &wav_48k_mono(&wav),
@@ -1052,6 +1062,7 @@ mod tests {
             let answer = speak_and_wait(
                 &sender,
                 &output,
+                &latency,
                 chat,
                 before,
                 &wav_48k_mono(&wav2),
@@ -1071,6 +1082,7 @@ mod tests {
             let answer = speak_and_wait(
                 &sender,
                 &output,
+                &latency,
                 chat,
                 before,
                 &wav_48k_mono(&wav3),
@@ -1134,6 +1146,15 @@ mod tests {
         assert_eq!(
             sent, recorded,
             "each recorded entry was sent once, with its kind"
+        );
+        let turns = latency.lock().unwrap().recent();
+        for turn in &turns {
+            let event = crate::latency::LatencyEvent::Report(turn.clone());
+            eprintln!("{}", crate::latency::log_line(1, &event));
+        }
+        assert!(
+            turns.iter().any(|turn| turn.kind == "response"),
+            "the first answer was measured as a response: {turns:?}"
         );
         assistant.stop_blocking();
     }

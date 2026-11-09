@@ -4,6 +4,7 @@
 use super::earcon::{self, Earcon};
 use super::frame::{Frame, FRAME_SAMPLES};
 use super::gain::GainStage;
+use crate::latency::{self, SharedLatency};
 use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
@@ -29,6 +30,11 @@ pub trait FrameProvider: Send + Sync {
     fn next_frame(&self, out: &mut Frame) -> bool;
     /// Drops everything held, as a flush does for the pushed frames.
     fn reset(&self);
+    /// When the audio of the last frame given came from the network, if known. The turn
+    /// latency measures from there.
+    fn arrival(&self) -> Option<Instant> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -56,6 +62,8 @@ struct Inner {
     provider: Option<Arc<dyn FrameProvider>>,
     /// The output gain, applied to the assistant's audio and not to earcons.
     gain: Arc<GainStage>,
+    /// The guild's turn latency tracker, told when the assistant's audio plays.
+    latency: Option<(SharedLatency, u64)>,
 }
 
 /// Creates the queue and both ends of it: the handle the assistant and the gate hold, and
@@ -76,6 +84,7 @@ pub fn output_pair() -> (OutputHandle, PcmSource) {
         counters: OutputCounters::default(),
         provider: None,
         gain: Arc::new(GainStage::new()),
+        latency: None,
     }));
     (
         OutputHandle {
@@ -86,8 +95,28 @@ pub fn output_pair() -> (OutputHandle, PcmSource) {
             pending: Vec::new(),
             scratch: vec![0f32; FRAME_SAMPLES],
             pulled: Frame::silence(),
+            latency_lines: Vec::new(),
         },
     )
+}
+
+/// Tells the guild's latency tracker that a frame of the assistant's audio with a signal is
+/// played now; `received` is when its audio came from the network, if known.
+fn note_answer(inner: &Inner, received: Option<Instant>, lines: &mut Vec<String>) {
+    let Some((tracker, guild)) = inner.latency.as_ref() else {
+        return;
+    };
+    let now = Instant::now();
+    let mut tracker = tracker.lock().expect("latency lock");
+    if let Some(event) = tracker.answer_audio(received.unwrap_or(now).min(now)) {
+        lines.push(latency::log_line(*guild, &event));
+    }
+    if tracker.awaiting_playback() {
+        let clock = chrono::Local::now().format("%H:%M:%S").to_string();
+        if let Some(event) = tracker.played(now, &clock) {
+            lines.push(latency::log_line(*guild, &event));
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -161,6 +190,11 @@ impl OutputHandle {
         self.inner.lock().expect("output lock").gain = stage;
     }
 
+    /// Reports the playback of the assistant's audio to `guild`'s latency tracker.
+    pub fn use_latency(&self, tracker: SharedLatency, guild: u64) {
+        self.inner.lock().expect("output lock").latency = Some((tracker, guild));
+    }
+
     pub fn is_muted(&self) -> bool {
         self.inner.lock().expect("output lock").muted
     }
@@ -200,6 +234,8 @@ pub struct PcmSource {
     pending: Vec<u8>,
     scratch: Vec<f32>,
     pulled: Frame,
+    /// Latency lines found while the output lock was held, logged after it is released.
+    latency_lines: Vec<String>,
 }
 
 impl PcmSource {
@@ -226,6 +262,7 @@ impl PcmSource {
                 inner.counters.played += 1;
                 if self.pulled.peak() >= SIGNAL_PEAK {
                     inner.last_signal = Some(Instant::now());
+                    note_answer(&inner, provider.arrival(), &mut self.latency_lines);
                 }
                 Self::mix_earcon(&mut inner, &mut self.scratch);
                 return true;
@@ -245,6 +282,9 @@ impl PcmSource {
             if let Some((_, frame)) = inner.frames.pop_front() {
                 inner.gain.scale_to_f32(frame.as_slice(), &mut self.scratch);
                 inner.counters.played += 1;
+                if frame.peak() >= SIGNAL_PEAK {
+                    note_answer(&inner, None, &mut self.latency_lines);
+                }
                 inner.stable_frames += 1;
                 if inner.stable_frames >= STABLE_FRAMES_BEFORE_RELAX {
                     inner.stable_frames = 0;
@@ -297,7 +337,11 @@ impl PcmSource {
 impl Read for PcmSource {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.pending.is_empty() {
-            if !self.fill_packet() {
+            let filled = self.fill_packet();
+            for line in self.latency_lines.drain(..) {
+                log::info!("{line}");
+            }
+            if !filled {
                 return Ok(0);
             }
             self.pending.reserve(BYTES_PER_PACKET);

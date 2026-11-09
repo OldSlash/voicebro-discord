@@ -7,6 +7,7 @@ use crate::audio::{Frame, FrameProvider, FRAME_SAMPLES};
 use bytes::Bytes;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
+use std::time::Instant;
 
 /// Mono samples per 20 ms at 48 kHz.
 const MONO_FRAME: usize = FRAME_SAMPLES / 2;
@@ -39,6 +40,8 @@ pub struct JitterCounters {
 struct Held {
     timestamp: u32,
     payload: Bytes,
+    /// When the packet came from the network, for the turn latency.
+    arrived: Instant,
 }
 
 struct State {
@@ -59,6 +62,8 @@ struct State {
     dry_at: Option<u32>,
     scratch: Vec<i16>,
     counters: JitterCounters,
+    /// Arrival of the packet the samples now playing were decoded from.
+    decoded_arrival: Option<Instant>,
 }
 
 pub struct JitterBuffer {
@@ -89,6 +94,7 @@ impl JitterBuffer {
                 dry_at: None,
                 scratch: vec![0; MAX_PACKET_SAMPLES],
                 counters: JitterCounters::default(),
+                decoded_arrival: None,
             }),
         }
     }
@@ -112,7 +118,14 @@ impl JitterBuffer {
             return;
         }
         state.highest = Some(state.highest.map_or(seq, |high| high.max(seq)));
-        state.packets.insert(seq, Held { timestamp, payload });
+        state.packets.insert(
+            seq,
+            Held {
+                timestamp,
+                payload,
+                arrived: Instant::now(),
+            },
+        );
         while state.packets.len() > MAX_PACKETS {
             let Some((oldest, _)) = state.packets.pop_first() else {
                 break;
@@ -187,6 +200,7 @@ impl State {
         }
         let seq = self.next_seq.expect("next sequence while playing");
         if let Some(held) = self.packets.remove(&seq) {
+            self.decoded_arrival = Some(held.arrived);
             let payload = held.payload;
             self.decode_into_pending(&payload, MAX_PACKET_SAMPLES, false);
             self.expected_ts = Some(held.timestamp.wrapping_add(self.last_duration as u32));
@@ -266,7 +280,12 @@ impl FrameProvider for JitterBuffer {
         state.dry_at = None;
         state.target = TARGET_MIN;
         state.stable = 0;
+        state.decoded_arrival = None;
         state.decoder = opus2::Decoder::new(48_000, opus2::Channels::Mono).ok();
+    }
+
+    fn arrival(&self) -> Option<Instant> {
+        self.lock().decoded_arrival
     }
 }
 

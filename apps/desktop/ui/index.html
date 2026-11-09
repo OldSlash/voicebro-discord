@@ -96,28 +96,30 @@
         <section class="tab-panel" data-panel="performance" role="tabpanel">
           <div class="panel-toolbar">
             <label>Window
-              <select id="performance-window" disabled>
+              <select id="performance-window">
                 <option value="30">30 seconds</option>
                 <option value="60" selected>60 seconds</option>
                 <option value="300">5 minutes</option>
               </select>
             </label>
-            <button type="button" class="button" id="performance-refresh" disabled>Refresh</button>
-            <span class="health-dot muted" id="performance-health">●</span>
-            <strong id="performance-quality">Quality: —</strong>
+            <button type="button" class="button" id="performance-refresh">Refresh</button>
+            <span class="health-dot idle" id="performance-health">●</span>
+            <strong id="performance-quality">Quality: idle</strong>
           </div>
           <div class="chart-grid">
             <article class="card chart-card">
-              <header class="card-title-row"><h2>Voice latency</h2><span class="muted">live</span></header>
+              <header class="card-title-row"><h2>Audio timing</h2><span class="chart-legend"><i class="series-a"></i>first speech → playback <i class="series-b"></i>last speech → answer</span></header>
               <canvas id="latency-chart" width="560" height="190"></canvas>
+              <small class="field-help" id="latency-chart-scale"></small>
             </article>
             <article class="card chart-card">
-              <header class="card-title-row"><h2>Call audio</h2><span class="muted">live</span></header>
-              <canvas id="audio-chart" width="560" height="190"></canvas>
+              <header class="card-title-row"><h2>Media packets</h2><span class="chart-legend"><i class="series-a"></i>sent / s <i class="series-b"></i>received / s</span></header>
+              <canvas id="packets-chart" width="560" height="190"></canvas>
+              <small class="field-help" id="packets-chart-scale"></small>
             </article>
           </div>
           <div class="stat-grid" id="performance-stats"></div>
-          <p class="muted performance-note">The measurements arrive with the performance statistics build.</p>
+          <p class="muted performance-note">Counters are totals since the call started (Discord ones since the app started); the quality and the charts use the chosen window. Each answer's timing is also written to the log as a "[latency:…] turn …" line.</p>
         </section>
 
         <section class="tab-panel" data-panel="system" role="tabpanel">

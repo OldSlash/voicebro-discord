@@ -77,6 +77,8 @@ pub struct Status {
     pub gates: BTreeMap<String, crate::gate::GateStatus>,
     /// The two gains with the peak of the last second and the clip counters.
     pub audio: crate::audio::AudioLevels,
+    /// The last measured turns (at most 50) per guild the bot is in.
+    pub latency: BTreeMap<String, Vec<crate::latency::TurnReport>>,
     pub assistant: crate::assistant::AssistantStatus,
     pub settings: Settings,
 }
