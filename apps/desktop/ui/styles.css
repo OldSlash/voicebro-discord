@@ -260,6 +260,11 @@ output { float: right; color: var(--accent); font-weight: 600; }
 .field-message { margin: 0; font-size: 0.85em; color: var(--ok); }
 .field-message:empty { display: none; }
 .field-message.error { color: var(--bad); }
+.field-message.pending { color: var(--ink-dim); }
+/* An unsaved value (Config tab) and a value the app rejected. */
+.form-grid label.is-dirty :is(input, select, textarea) { border-color: var(--warn); }
+.form-grid label.is-invalid :is(input, select, textarea) { border-color: var(--bad); }
+.config-grid label.is-dirty::after { content: "Changed, not saved yet"; color: var(--warn); font-size: 0.85em; }
 .form-note { margin: 10px 0 0; color: var(--ink-dim); font-size: 0.88em; }
 .settings-actions, .config-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .form-feedback { color: var(--ok); }
