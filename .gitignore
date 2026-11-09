@@ -8,3 +8,6 @@ AI-REFERENCE.md
 
 # OpenSpec: local CLI (the specs in openspec/ are tracked)
 .tools/
+
+# Rust build output (Cargo.lock is tracked: the workspace builds binaries)
+/target/

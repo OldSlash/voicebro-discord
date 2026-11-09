@@ -292,13 +292,19 @@ frames into `input`, the assistant pushes decoded answer audio into `output` (th
   `config.model_reasoning_effort`). A changed model or effort opens a new thread and remaps
   the guild's session; history carries over through `initialItems`. A rejected model falls
   back to the account defaults.
-- `rtc.rs`: the realtime call over WebRTC inside the process (the `webrtc` crate): one Opus
-  audio track, one data channel named `oai-events`, a non-trickle offer (ICE gathering waited
-  for, at most 2 s), `thread/realtime/start` with `transport: {type: webrtc, sdp}` and
-  `version: "v3"`, the answer from `thread/realtime/sdp`. Incoming Discord frames are
-  downmixed and Opus-encoded; the remote track is decoded to 48 kHz and pushed to the output
-  queue. The call exists only while a session is active. A ChatGPT sign-in allows realtime
-  voice over WebRTC only; there is no websocket path.
+- `rtc.rs`: the realtime call over WebRTC inside the process (`webrtc` 0.21 over its sans-io
+  core `rtc`, decided by probe P0.2): one Opus audio track (registered by hand: 48 kHz,
+  2 channels in SDP, `minptime=10;useinbandfec=1`), one data channel named `oai-events`
+  created before the offer, a non-trickle offer (ICE gathering waited for, at most 2 s),
+  `thread/realtime/start` with `transport: {type: webrtc, sdp}` and `version: "v3"`, the
+  answer from the `thread/realtime/sdp` notification. Incoming Discord frames are downmixed
+  and Opus-encoded into `TrackLocalStaticSample` samples; the remote track (its `on_track`
+  fires with the first RTP packet) is decoded to 48 kHz and pushed to the output queue. The
+  `oai-events` channel carries the realtime server's JSON events (`session.started`,
+  `input_transcript.added`, `turn.created`, `output_transcript.added`, with millisecond
+  timing); they are logged and available for speech timing. The call exists only while a
+  session is active. A ChatGPT sign-in allows realtime voice over WebRTC only; there is no
+  websocket path.
 - `conversation.rs`: continuity across calls for the app's lifetime. Same thread while the
   server generation matches, same `voiceSessionId`, last `realtimeSessionId`, transcript
   history as `initialItems` (v3 only, capped at 100 items or 24 KB), retried once without

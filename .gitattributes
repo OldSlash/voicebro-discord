@@ -1,0 +1,13 @@
+# Text files are LF in the repository and in the working tree, so that editor tools and
+# patch markers never trip over CRLF. Windows-only scripts keep CRLF.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets
+*.png binary
+*.ico binary
+*.wav binary
+*.zip binary
+*.dll binary
