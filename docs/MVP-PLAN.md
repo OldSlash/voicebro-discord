@@ -145,18 +145,18 @@ fixes it finds. These are estimates for planning the order, not commitments.
 ### OpenSpec changes
 
 The phases are delivered as seven OpenSpec changes in `openspec/changes/`, one branch each
-(see `AGENTS.md`, Git flow). The first two exist; the rest are created after the probes,
-because their designs depend on the probe results.
+(see `AGENTS.md`, Git flow). All seven exist with proposal, specs, design and tasks; the
+first two are implemented.
 
-| Change | Phases | Created |
+| Change | Phases | State |
 |---|---|---|
-| `probe-external-apis` | probes | yes |
-| `workspace-skeleton` | skeleton | yes |
-| `discord-voice-adapter` | Discord adapter + audio core | after probes |
-| `wake-word-engine` | wake engine | after probes |
-| `session-gate-and-mute` | session gate + the hotkey from the UI phase | after probes |
-| `codex-assistant` | Codex assistant | after probes |
-| `settings-ui-and-acceptance` | UI without the hotkey + real-channel test | after probes |
+| `probe-external-apis` | probes | implemented; the game and reboot checks are the user's |
+| `workspace-skeleton` | skeleton | implemented; the window UI not exercised by the agent |
+| `discord-voice-adapter` | Discord adapter + audio core | planned |
+| `wake-word-engine` | wake engine | planned |
+| `session-gate-and-mute` | session gate + mute from three sources, hotkey | planned |
+| `codex-assistant` | Codex assistant | planned |
+| `settings-ui-and-acceptance` | full UI + real-channel acceptance + measurements + v0.2.0 | planned |
 
 ### Probes (before the design is final)
 
