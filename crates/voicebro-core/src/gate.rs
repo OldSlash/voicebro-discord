@@ -2,8 +2,9 @@
 //! [`RelayRegistry`] holds them and the app-wide mute flag. See `docs/ARCHITECTURE.md` 4.3.
 //!
 //! The gate decides, every 20 ms, whether the channel's mixed frame reaches the assistant:
-//! - **mute**: the assistant hears silence and its voice is discarded (the stream is not
-//!   cut, so a call is never renegotiated by a mute); wake phrases are ignored;
+//! - **mute** ends the session, as in the first version: the call closes, nothing is sent,
+//!   the assistant's voice is discarded and wake phrases are ignored; in always mode the
+//!   unmute starts a new session. The mute and unmute tones play when earcons are on;
 //! - **wake-word mode**: audio flows only after an activation phrase, replayed from the end
 //!   of the phrase so the question right after it is not lost; a deactivation phrase ends
 //!   the session at once, otherwise the idle timeout does;
@@ -124,9 +125,9 @@ impl GateState {
         self.muted || (self.settings.mode == SessionMode::WakeWord && !self.active)
     }
 
-    /// Mute does not end the session: the assistant keeps its call and hears silence.
+    /// Mute ends the session: nothing is spent while muted.
     fn wants_session(&self) -> bool {
-        self.settings.mode == SessionMode::Always || self.active
+        !self.muted && (self.settings.mode == SessionMode::Always || self.active)
     }
 
     fn end_session(&mut self) {
@@ -166,7 +167,7 @@ impl GateState {
             guild_id: guild.to_string(),
             mode: self.settings.mode,
             muted: self.muted,
-            active: self.settings.mode == SessionMode::Always || self.active,
+            active: self.wants_session(),
             listening_for_wake_word: !self.muted
                 && self.settings.mode == SessionMode::WakeWord
                 && !self.active,
@@ -335,8 +336,8 @@ impl RelayGate {
             let feed_wake = state.settings.mode == SessionMode::WakeWord && !state.muted;
             let mut passing = false;
             let frame: Option<Frame> = if state.muted {
-                // The assistant keeps its call and hears silence.
-                state.wants_session().then(Frame::silence)
+                // Muted: no session, nothing is sent.
+                None
             } else if state.settings.mode == SessionMode::Always {
                 passing = true;
                 Some(mixed.clone())
@@ -508,14 +509,27 @@ impl RelayGate {
                 return;
             }
             state.muted = muted;
-            self.output.set_muted(state.output_muted());
             if muted {
+                // The session ends with the mute; in wake-word mode the next one needs the
+                // activation phrase again.
+                state.end_session();
                 effects.flush_output = true;
             }
+            self.output.set_muted(state.output_muted());
+            let wanted = state.wants_session();
+            if wanted != state.session_wanted {
+                state.session_wanted = wanted;
+                effects.session = Some(wanted);
+            }
+            if state.settings.earcons {
+                effects.earcon = Some(if muted { Earcon::Mute } else { Earcon::Unmute });
+            }
             effects.log = Some(if muted {
-                "assistant muted: it hears silence and its voice is not played".to_owned()
+                "assistant muted: the session ended and nothing is sent".to_owned()
+            } else if state.settings.mode == SessionMode::Always {
+                "assistant unmuted: a new session starts".to_owned()
             } else {
-                "assistant unmuted".to_owned()
+                "assistant unmuted: waiting for the activation phrase".to_owned()
             });
             effects.status_changed = true;
         }
@@ -889,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn mute_sends_silence_discards_output_and_ignores_phrases() {
+    fn mute_ends_the_session_sends_nothing_and_unmute_restarts_it_in_always_mode() {
         let rig = rig(SessionMode::Always, None, Duration::ZERO);
         let voice = voice();
         rig.gate.process_tick(&voice, &[(7, voice.as_slice())]);
@@ -900,9 +914,7 @@ mod tests {
         assert!(rig.output.is_muted());
         assert_eq!(rig.output.queued(), 0, "queued answer audio is discarded");
         rig.gate.process_tick(&voice, &[(7, voice.as_slice())]);
-        let frames = drain(&rig.input);
-        assert_eq!(frames.len(), 1, "the stream is not cut");
-        assert_eq!(frames[0].peak(), 0, "the assistant hears silence");
+        assert!(drain(&rig.input).is_empty(), "no frame is sent while muted");
         assert_eq!(
             rig.feed.0.load(Ordering::Relaxed),
             0,
@@ -910,11 +922,73 @@ mod tests {
         );
         assert_eq!(
             *rig.stub.wanted_log.lock().unwrap(),
-            vec![true],
-            "mute does not end the session"
+            vec![true, false],
+            "mute ends the session"
         );
+        assert!(!rig.gate.status().active);
         rig.gate.set_muted(false);
         assert!(!rig.output.is_muted());
+        assert_eq!(
+            *rig.stub.wanted_log.lock().unwrap(),
+            vec![true, false, true],
+            "unmute starts a new session"
+        );
+        rig.gate.process_tick(&voice, &[(7, voice.as_slice())]);
+        assert_eq!(drain(&rig.input).len(), 1);
+    }
+
+    #[test]
+    fn mute_in_wake_word_mode_ends_an_active_session() {
+        let rig = rig(SessionMode::WakeWord, None, Duration::ZERO);
+        assert!(rig
+            .gate
+            .on_phrase(PhraseKind::Activate, "luna", 7, Duration::ZERO));
+        assert!(rig.gate.status().active);
+        rig.gate.set_muted(true);
+        assert!(!rig.gate.status().active);
+        assert_eq!(
+            *rig.stub.wanted_log.lock().unwrap(),
+            vec![false, true, false]
+        );
+        rig.gate.set_muted(false);
+        let status = rig.gate.status();
+        assert!(!status.active && status.listening_for_wake_word);
+        assert_eq!(
+            rig.stub.wanted_log.lock().unwrap().last(),
+            Some(&false),
+            "unmute waits for the activation phrase"
+        );
+    }
+
+    #[test]
+    fn mute_changes_play_their_tones_even_though_the_output_is_muted() {
+        use std::io::Read;
+        let tone_after_mute = |earcons: bool| {
+            let (sender, _receiver) = frame_channel(INPUT_CAPACITY);
+            let (output, mut source) = output_pair();
+            let mut gate_settings = settings(SessionMode::Always, None);
+            gate_settings.earcons = earcons;
+            let gate = RelayGate::new(
+                1,
+                sender,
+                Arc::new(GainStage::new()),
+                output,
+                gate_settings,
+                false,
+                EventBus::new(16),
+                None,
+                None,
+            );
+            gate.set_muted(true);
+            let mut bytes = vec![0u8; crate::audio::FRAME_SAMPLES * 4];
+            source.read_exact(&mut bytes).unwrap();
+            bytes
+                .chunks(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs())
+                .fold(0f32, f32::max)
+        };
+        assert!(tone_after_mute(true) > 0.05, "the mute tone plays");
+        assert_eq!(tone_after_mute(false), 0.0, "no tone with earcons off");
     }
 
     #[test]

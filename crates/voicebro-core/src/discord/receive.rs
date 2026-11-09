@@ -6,6 +6,7 @@ use crate::audio::{frame::mix_into, Frame, FRAME_SAMPLES};
 use serenity::all::GuildId;
 use serenity::async_trait;
 use songbird::events::{Event, EventContext, EventHandler as VoiceEventHandler};
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -20,6 +21,8 @@ pub(crate) struct ReceiveHandler {
     pub(crate) guild: GuildId,
     pub(crate) directory: Arc<SpeakerDirectory>,
     scratch: Mutex<Scratch>,
+    /// Audio sources the "only person in the channel" fallback was tried for.
+    fallback_tried: Mutex<HashSet<u32>>,
 }
 
 impl ReceiveHandler {
@@ -36,6 +39,40 @@ impl ReceiveHandler {
                 sums: Vec::with_capacity(FRAME_SAMPLES),
                 mixed: Frame::silence(),
             }),
+            fallback_tried: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// Once per audio source Discord has not named: when exactly one person is in the
+    /// bot's channel, that person is taken as its speaker. A real mapping from a later
+    /// speaking event replaces it.
+    fn try_sole_person(&self, ssrc: u32) {
+        if self.directory.name(ssrc).is_some()
+            || !self
+                .fallback_tried
+                .lock()
+                .expect("fallback lock")
+                .insert(ssrc)
+        {
+            return;
+        }
+        let participants = self
+            .shared
+            .sessions
+            .lock()
+            .expect("sessions lock")
+            .get(&self.guild.get())
+            .map(|session| session.participants.clone())
+            .unwrap_or_default();
+        if let Some(name) = super::speakers::sole_person(&participants) {
+            if self.directory.remember(ssrc, name.to_owned()) {
+                self.shared.log(format!(
+                    "Speaker: {name} (ssrc {ssrc}), assigned as the only person in the channel"
+                ));
+                self.shared
+                    .host
+                    .set_speaker_name(self.guild.get(), ssrc, name);
+            }
         }
     }
 }
@@ -55,6 +92,7 @@ impl VoiceEventHandler for ReceiveHandler {
                         self.shared.malformed_frames.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
+                    self.try_sole_person(*ssrc);
                     speakers.push((*ssrc, pcm));
                 }
                 self.shared

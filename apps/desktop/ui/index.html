@@ -63,19 +63,15 @@
             <button id="token-clear" class="secondary">Clear</button>
             <span id="token-badge" class="badge">unknown</span>
           </div>
-          <p class="hint">The token never appears in the settings file, the log or this window again. Storing a token connects the bot.</p>
+          <p class="hint">The token never appears in the settings file, the log or this window again. With a stored token the bot connects whenever the app starts; storing a token connects it now.</p>
         </div>
         <div class="field">
-          <label for="guild-id">Server id (digits; empty registers the slash commands globally, which can take up to an hour to appear)</label>
+          <label for="guild-id">Server id (digits; the slash commands are registered globally, which can take up to an hour to appear, and also in this server, where they appear at once)</label>
           <div class="row">
             <input id="guild-id" type="text" inputmode="numeric" data-path="discord.guild_id" data-kind="string">
             <button class="save" data-for="guild-id">Save</button>
           </div>
           <p class="hint field-message" data-for="guild-id"></p>
-        </div>
-        <div class="field">
-          <label class="row"><input id="auto-connect" type="checkbox" data-path="discord.auto_connect" data-kind="bool"> Connect at start-up when a token is stored</label>
-          <p class="hint field-message" data-for="auto-connect"></p>
         </div>
 
         <h3>Session</h3>

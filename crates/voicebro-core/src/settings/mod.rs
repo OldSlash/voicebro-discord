@@ -47,23 +47,14 @@ impl Default for Settings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The bot always connects at start when a token is stored; an `auto_connect` field in an
+/// older file is ignored and gone after the next save.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiscordSettings {
-    /// Connect the bot at start-up when a token is stored.
-    pub auto_connect: bool,
-    /// The server whose slash commands are registered directly (they appear at once).
-    /// Empty registers them globally, which Discord can take up to an hour to show.
+    /// A server whose slash commands are also registered directly, so they appear there at
+    /// once. They are always registered globally as well.
     pub guild_id: String,
-}
-
-impl Default for DiscordSettings {
-    fn default() -> Self {
-        Self {
-            auto_connect: true,
-            guild_id: String::new(),
-        }
-    }
 }
 
 impl DiscordSettings {
@@ -409,6 +400,19 @@ mod tests {
     #[test]
     fn defaults_validate() {
         Settings::default().validate().expect("defaults are valid");
+    }
+
+    #[test]
+    fn an_old_auto_connect_field_loads_and_is_gone_after_a_save() {
+        let old: Settings = serde_json::from_str(
+            r#"{ "version": 1, "discord": { "auto_connect": false, "guild_id": "1091401169441656933" } }"#,
+        )
+        .expect("an older file loads");
+        assert_eq!(old.discord.guild_id, "1091401169441656933");
+        old.validate().expect("and is valid");
+        let saved = serde_json::to_value(&old).unwrap();
+        assert!(saved["discord"].get("auto_connect").is_none(), "{saved}");
+        assert!(saved.get("auto_connect").is_none());
     }
 
     #[test]

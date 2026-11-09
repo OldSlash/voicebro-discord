@@ -14,9 +14,11 @@ use self::account::{next_cursor, parse_account, parse_models, AccountInfo, Voice
 use self::app_server::{codex_version, find_codex, AppServer};
 use self::conversation::Conversation;
 use self::session::{CodexSession, SessionParts};
+use self::thread::{open_thread, ThreadSettings};
 use super::chat_log::ChatLog;
 use super::{
     Assistant, AssistantError, AssistantSession, AssistantStatus, Capabilities, ModelInfo,
+    PrepareFuture,
 };
 use crate::audio::AudioPorts;
 use crate::events::{AppEvent, EventBus};
@@ -25,10 +27,34 @@ use crate::status::ConnectionErrors;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 use tokio::sync::Mutex as AsyncMutex;
+
+/// How long the app-server stays up after an on-demand Sign in or Check while the bot is in
+/// no voice channel.
+const IDLE_STOP_DELAY: Duration = Duration::from_secs(60);
+/// After the last guild detaches: long enough for the stop requests of its call to go out.
+const LAST_LEAVE_STOP_DELAY: Duration = Duration::from_millis(500);
+/// A sign-in that never completes stops holding the app-server after this long.
+const SIGN_IN_WAIT_LIMIT: Duration = Duration::from_secs(600);
+
+/// Why a join was refused. The message is the reply the caller sees in Discord.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PrepareError {
+    #[error("Codex is not installed: install Codex CLI (npm install -g @openai/codex) or set its path in the VoiceBro settings")]
+    NotFound,
+    #[error("Codex did not start: {0}")]
+    Start(String),
+    #[error(
+        "Codex is not signed in: use Sign in on the VoiceBro Status tab, then run /join again"
+    )]
+    SignedOut,
+    #[error("Codex could not open a thread: {0}")]
+    Thread(String),
+}
 
 /// The settings the Codex engine reads, as a snapshot it keeps current.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -69,6 +95,13 @@ struct Inner {
     voices: Arc<Mutex<Option<Voices>>>,
     models: Mutex<Vec<ModelInfo>>,
     last_error: Mutex<Option<String>>,
+    /// Joins being prepared right now; the app-server is not stopped under them.
+    preparing: AtomicUsize,
+    /// Bumped by every scheduled stop and every preparation; a stop timer that finds a
+    /// newer value does nothing.
+    stop_epoch: AtomicU64,
+    /// When the last ChatGPT sign-in was started, until its server reports completion.
+    sign_in_started: Mutex<Option<Instant>>,
 }
 
 #[derive(Clone)]
@@ -102,7 +135,168 @@ impl CodexAssistant {
                 voices: Arc::new(Mutex::new(None)),
                 models: Mutex::new(Vec::new()),
                 last_error: Mutex::new(None),
+                preparing: AtomicUsize::new(0),
+                stop_epoch: AtomicU64::new(0),
+                sign_in_started: Mutex::new(None),
             }),
+        }
+    }
+
+    /// The app-server if it is running; never starts it.
+    fn running_server(&self) -> Option<Arc<AppServer>> {
+        self.inner
+            .server
+            .try_lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().cloned())
+            .filter(|server| server.is_alive())
+    }
+
+    fn attached_guilds(&self) -> usize {
+        self.inner.sessions.lock().expect("sessions lock").len()
+    }
+
+    /// Starts the app-server if needed, checks the account and opens or reuses the guild's
+    /// thread, so the first activation only places the call.
+    pub async fn prepare_guild(&self, guild: u64) -> Result<(), PrepareError> {
+        self.inner.preparing.fetch_add(1, Ordering::AcqRel);
+        // A pending idle stop no longer applies.
+        self.inner.stop_epoch.fetch_add(1, Ordering::AcqRel);
+        let result = self.prepare_inner(guild).await;
+        self.inner.preparing.fetch_sub(1, Ordering::AcqRel);
+        match &result {
+            Ok(()) => self.set_last_error(None),
+            Err(error) => {
+                self.set_last_error(Some(error.to_string()));
+                if self.attached_guilds() == 0 {
+                    self.schedule_stop(IDLE_STOP_DELAY, "the join was refused");
+                }
+            }
+        }
+        self.publish_status();
+        result
+    }
+
+    async fn prepare_inner(&self, guild: u64) -> Result<(), PrepareError> {
+        if find_codex(&self.config().executable).is_none() {
+            return Err(PrepareError::NotFound);
+        }
+        let server = self.server().await.map_err(PrepareError::Start)?;
+        let account = self
+            .refresh_account(&server)
+            .await
+            .map_err(PrepareError::Start)?;
+        if !account.signed_in {
+            return Err(PrepareError::SignedOut);
+        }
+        self.refresh_voices(&server).await;
+        if self.inner.models.lock().expect("models lock").is_empty() {
+            if let Err(error) = self.refresh_models(&server).await {
+                log::warn!("Codex: model/list failed: {error}");
+            }
+        }
+        let config = self.config();
+        let settings = ThreadSettings {
+            instructions: config.instructions.clone(),
+            model: config.model.trim().to_owned(),
+            effort: config.reasoning_effort.trim().to_owned(),
+        };
+        let conversation = self.conversation(guild);
+        let reusable = conversation
+            .lock()
+            .expect("conversation lock")
+            .thread
+            .as_ref()
+            .is_some_and(|thread| {
+                thread.generation == server.generation && thread.requested == settings
+            });
+        if !reusable {
+            let thread = open_thread(
+                &server,
+                &self.inner.events,
+                &self.inner.workspace,
+                &settings,
+            )
+            .await
+            .map_err(PrepareError::Thread)?;
+            let description = ThreadSettings {
+                instructions: String::new(),
+                model: thread.model.clone(),
+                effort: thread.effort.clone(),
+            }
+            .describe();
+            conversation.lock().expect("conversation lock").thread = Some(thread);
+            self.inner.chat.push(
+                guild,
+                "system",
+                None,
+                &format!("New Codex thread: {description}."),
+            );
+        }
+        self.inner
+            .events
+            .log(format!("Codex: ready for guild {guild}"));
+        Ok(())
+    }
+
+    /// Stops the app-server after `delay` unless by then a guild is attached, a join is
+    /// being prepared, a sign-in is waiting for its completion, or a newer stop or
+    /// preparation replaced this one.
+    fn schedule_stop(&self, delay: Duration, reason: &'static str) {
+        let epoch = self.inner.stop_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        let assistant = self.clone();
+        self.inner.handle.spawn(async move {
+            let mut wait = delay;
+            loop {
+                tokio::time::sleep(wait).await;
+                if assistant.inner.stop_epoch.load(Ordering::Acquire) != epoch {
+                    return;
+                }
+                if !assistant.sign_in_waiting() {
+                    break;
+                }
+                wait = IDLE_STOP_DELAY;
+            }
+            assistant.stop_server_if_idle(reason).await;
+        });
+    }
+
+    /// A sign-in was started on the running server and has not completed yet.
+    fn sign_in_waiting(&self) -> bool {
+        let started = *self.inner.sign_in_started.lock().expect("sign-in lock");
+        let Some(started) = started else {
+            return false;
+        };
+        let completed = self
+            .running_server()
+            .is_none_or(|server| server.sign_in_completed());
+        !completed && started.elapsed() < SIGN_IN_WAIT_LIMIT
+    }
+
+    async fn stop_server_if_idle(&self, reason: &str) {
+        let stopped = {
+            let mut slot = self.inner.server.lock().await;
+            if self.attached_guilds() > 0 || self.inner.preparing.load(Ordering::Acquire) > 0 {
+                return;
+            }
+            slot.take()
+        };
+        *self.inner.sign_in_started.lock().expect("sign-in lock") = None;
+        if let Some(server) = stopped {
+            server.kill();
+            // Thread ids die with the process; the conversations keep the history, and the
+            // next join opens a new thread that continues them.
+            self.inner
+                .events
+                .log(format!("Codex: stopping the app-server ({reason})"));
+            self.publish_status();
+        }
+    }
+
+    /// After an on-demand Sign in or Check: stop again if no guild needs the server.
+    fn after_on_demand_use(&self) {
+        if self.attached_guilds() == 0 {
+            self.schedule_stop(IDLE_STOP_DELAY, "not needed outside a voice channel");
         }
     }
 
@@ -202,8 +396,10 @@ impl CodexAssistant {
         Ok(models)
     }
 
-    /// Starts the app-server if needed and reads the account, voices and models.
+    /// Starts the app-server if needed and reads the account, voices and models. Outside a
+    /// voice channel the server stops again a minute later.
     pub async fn check(&self) -> Result<AccountInfo, String> {
+        self.after_on_demand_use();
         let result = async {
             let server = self.server().await?;
             let account = self.refresh_account(&server).await?;
@@ -235,8 +431,12 @@ impl CodexAssistant {
         result
     }
 
-    /// Starts the ChatGPT sign-in and opens the returned page in the default browser.
+    /// Starts the ChatGPT sign-in and opens the returned page in the default browser. The
+    /// app-server stays up until the sign-in reports its end, then stops a minute later when
+    /// the bot is in no voice channel.
     pub async fn sign_in(&self) -> Result<String, String> {
+        *self.inner.sign_in_started.lock().expect("sign-in lock") = Some(Instant::now());
+        self.after_on_demand_use();
         let server = self.server().await?;
         let result = server
             .request("account/login/start", json!({ "type": "chatgpt" }))
@@ -270,6 +470,7 @@ impl CodexAssistant {
 
     /// Models the signed-in account can use, fetched now.
     pub async fn models(&self) -> Result<Vec<ModelInfo>, String> {
+        self.after_on_demand_use();
         let server = self.server().await?;
         self.refresh_models(&server).await
     }
@@ -316,6 +517,14 @@ impl Assistant for CodexAssistant {
         "codex"
     }
 
+    fn prepare(&self, guild: u64) -> PrepareFuture<'_> {
+        Box::pin(async move {
+            self.prepare_guild(guild)
+                .await
+                .map_err(|error| AssistantError::Unavailable(error.to_string()))
+        })
+    }
+
     fn attach(
         &self,
         guild: u64,
@@ -325,22 +534,10 @@ impl Assistant for CodexAssistant {
         if sessions.contains_key(&guild) {
             return Err(AssistantError::AlreadyAttached(guild));
         }
-        let server = self
-            .inner
-            .server
-            .try_lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().cloned())
-            .filter(|server| server.is_alive());
-        let Some(server) = server else {
-            // The process starts in the background; the session is created once it runs.
-            let assistant = self.clone();
-            self.inner.handle.spawn(async move {
-                let _ = assistant.check().await;
-            });
+        // `prepare` ran before the join, so the server is up unless it died since.
+        let Some(server) = self.running_server() else {
             return Err(AssistantError::Unavailable(
-                "Codex is starting; leave and join the channel again in a few seconds, or check the Status tab"
-                    .to_owned(),
+                "Codex stopped before the join finished; run /join again".to_owned(),
             ));
         };
         let session = CodexSession::new(SessionParts {
@@ -362,14 +559,16 @@ impl Assistant for CodexAssistant {
     }
 
     fn detach(&self, guild: u64) {
-        let session = self
-            .inner
-            .sessions
-            .lock()
-            .expect("sessions lock")
-            .remove(&guild);
+        let (session, left) = {
+            let mut sessions = self.inner.sessions.lock().expect("sessions lock");
+            let session = sessions.remove(&guild);
+            (session, sessions.len())
+        };
         if let Some(session) = session {
             session.shutdown();
+            if left == 0 {
+                self.schedule_stop(LAST_LEAVE_STOP_DELAY, "the bot left its last voice channel");
+            }
         }
     }
 
@@ -395,13 +594,7 @@ impl Assistant for CodexAssistant {
     fn status(&self) -> AssistantStatus {
         let config = self.config();
         let executable = find_codex(&config.executable);
-        let server = self
-            .inner
-            .server
-            .try_lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().cloned())
-            .filter(|server| server.is_alive());
+        let server = self.running_server();
         let version = server
             .as_ref()
             .and_then(|server| server.version.clone())
@@ -417,7 +610,7 @@ impl Assistant for CodexAssistant {
         let summary = match (&executable, &server, &account, &error) {
             (None, _, _, _) => "codex not found".to_owned(),
             (_, _, _, Some(error)) => error.clone(),
-            (_, None, _, _) => "codex found; app-server not running".to_owned(),
+            (_, None, _, _) => "codex found; it starts at /join".to_owned(),
             (_, Some(_), Some(account), _) if account.signed_in => format!(
                 "signed in{}{}",
                 account
@@ -479,13 +672,6 @@ impl Assistant for CodexAssistant {
         }
     }
 
-    fn start(&self) {
-        let assistant = self.clone();
-        self.inner.handle.spawn(async move {
-            let _ = assistant.check().await;
-        });
-    }
-
     fn stop(&self) {
         self.stop_blocking();
     }
@@ -495,7 +681,146 @@ impl Assistant for CodexAssistant {
 mod tests {
     use super::*;
     use crate::audio::{frame_channel, output_pair, Frame, FRAME_SAMPLES, INPUT_CAPACITY};
-    use std::time::Instant;
+
+    /// The fake app-server in `testdata/fake-codex`, which runs on Node; `None` where Node
+    /// is not installed, and the test then checks nothing.
+    fn fake_codex(name: &str) -> Option<String> {
+        let node = std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .ok()?;
+        node.status
+            .success()
+            .then(|| format!("{}/testdata/fake-codex/{name}", env!("CARGO_MANIFEST_DIR")))
+    }
+
+    fn assistant_with(
+        runtime: &tokio::runtime::Runtime,
+        dir: &std::path::Path,
+        executable: &str,
+    ) -> CodexAssistant {
+        let events = EventBus::new(256);
+        let mut settings = Settings::default();
+        settings.codex.executable = executable.to_owned();
+        CodexAssistant::new(
+            runtime.handle().clone(),
+            events.clone(),
+            Arc::new(ConnectionErrors::new(events)),
+            dir,
+            &settings,
+        )
+    }
+
+    #[test]
+    fn a_join_is_refused_without_codex_or_without_a_sign_in() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let missing = assistant_with(&runtime, dir.path(), "Z:/nowhere/codex.exe");
+        assert_eq!(
+            runtime.block_on(missing.prepare_guild(1)),
+            Err(PrepareError::NotFound)
+        );
+        assert!(!missing.status().running);
+        assert!(PrepareError::NotFound.to_string().contains("install Codex"));
+
+        let Some(signed_out) = fake_codex("fake_codex_signed_out.cmd") else {
+            return;
+        };
+        let assistant = assistant_with(&runtime, dir.path(), &signed_out);
+        let refused = runtime.block_on(assistant.prepare_guild(1));
+        assert_eq!(refused, Err(PrepareError::SignedOut));
+        assert!(refused.unwrap_err().to_string().contains("Sign in"));
+        assistant.stop_blocking();
+    }
+
+    /// With `VOICEBRO_CODEX_SMOKE=1`: the real Codex starts at a join preparation and stops
+    /// after the last leave.
+    #[test]
+    fn real_codex_starts_at_join_and_stops_after_the_last_leave_when_enabled() {
+        if std::env::var("VOICEBRO_CODEX_SMOKE").ok().as_deref() != Some("1") {
+            return;
+        }
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let assistant = assistant_with(&runtime, dir.path(), "");
+        assert!(!assistant.status().running);
+        let started = Instant::now();
+        runtime
+            .block_on(assistant.prepare_guild(1))
+            .expect("codex runs and is signed in");
+        eprintln!(
+            "prepared in {} ms: {}",
+            started.elapsed().as_millis(),
+            assistant.status().summary
+        );
+        assert!(assistant.status().running);
+        let (_sender, input) = frame_channel(INPUT_CAPACITY);
+        let (output, _source) = output_pair();
+        drop(assistant.attach(1, AudioPorts { input, output }).unwrap());
+        assistant.detach(1);
+        let left = Instant::now();
+        while assistant.running_server().is_some() {
+            assert!(left.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        eprintln!("stopped {} ms after the leave", left.elapsed().as_millis());
+    }
+
+    #[test]
+    fn the_app_server_runs_from_join_to_the_last_leave_and_the_history_survives() {
+        let Some(fake) = fake_codex("fake_codex.cmd") else {
+            return;
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let assistant = assistant_with(&runtime, dir.path(), &fake);
+        assert!(!assistant.status().running, "nothing runs before a join");
+
+        runtime
+            .block_on(assistant.prepare_guild(1))
+            .expect("the fake prepares");
+        assert!(assistant.status().running);
+        let first = assistant
+            .conversation(1)
+            .lock()
+            .unwrap()
+            .thread
+            .clone()
+            .expect("the join opened a thread");
+        assistant
+            .conversation(1)
+            .lock()
+            .unwrap()
+            .push("user", "remember forty two".to_owned());
+        let (_sender, input) = frame_channel(INPUT_CAPACITY);
+        let (output, _source) = output_pair();
+        let session = assistant
+            .attach(1, AudioPorts { input, output })
+            .expect("attach after a preparation");
+        drop(session);
+
+        assistant.detach(1);
+        let left = Instant::now();
+        while assistant.running_server().is_some() {
+            assert!(
+                left.elapsed() < Duration::from_secs(10),
+                "the server stops after the last leave"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        runtime
+            .block_on(assistant.prepare_guild(1))
+            .expect("the next join starts a new server");
+        let conversation = assistant.conversation(1);
+        let conversation = conversation.lock().unwrap();
+        let second = conversation.thread.clone().unwrap();
+        assert_ne!(first.generation, second.generation, "a new process");
+        assert_ne!(first.id, second.id, "a new thread");
+        assert_eq!(conversation.len(), 1, "the history is kept");
+        drop(conversation);
+        assistant.stop_blocking();
+    }
 
     fn wav_48k_mono(path: &str) -> Vec<i16> {
         let bytes = std::fs::read(path).expect("wav readable");
@@ -632,8 +957,9 @@ mod tests {
             dir.path(),
             &settings,
         );
-        let account = runtime.block_on(assistant.check()).expect("codex runs");
-        assert!(account.signed_in, "sign in to Codex first");
+        runtime
+            .block_on(assistant.prepare_guild(1))
+            .expect("codex runs and is signed in");
         eprintln!("status: {:?}", assistant.status());
         let (sender, input) = frame_channel(INPUT_CAPACITY);
         let (output, source) = output_pair();

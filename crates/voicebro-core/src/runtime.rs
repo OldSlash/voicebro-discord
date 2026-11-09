@@ -4,7 +4,7 @@
 
 use crate::assistant::{Assistant, StubAssistant};
 use crate::audio::{frame_channel, AudioPorts, Frame, OutputHandle, INPUT_CAPACITY};
-use crate::discord::{AssistantState, DiscordError, DiscordRuntime, VoiceHost};
+use crate::discord::{AssistantState, DiscordError, DiscordRuntime, JoinPreparation, VoiceHost};
 use crate::events::{AppEvent, EventBus};
 use crate::gate::{ErrorReporter, GateSettings, RelayGate, RelayRegistry};
 use crate::secrets::{SecretError, SecretKey, SecretStore};
@@ -55,6 +55,23 @@ struct GateHost {
 }
 
 impl VoiceHost for GateHost {
+    fn prepare_join(&self, guild: u64) -> JoinPreparation<'_> {
+        Box::pin(async move {
+            match self.assistant.prepare(guild).await {
+                Ok(()) => {
+                    self.errors.report("assistant", None);
+                    Ok(())
+                }
+                Err(error) => {
+                    let reason = error.to_string();
+                    self.events
+                        .log(format!("join to guild {guild} refused: {reason}"));
+                    Err(reason)
+                }
+            }
+        })
+    }
+
     fn on_tick(&self, guild: u64, mixed: &Frame, speakers: &[(u32, &[i16])]) {
         if let Some(gate) = self.registry.get(guild) {
             gate.process_tick(mixed, speakers);
@@ -241,8 +258,8 @@ impl Runtime {
     }
 
     /// Loads settings (writing the defaults on first start), learns which secrets are set,
-    /// configures the wake engine, and connects to Discord when a token is stored and
-    /// auto-connect is on.
+    /// configures the wake engine, and connects to Discord whenever a token is stored.
+    /// Nothing of the assistant runs until the first `/join`.
     pub fn start(&self) -> Result<(), RuntimeError> {
         self.store.cleanup_partial();
         let settings = match self.store.load()? {
@@ -270,8 +287,8 @@ impl Runtime {
         self.host.registry.gains().apply(&self.settings().audio);
         crate::wake::assets::cleanup_partial(&crate::paths::assets_dir(&self.data_dir));
         self.wake.configure(&self.settings());
+        // Nothing of the assistant runs yet: its process starts at the first /join.
         self.assistant.configure(&self.settings());
-        self.assistant.start();
 
         for key in SecretKey::ALL {
             match self.secrets.get(*key) {
@@ -287,7 +304,7 @@ impl Runtime {
         }
         log::info!("runtime started; data dir {}", self.data_dir.display());
 
-        if self.settings().discord.auto_connect && self.is_secret_set(SecretKey::DiscordToken) {
+        if self.is_secret_set(SecretKey::DiscordToken) {
             if let Err(error) = self.connect() {
                 self.set_connection_error("discord", Some(error.to_string()));
             }
@@ -723,6 +740,42 @@ mod tests {
             "the next frame played used the new output gain: {first}"
         );
         assert_eq!(runtime.status().audio.output.clips, 0);
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn nothing_of_codex_runs_after_start() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let events = EventBus::new(64);
+        let errors = Arc::new(ConnectionErrors::new(events.clone()));
+        let mut settings = Settings::default();
+        // A path that exists: the engine would find it if it tried to start.
+        let fake = dir.path().join("codex.exe");
+        std::fs::write(&fake, b"").unwrap();
+        settings.codex.executable = fake.display().to_string();
+        let codex = crate::assistant::codex::CodexAssistant::new(
+            tokio_rt.handle().clone(),
+            events.clone(),
+            Arc::clone(&errors),
+            dir.path(),
+            &settings,
+        );
+        let runtime = Runtime::with_assistant(
+            "0.1.0+test 2026-11-10",
+            dir.path().to_path_buf(),
+            SettingsStore::new(dir.path().join("settings.json")),
+            Arc::new(MemoryStore::default()),
+            events,
+            tokio_rt.handle().clone(),
+            errors,
+            Arc::new(codex),
+        );
+        runtime.start().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let assistant = runtime.status().assistant;
+        assert!(!assistant.running, "{}", assistant.summary);
+        assert!(assistant.summary.contains("/join"), "{}", assistant.summary);
         runtime.shutdown();
     }
 

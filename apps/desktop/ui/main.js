@@ -5,16 +5,20 @@
   const listen = tauri?.event?.listen;
   const $ = (id) => document.getElementById(id);
 
+  // The log pane shows the app log as the file has it (forwarded from Rust as `app-log`),
+  // plus the few messages the window itself produces.
   const logPane = $("log");
   const MAX_LOG_LINES = 500;
-  function appendLog(line) {
-    const time = new Date().toLocaleTimeString();
-    logPane.textContent += `${time}  ${line}\n`;
+  function appendLogLine(line) {
+    logPane.textContent += `${line}\n`;
     const lines = logPane.textContent.split("\n");
     if (lines.length > MAX_LOG_LINES) {
       logPane.textContent = lines.slice(lines.length - MAX_LOG_LINES).join("\n");
     }
     logPane.scrollTop = logPane.scrollHeight;
+  }
+  function appendLog(line) {
+    appendLogLine(`[window][${new Date().toLocaleTimeString()}] ${line}`);
   }
 
   // Tabs
@@ -496,13 +500,21 @@
       appendLog(`app_info failed: ${error}`);
     }
     if (listen) {
+      // Subscribe first, then load what was logged before the window existed.
+      await listen("app-log", ({ payload }) => appendLogLine(payload));
+      try {
+        const history = await invoke("log_history");
+        logPane.textContent = history.length ? `${history.join("\n")}\n` : "";
+        logPane.scrollTop = logPane.scrollHeight;
+      } catch (error) {
+        appendLog(`log history failed: ${error}`);
+      }
       await listen("app-event", ({ payload }) => {
         switch (payload.kind) {
+          // Log lines arrive through `app-log` with everything else the log file gets.
           case "log":
-            appendLog(payload.line);
             break;
           case "mute_changed":
-            appendLog(payload.muted ? "muted" : "unmuted");
             refresh();
             break;
           case "assets":

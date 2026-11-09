@@ -3,6 +3,9 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod log_ring;
+
+use log_ring::LogRing;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -59,6 +62,8 @@ struct AppState {
     codex: Option<CodexAssistant>,
     /// The shortcut currently registered with the system, if any.
     hotkey: Mutex<Option<Shortcut>>,
+    /// The last log lines, for the window's log pane.
+    log: Arc<LogRing>,
 }
 
 fn codex(state: &AppState) -> Result<CodexAssistant, String> {
@@ -245,11 +250,28 @@ fn discord_disconnect(state: State<'_, AppState>) {
     state.runtime.disconnect();
 }
 
-fn log_plugin(data_dir: &std::path::Path) -> tauri::plugin::TauriPlugin<tauri::Wry> {
-    let mut targets = vec![Target::new(TargetKind::Folder {
-        path: paths::logs_dir(data_dir),
-        file_name: Some("voicebro".to_owned()),
-    })];
+/// The log lines written before the window asked, oldest first.
+#[tauri::command]
+fn log_history(state: State<'_, AppState>) -> Vec<String> {
+    state.log.history()
+}
+
+/// The file, the window's ring and, in debug builds, stdout: one level table for all three.
+fn log_plugin(
+    data_dir: &std::path::Path,
+    ring: Arc<LogRing>,
+) -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    use tauri_plugin_log::fern;
+    let window = fern::Dispatch::new().chain(fern::Output::call(move |record| {
+        ring.push(record.args().to_string());
+    }));
+    let mut targets = vec![
+        Target::new(TargetKind::Folder {
+            path: paths::logs_dir(data_dir),
+            file_name: Some("voicebro".to_owned()),
+        }),
+        Target::new(TargetKind::Dispatch(window)),
+    ];
     if cfg!(debug_assertions) {
         targets.push(Target::new(TargetKind::Stdout));
     }
@@ -298,8 +320,9 @@ fn main() {
         assistant,
     ));
 
+    let log = Arc::new(LogRing::default());
     tauri::Builder::default()
-        .plugin(log_plugin(&data_dir))
+        .plugin(log_plugin(&data_dir, Arc::clone(&log)))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -317,8 +340,10 @@ fn main() {
             runtime: Arc::clone(&runtime),
             codex,
             hotkey: Mutex::new(None),
+            log: Arc::clone(&log),
         })
         .setup(move |app| {
+            log.attach(app.handle().clone());
             // The first log line identifies the build.
             log::info!("VoiceBro {BUILD_STAMP}");
             if let Err(error) = runtime.start() {
@@ -374,6 +399,7 @@ fn main() {
             capabilities,
             wake_models,
             chat_log,
+            log_history,
             open_log_folder
         ])
         .build(tauri::generate_context!())

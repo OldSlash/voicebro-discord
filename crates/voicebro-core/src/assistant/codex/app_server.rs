@@ -117,6 +117,8 @@ pub struct AppServer {
     sessions: Mutex<HashMap<String, Weak<CodexSession>>>,
     alive: AtomicBool,
     pub account_dirty: AtomicBool,
+    /// Set when `account/login/completed` arrives, whatever its outcome.
+    sign_in_done: AtomicBool,
     child: Mutex<Option<Child>>,
 }
 
@@ -164,6 +166,7 @@ impl AppServer {
             sessions: Mutex::new(HashMap::new()),
             alive: AtomicBool::new(true),
             account_dirty: AtomicBool::new(true),
+            sign_in_done: AtomicBool::new(false),
             child: Mutex::new(Some(child)),
         });
 
@@ -219,6 +222,11 @@ impl AppServer {
 
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Acquire)
+    }
+
+    /// A ChatGPT sign-in started on this server has reported its end.
+    pub fn sign_in_completed(&self) -> bool {
+        self.sign_in_done.load(Ordering::Acquire)
     }
 
     pub fn handle(&self) -> &Handle {
@@ -336,6 +344,7 @@ impl AppServer {
         if method.starts_with("account/") {
             self.account_dirty.store(true, Ordering::Release);
             if method == "account/login/completed" {
+                self.sign_in_done.store(true, Ordering::Release);
                 let success = params
                     .get("success")
                     .and_then(Value::as_bool)
