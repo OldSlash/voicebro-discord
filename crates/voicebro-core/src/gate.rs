@@ -1048,4 +1048,54 @@ mod tests {
         assert!(registry.unregister(1).is_some());
         assert!(registry.statuses().is_empty());
     }
+
+    /// The receive-path cost per 20 ms tick with four speakers: mixing, the gate, the
+    /// wake downsampler per speaker and the Opus encode of the downmix. Runs only with
+    /// `VOICEBRO_BENCH=1`; the number decides the release profile (`cargo test --release`
+    /// with `CARGO_PROFILE_RELEASE_OPT_LEVEL` set to 3 and to z).
+    #[test]
+    fn receive_path_cost_when_enabled() {
+        if std::env::var("VOICEBRO_BENCH").ok().as_deref() != Some("1") {
+            return;
+        }
+        use crate::audio::dsp::StereoDownsampler;
+        use crate::audio::frame::mix_into;
+        let rig = rig(SessionMode::Always, None, Duration::ZERO);
+        let speakers: Vec<Frame> = (0..4)
+            .map(|index| {
+                let samples: Vec<i16> = (0..crate::audio::FRAME_SAMPLES)
+                    .map(|i| ((i * (index + 3)) % 2_000) as i16 - 1_000)
+                    .collect();
+                Frame::from_slice(&samples)
+            })
+            .collect();
+        let mut downsamplers: Vec<StereoDownsampler> =
+            (0..4).map(|_| StereoDownsampler::new(3)).collect();
+        let mut encoder =
+            opus2::Encoder::new(48_000, opus2::Channels::Mono, opus2::Application::Voip).unwrap();
+        let mut to_mono = StereoDownsampler::new(1);
+        let mut packet = vec![0u8; 4000];
+        let mut scratch = Vec::new();
+        let mut mixed = Frame::silence();
+        let ticks = 5_000;
+        let started = std::time::Instant::now();
+        for _ in 0..ticks {
+            let blocks: Vec<&[i16]> = speakers.iter().map(|frame| frame.as_slice()).collect();
+            mix_into(&blocks, &mut scratch, &mut mixed);
+            let tagged: Vec<(u32, &[i16])> = blocks
+                .iter()
+                .enumerate()
+                .map(|(index, block)| (index as u32, *block))
+                .collect();
+            rig.gate.process_tick(&mixed, &tagged);
+            let _ = drain(&rig.input);
+            for (downsampler, block) in downsamplers.iter_mut().zip(&blocks) {
+                let _ = downsampler.process(block);
+            }
+            let mono = to_mono.process(mixed.as_slice());
+            let _ = encoder.encode(&mono, &mut packet).unwrap();
+        }
+        let per_tick = started.elapsed().as_secs_f64() * 1e6 / ticks as f64;
+        eprintln!("receive path with 4 speakers: {per_tick:.1} us per 20 ms tick");
+    }
 }

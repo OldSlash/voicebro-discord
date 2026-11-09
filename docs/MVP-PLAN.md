@@ -107,6 +107,13 @@ Opus) matter more than a few megabytes next to a 45 MB model and a 350 MB Codex 
 real-channel phase compares CPU on the receive path between `3` and `z` once, and the result
 is written here.
 
+Measured on 2026-11-09 (`gate::tests::receive_path_cost_when_enabled`, release build, four
+speakers, one 20 ms tick = mix + gate + wake downsampler per speaker + Opus encode of the
+downmix, 5 000 ticks): `opt-level = 3` 239.1 µs per tick, `opt-level = "z"` 252.9 µs per
+tick. Both are about 1.2 % of the 20 ms budget; `3` is 6 % faster, so the profile stays at
+`opt-level = 3`. The difference is small because Opus (C, built by `cmake` at its own
+optimization level) dominates the tick.
+
 ### External assets (downloaded at first use, pinned)
 
 | Asset | Source | SHA-256 |
@@ -152,11 +159,11 @@ first two are implemented.
 |---|---|---|
 | `probe-external-apis` | probes | implemented; the game and reboot checks are the user's |
 | `workspace-skeleton` | skeleton | implemented; the window UI not exercised by the agent |
-| `discord-voice-adapter` | Discord adapter + audio core | planned |
-| `wake-word-engine` | wake engine | planned |
-| `session-gate-and-mute` | session gate + mute from three sources, hotkey | planned |
-| `codex-assistant` | Codex assistant | planned |
-| `settings-ui-and-acceptance` | full UI + real-channel acceptance + measurements + v0.2.0 | planned |
+| `discord-voice-adapter` | Discord adapter + audio core | implemented; connection and command registration verified live; the `/join` sequence is the user's |
+| `wake-word-engine` | wake engine | implemented; corpus and live download verified; the spoken phrase in the channel is the user's |
+| `session-gate-and-mute` | session gate + mute from three sources, hotkey | implemented; hotkey verified live with synthetic presses; the panel and app buttons in a live channel are the user's |
+| `codex-assistant` | Codex assistant | implemented; the live call through the engine passed (canary, caller name, continuity); the call inside a Discord channel is the user's |
+| `settings-ui-and-acceptance` | full UI + real-channel acceptance + measurements + v0.2.0 | implemented; idle measurements and the profile comparison done; the real-channel session is the user's |
 
 ### Probes (before the design is final)
 
@@ -489,6 +496,25 @@ three times):
 | During a call | Rust + in-process WebRTC + codex during a call (never measured before) |
 | Receive-path CPU with 2–4 speakers, `opt-level = 3` versus `z` | decides the release profile |
 
+#### Measurements (2026-11-09, `scripts\measure.ps1`, debug build 0.2.0, window open, bot connected, nobody in the channel)
+
+| State | Run | voicebro.exe private | codex.exe | WebView2 (all) | Total | voicebro.exe CPU (one core) |
+|---|---|---|---|---|---|---|
+| Idle, always mode | 1 | 9.1 MB | 94.4 MB | 184.4 MB | 289.1 MB | 0.47 % |
+| Idle, always mode | 2 | 9.1 MB | 27.1 MB | 184.7 MB | 222.1 MB | 0.16 % |
+| Idle, always mode | 3 | 9.1 MB | 27.1 MB | 184.7 MB | 222.1 MB | 0.16 % |
+| Idle, wake-word mode, model loaded | 1 | 434.6 MB | 97.7 MB | 171.6 MB | 705.1 MB | 0.47 % |
+| Idle, wake-word mode, model loaded | 2 | 434.6 MB | 26.9 MB | 178.0 MB | 640.7 MB | 0.31 % |
+| Idle, wake-word mode, model loaded | 3 | 434.6 MB | 26.9 MB | 177.9 MB | 640.6 MB | 0.31 % |
+
+The Vosk library plus `vosk-model-small-ru-0.22` take about 425 MB of private memory in the
+Rust process once loaded (the model's decoding graph, not the 45 MB archive), well above the
+150–200 MB the stack decision expected. The first codex.exe sample of each series is higher
+because the account, voice and model reads had just run. Not measured: during a call and
+with speakers in the channel (needs people; the user's real-channel step), and the release
+build (the numbers above are from the debug binary; private memory of the Rust process is
+dominated by the model either way).
+
 ## 5. Technical details by subsystem
 
 Deeper than the architecture: the concrete shapes to write, so that the port is mechanical.
@@ -689,6 +715,31 @@ rejoin starts a fresh one with no old handlers; the release build writes the log
 shows what Vosk heard; the settings file contains no token; the token survives a restart;
 the measurements of the real-channel phase are recorded; a real Discord test with two or more
 people and a game running passes.
+
+### Results (2026-11-09, before the real-channel session)
+
+| Item | Result | How |
+|---|---|---|
+| Mute mid-answer then unmute plays nothing old | pass (unit) | `gate::tests::mute_sends_silence_discards_output_and_ignores_phrases`: the output queue is flushed on mute and frames pushed while muted are dropped |
+| Hotkey works while a game has focus | not tested | needs the user with a game in front; synthetic `keybd_event` presses toggled mute live |
+| Panel, app button and hotkey toggle one state; all views show it | pass (unit + hotkey live) | one `RelayRegistry` flag; `/status` and the panel read it; the panel and app buttons in a live channel are the user's |
+| Each activation phrase fires, a look-alike does not | pass (corpus) | `vosk_corpus_when_assets_are_provided` on the TTS WAVs: positive fires, negative holds, with and without noise 300 |
+| Sentence ending with the deactivation phrase deactivates within about 0.5 s | pass (corpus) | the goodbye WAV ends in Deactivate; the exact latency in the channel is the user's |
+| Wake word then deactivation in one sentence deactivates | pass (unit + corpus) | spotter test and the goodbye WAV |
+| Deactivation then wake word does not restart | pass (unit) | spotter test; the 1.5 s reactivation guard in the worker |
+| Activation phrase during a session does nothing | pass (unit) | `gate::tests::phrases_only_count_in_their_state` |
+| Idle timeout ends the session; a long answer is not cut | pass (unit) | `activation_listens_and_times_out_without_input`, `assistant_audio_keeps_the_session_alive` |
+| The question after the phrase reaches the assistant, the phrase does not | pass (unit) | `replay_starts_at_the_phrase_end_and_catches_up`, `replay_is_held_until_the_assistant_is_ready_then_played_in_order` |
+| Canary instruction followed | pass (live) | engine live call: "Banana, Alex, …" |
+| "What is my name?" returns the caller's nickname | pass (live, indirect) | the answer addressed "Alex" from the call context without being asked |
+| Remember 42, new call, "Which number?" → 42 | pass (live) | engine live call, second session |
+| Changing the model between calls keeps the conversation | not tested | the thread is reopened and the history carried as initial items; no live run with a model change |
+| Closing the window exits the app and codex.exe | pass (live, partial) | the log shows "Codex: app-server stopped" when the process ends; a hard kill of the app also ended codex.exe |
+| `/leave` ends the track; rejoin starts fresh | pass (probe) | `discord-lifecycle` probe: handlers silent after remove, one End event |
+| Release build writes the log; the log shows what Vosk heard | pass (debug) / release not run | the log shows `[wake] … heard:` lines in the debug build; the release build is made at the tag |
+| Settings file contains no token; the token survives a restart | pass (live) | the token lives in the Credential Manager; the app connected at start from it |
+| Measurements recorded | pass (idle states) | table above; during a call is the user's |
+| Real Discord test, two or more people, a game running | not tested | the user's step |
 
 ## 8. Risks
 
