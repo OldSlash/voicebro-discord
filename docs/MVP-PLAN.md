@@ -271,7 +271,7 @@ tested.
 ### Skeleton
 
 Deliverable: `cargo tauri dev` opens a window that shows the build stamp; `cargo test` runs
-in the core; the log file appears in `%LOCALAPPDATA%\VoiceBro\logs`.
+in the core; the log file appears in `logs\` next to the executable.
 
 1. Workspace `Cargo.toml` with `crates/voicebro-core`, `apps/desktop`, `apps/probe`; the
    release profile from section 3; `.gitattributes` (`* text=auto eol=lf`,
@@ -428,7 +428,7 @@ the conversation.
    `wanted` flag, restarts capped at 3, stop completes before a restart, flush on
    `session_wanted(false)`), with `rtc.rs` as the only transport.
 7. `assistant/codex/chat_log.rs`: port the chat log; daily file
-   `%LOCALAPPDATA%\VoiceBro\logs\codex-chat-YYYY-MM-DD.log`; `AppEvent::Chat`.
+   `logs\codex-chat-YYYY-MM-DD.log` next to the executable; `AppEvent::Chat`.
 8. `CodexAssistant` implementing `Assistant`: one `AppServer` shared by all guilds, one
    session per guild, started when the bot connects, stopped at exit.
 

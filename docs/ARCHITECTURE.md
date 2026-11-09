@@ -351,7 +351,7 @@ Every string in the project (UI, log, notes to the model, code, docs) is English
 phrases are user data in the settings file, in whatever language the user's model
 recognizes; the code ships none.
 
-- Stored as JSON at `%LOCALAPPDATA%\VoiceBro\settings.json`. Written to a temp file and
+- Stored as JSON at `settings.json` next to the executable. Written to a temp file and
   renamed over the old one. Unknown fields are kept; missing fields take defaults.
 - `Settings::validate()` is the only validator (phrase lists must not overlap, timeout
   range, catalog id exists, shortcut parses). `Runtime::apply(settings)` diffs against the
@@ -362,8 +362,10 @@ recognizes; the code ships none.
   `VoiceBro/discord_token`). The UI writes a secret with one command and only ever reads back
   `is_set: bool`. Secrets never appear in `Settings`, in the status snapshot, in events or in
   the log. Codex's own ChatGPT sign-in is stored by Codex itself (`~/.codex`), not by the app.
-- Data directory `%LOCALAPPDATA%\VoiceBro\`: `settings.json`, `logs\`, `assets\` (Vosk library
-  and models), `codex-workspace\` (the empty, read-only cwd for Codex threads).
+- The app is portable: its data directory is the folder the executable runs from
+  (`VOICEBRO_DATA_DIR` overrides it for tests). It holds `settings.json`, `logs\`, `assets\`
+  (Vosk library and models) and `codex-workspace\` (the empty, read-only cwd for Codex
+  threads). Nothing is written under the user profile.
 
 ### 4.7 Composition root (`runtime.rs`)
 

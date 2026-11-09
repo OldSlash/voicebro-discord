@@ -45,6 +45,7 @@ None.
   `tauri.conf.json`, capabilities, `ui/`), workspace `Cargo.toml` updated.
 - New dependencies: `tauri` 2.12, `tauri-build`, `tauri-plugin-log` 2.10, `serde`,
   `serde_json`, `thiserror`, `log`, `windows-sys` 0.61 (`Win32_Security_Credentials`).
-- Data directory `%LOCALAPPDATA%\VoiceBro\` is created on first run (`settings.json`, `logs\`).
+- `settings.json` and `logs\` are created next to the executable on first run; the app is
+  portable and writes nothing under the user profile.
 - `AGENTS.md` Commands section filled; `docs/ARCHITECTURE.md` updated only if the skeleton
   deviates from it.

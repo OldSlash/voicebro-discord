@@ -8,7 +8,7 @@ traced to a build and to what the app actually did.
 ## ADDED Requirements
 
 ### Requirement: Every build writes a file log
-The app SHALL write a diagnostic log to `%LOCALAPPDATA%\VoiceBro\logs\` in every build
+The app SHALL write a diagnostic log to `logs\` next to its executable in every build
 configuration, release included, at Info level for the app and Warn level for third-party
 crates, rotating at 4 MB with two old files kept, timestamps in local time.
 
