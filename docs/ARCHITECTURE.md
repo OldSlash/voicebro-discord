@@ -194,13 +194,17 @@ state machine. A `RelayRegistry` holds all gates and the single app-wide mute fl
 
 - **Modes**: `always` (session is always wanted while connected) and `wake_word`.
 - **Mute** is one app-wide state with three sources: the app button, the global hotkey and
-  the Discord panel button. All three call `RelayRegistry::toggle_muted`. Mute is two gates:
-  input becomes silence (the stream is never cut, so the call is not renegotiated) and
-  output is discarded with a flush. Mute overrides phrases.
+  the Discord panel button. All three end in `Runtime::toggle_mute`, which goes through
+  `RelayRegistry::set_muted` into every gate. Mute is two gates: input becomes silence (the
+  stream is never cut and the session stays wanted, so the call is not renegotiated by a
+  mute) and output is discarded with a flush. Mute overrides phrases. In wake-word mode a
+  muted session still ends on its idle timeout, since silence is no input.
 - **Pre-roll** of about 5 s of frames. On activation the replay starts at the end of the
   phrase (recognizer timing, or a 1 s lookback plus 80 ms margin), holds while the
   assistant is not `ready()`, and catches up by skipping silent frames. Replay is capped at
-  about 6 s.
+  about 6 s: reaching the cap while the assistant is still not ready drops the held audio,
+  ends the session with the falling earcon and reports the connection error `assistant:
+  the assistant did not become ready in time`. Nothing waits forever.
 - **Idle timeout** ends the session after N seconds without input; the assistant's own audio
   counts as activity, so a long answer is never cut.
 - In wake-word mode the output is muted whenever no session is active, so a deactivation is
@@ -208,7 +212,16 @@ state machine. A `RelayRegistry` holds all gates and the single app-wide mute fl
 - Activation counts only while waiting, deactivation only while active. Repeating the
   activation phrase during a session does nothing.
 - The gate tells the assistant `session_wanted`, `call_context(caller, participants)` before a
-  session, and `speakers_changed(names)` when the set of talking people changes.
+  session, and `speakers_changed(names)` when the set of talking people changes (the
+  latter only with `speaker_labels: changes`; `start` sends names in the call context only).
+- The gate is the receive path's tick sink (`VoiceHost::on_tick` finds the guild's gate in
+  the registry) and the wake worker's `PhraseSink` (the registry routes `on_phrase` to the
+  guild's gate). In wake-word mode, when not muted, the gate forwards each speaker's frame
+  to the `WakeFeed`.
+- `GateStatus` per guild: mode, muted, active, listening for the wake word, session wanted,
+  assistant ready, last wake phrase, frames held for replay, and counters (input frames the
+  assistant did not take, replay frames dropped, replay timeouts). Every transition is
+  published as `AppEvent::Gate`.
 
 Speech detection for these decisions is a peak threshold (700) per 20 ms frame.
 
@@ -300,8 +313,8 @@ pub trait WakeFeed: Send + Sync {
 ```rust
 pub trait Assistant: Send + Sync {
     fn id(&self) -> &'static str;                                 // "codex"
-    fn attach(&self, guild: GuildId, ports: AudioPorts) -> Result<Arc<dyn AssistantSession>, AssistantError>;
-    fn detach(&self, guild: GuildId);
+    fn attach(&self, guild: u64, ports: AudioPorts) -> Result<Arc<dyn AssistantSession>, AssistantError>;
+    fn detach(&self, guild: u64);
     fn capabilities(&self) -> Capabilities;   // models with reasoning efforts, voices, auth state
     fn status(&self) -> AssistantStatus;
 }
@@ -320,7 +333,13 @@ pub struct AudioPorts { pub input: FrameReceiver, pub output: OutputHandle }
 
 `AudioPorts` replace the first version's local WebSocket transport: the gate pushes gated
 frames into `input`, the assistant pushes decoded answer audio into `output` (the
-`OutputQueue` from 4.1) and can `flush` it.
+`OutputQueue` from 4.1) and can `flush` it. `Runtime::on_join` builds the ports and the gate,
+calls `attach`, and gives the session to the gate; `on_leave` calls `detach`.
+
+**Stub implementation** (`assistant/mod.rs`, `StubAssistant`): becomes ready a configurable
+time after a session is wanted, drains its input on a thread, answers nothing and records
+every call. It is what the tests use and what the runtime falls back to when no real
+assistant is given, so the app never panics on an unknown engine setting.
 
 **Codex implementation** (`assistant/codex/`), ChatGPT sign-in only:
 
@@ -414,8 +433,9 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
   Errors cross the boundary as `String`.
 - One event bridge task forwards `AppEvent` to the webview.
 - **Global hotkey** through `tauri-plugin-global-shortcut`: registered at start-up and again
-  when settings are saved, the previous shortcut unregistered first; toggle only; the status
-  shows `{shortcut, registered, error}`.
+  when a saved settings document changes `hotkey.mute`, the previous shortcut unregistered
+  first; an empty value registers nothing; toggle only, on the key-down edge; the outcome
+  goes to `Runtime::set_hotkey_status` and the status shows `{shortcut, registered, error}`.
 - `tauri-plugin-log` in every build: Info level, chatty crates at Warn, local time, 4 MB per
   file, two old files kept, under the data directory.
 - `build.rs` embeds the Common-Controls v6 manifest into every linked target and stamps the
