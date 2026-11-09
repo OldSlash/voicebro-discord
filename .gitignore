@@ -1,0 +1,10 @@
+# AI agents: instructions, skills and settings stay local
+AGENTS.md
+AI-REFERENCE.md
+.agents/
+.claude/
+.codex/
+.opencode/
+
+# OpenSpec: local CLI (the specs in openspec/ are tracked)
+.tools/
