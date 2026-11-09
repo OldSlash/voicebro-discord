@@ -22,6 +22,7 @@ pub struct Status {
     /// Keyed by source (`discord`, `codex`, `call`, `secret_store`); present while failing.
     pub connection_errors: BTreeMap<String, String>,
     pub discord: crate::discord::DiscordStatus,
+    pub wake: crate::wake::WakeStatus,
     pub settings: Settings,
 }
 

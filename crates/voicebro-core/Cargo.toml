@@ -1,7 +1,7 @@
 [package]
 name = "voicebro-core"
 version = "0.1.0"
-description = "VoiceBro application core: settings, secrets, events, Discord, runtime. No Tauri dependency."
+description = "VoiceBro application core: settings, secrets, events, Discord, wake word, runtime. No Tauri dependency."
 publish = false
 edition.workspace = true
 rust-version.workspace = true
@@ -18,6 +18,9 @@ songbird = { version = "0.6.1", default-features = false, features = ["serenity"
 symphonia-core = "0.5.2"
 # songbird's RawAdapter carries f32 PCM; decoding it needs symphonia's `pcm` feature.
 symphonia = { version = "0.5.2", default-features = false, features = ["pcm"] }
+# Wake word: the recognizer library is loaded at runtime; downloads are hash-checked.
+libloading = "0.9"
+sha2 = "0.11"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

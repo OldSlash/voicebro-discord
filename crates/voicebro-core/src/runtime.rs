@@ -9,12 +9,14 @@ use crate::secrets::{SecretError, SecretKey, SecretStore};
 use crate::settings::store::{SettingsStore, StoreError};
 use crate::settings::{Settings, ValidationError};
 use crate::status::{SecretStatus, Status};
+use crate::wake::{PhraseKind, PhraseSink, WakeFeed, WakeManager};
 use serde_json::Value;
 use serenity::all::GuildId;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 use tokio::runtime::Handle;
 
 #[derive(Debug, thiserror::Error)]
@@ -39,10 +41,52 @@ struct Host {
     muted: Arc<AtomicBool>,
     events: EventBus,
     outputs: Mutex<BTreeMap<u64, OutputHandle>>,
+    /// Set once the wake manager exists; the receive path feeds it per speaker.
+    wake: Mutex<Option<WakeManager>>,
+}
+
+/// Logs confirmed phrases until the session gate takes them over in the next change.
+struct LoggingSink {
+    events: EventBus,
+}
+
+impl PhraseSink for LoggingSink {
+    fn on_phrase(
+        &self,
+        guild: u64,
+        kind: PhraseKind,
+        phrase: &str,
+        ssrc: u32,
+        since_phrase_end: Duration,
+    ) -> bool {
+        let label = match kind {
+            PhraseKind::Activate => "activation phrase",
+            PhraseKind::Deactivate => "deactivation phrase",
+        };
+        self.events.log(format!(
+            "{label} «{phrase}» heard in guild {guild} from speaker {ssrc}, {} ms after it ended",
+            since_phrase_end.as_millis()
+        ));
+        true
+    }
 }
 
 impl VoiceHost for Host {
-    fn on_tick(&self, _guild: u64, _mixed: &Frame, _speakers: &[(u32, &[i16])]) {}
+    fn on_tick(&self, guild: u64, _mixed: &Frame, speakers: &[(u32, &[i16])]) {
+        if speakers.is_empty() {
+            return;
+        }
+        let wake = self.wake.lock().expect("wake lock").clone();
+        let Some(wake) = wake else {
+            return;
+        };
+        if !wake.is_enabled() {
+            return;
+        }
+        for (ssrc, pcm) in speakers {
+            wake.feed(guild, *ssrc, pcm);
+        }
+    }
 
     fn set_speaker_name(&self, _guild: u64, _ssrc: u32, _name: &str) {}
 
@@ -107,6 +151,7 @@ pub struct Runtime {
     muted: Arc<AtomicBool>,
     host: Arc<Host>,
     discord: Arc<DiscordRuntime>,
+    wake: WakeManager,
     secrets_set: Mutex<HashSet<SecretKey>>,
     connection_errors: Mutex<BTreeMap<String, String>>,
 }
@@ -121,10 +166,18 @@ impl Runtime {
         handle: Handle,
     ) -> Self {
         let muted = Arc::new(AtomicBool::new(false));
+        let wake = WakeManager::with_default_engines(
+            crate::paths::assets_dir(&data_dir),
+            events.clone(),
+            Arc::new(LoggingSink {
+                events: events.clone(),
+            }),
+        );
         let host = Arc::new(Host {
             muted: Arc::clone(&muted),
             events: events.clone(),
             outputs: Mutex::new(BTreeMap::new()),
+            wake: Mutex::new(Some(wake.clone())),
         });
         let discord = Arc::new(DiscordRuntime::new(
             events.clone(),
@@ -142,6 +195,7 @@ impl Runtime {
             muted,
             host,
             discord,
+            wake,
             secrets_set: Mutex::new(HashSet::new()),
             connection_errors: Mutex::new(BTreeMap::new()),
         }
@@ -171,6 +225,8 @@ impl Runtime {
             }
         };
         *self.settings.write().expect("settings lock") = settings;
+        crate::wake::assets::cleanup_partial(&crate::paths::assets_dir(&self.data_dir));
+        self.wake.configure(&self.settings());
 
         for key in SecretKey::ALL {
             match self.secrets.get(*key) {
@@ -196,6 +252,7 @@ impl Runtime {
 
     /// Stops Discord; waits for it so the process can exit cleanly.
     pub fn shutdown(&self) {
+        self.wake.stop();
         let discord = Arc::clone(&self.discord);
         if discord.is_running() {
             let _ = self.handle.block_on(async move {
@@ -232,6 +289,7 @@ impl Runtime {
 
     /// Reconfigures only the subsystems whose section changed.
     fn apply(&self, changed: &[&'static str]) {
+        let mut wake_dirty = false;
         for section in changed {
             match *section {
                 "discord" => {
@@ -239,9 +297,20 @@ impl Runtime {
                         "settings: discord changed; the guild id applies at the next connection"
                     );
                 }
+                "session" | "wake" => {
+                    log::info!("settings: {section} changed");
+                    wake_dirty = true;
+                }
                 other => log::info!("settings: {other} changed"),
             }
         }
+        if wake_dirty {
+            self.wake.configure(&self.settings());
+        }
+    }
+
+    pub fn wake(&self) -> &WakeManager {
+        &self.wake
     }
 
     pub fn set_secret(&self, name: &str, value: &str) -> Result<(), RuntimeError> {
@@ -378,6 +447,7 @@ impl Runtime {
                 .collect(),
             connection_errors: self.connection_errors.lock().expect("errors lock").clone(),
             discord: self.discord.status(),
+            wake: self.wake.status(),
             settings: self.settings(),
         }
     }
@@ -446,8 +516,23 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(on_disk.session.idle_timeout_seconds, 120);
-        let event = events.try_recv().unwrap();
-        assert!(matches!(event, AppEvent::SettingsChanged));
+        // The session section changed, so the wake manager reports its state first.
+        let mut saw_settings_changed = false;
+        while let Ok(event) = events.try_recv() {
+            match event {
+                AppEvent::SettingsChanged => saw_settings_changed = true,
+                AppEvent::Wake(status) => assert!(
+                    matches!(
+                        status.state,
+                        crate::wake::WakeState::Off | crate::wake::WakeState::NoPhrases
+                    ),
+                    "{:?}",
+                    status.state
+                ),
+                other => panic!("unexpected event {other:?}"),
+            }
+        }
+        assert!(saw_settings_changed);
 
         let error = runtime
             .save_settings(&json!({ "session": { "idle_timeout_seconds": 1 } }))

@@ -218,9 +218,10 @@ Three layers, so the engine can change without touching the phrase logic:
 
 ```rust
 /// A streaming speech recognizer for one speaker. Vosk today; sherpa-onnx or a KWS later.
+/// There is no flush: the worker feeds trailing silence instead, which ends an utterance
+/// the same way for every engine.
 pub trait SpeechRecognizer: Send {
     fn accept(&mut self, pcm_16k_mono: &[i16]) -> Option<Recognition>; // partial or final
-    fn flush(&mut self) -> Option<Recognition>;
 }
 
 /// A loaded model, shared by all recognizers of one engine.
@@ -233,11 +234,30 @@ pub trait LoadedModel: Send + Sync {
 pub trait WakeEngine: Send + Sync {
     fn id(&self) -> &'static str;                 // "vosk"
     fn assets(&self, model: &ModelEntry) -> Vec<Asset>;  // library + model, pinned SHA-256
-    fn load(&self, dir: &AssetDir, model: &ModelEntry) -> Result<Box<dyn LoadedModel>, WakeError>;
+    fn load(&self, assets_dir: &Path, model: &ModelEntry) -> Result<Box<dyn LoadedModel>, WakeError>;
 }
 
 pub struct Recognition { pub text: String, pub is_final: bool, pub words: Vec<Word> }
+
+/// Receives confirmed phrases (the session gate). Returns whether the phrase changed anything.
+pub trait PhraseSink: Send + Sync {
+    fn on_phrase(&self, guild: u64, kind: PhraseKind, phrase: &str, ssrc: u32, since_phrase_end: Duration) -> bool;
+}
+
+/// Receives each speaker's 48 kHz stereo frames from the receive path.
+pub trait WakeFeed: Send + Sync {
+    fn feed(&self, guild: u64, ssrc: u32, frame: &[i16]);
+}
 ```
+
+- **`WakeManager`** owns the engines, the assets directory and the worker. `configure(settings)`
+  is called at start and whenever the `session` or `wake` section changes: it stops the
+  engine outside wake-word mode (`Off`), stops it when both phrase lists are empty
+  (`NoPhrases`), sends new phrases to the running worker when only the phrases changed, and
+  otherwise downloads, loads and starts on a thread of its own (`Downloading {label,
+  percent}` → `Loading` → `Ready`, or `Error {message}`). Every transition is published as
+  `AppEvent::Wake(WakeStatus)` and visible in `Status.wake`. The manager implements
+  `WakeFeed`; `feed` drops when the worker's queue is full and counts the drop.
 
 - **`PhraseSpotter`** is engine-independent. One recognizer per speaker, one detector per
   phrase kind (activation, deactivation), whole-word matching on open-vocabulary text. A
@@ -256,15 +276,24 @@ pub struct Recognition { pub text: String, pub is_final: bool, pub words: Vec<Wo
   settings file and start empty; the wake engine shows "no phrases configured" until the
   user enters them.
   Today: `vosk-model-small-ru-0.22` plus the Vosk 0.3.45 Windows library.
-- **Asset store**: downloads to a temp name, verifies the hash, extracts with the system
-  `tar.exe`, writes a marker file, cleans up partial files at start. Progress goes to the
-  event bus.
+- **Asset store** (`assets.rs`): downloads with the system `curl.exe` to a `.part` name,
+  verifies the SHA-256 (a mismatch deletes the file and extracts nothing), renames, extracts
+  with the system `tar.exe`, checks the marker file, and cleans up `.part` files at start.
+  Progress goes to the event bus as `AppEvent::Assets {label, percent, error}` in steps of
+  at least 20 %. No HTTP crate.
 - Vosk is loaded at runtime through `libloading` (`LOAD_WITH_ALTERED_SEARCH_PATH`), so the
   app starts without the DLL. Partial word timestamps are not requested (they delay
   partials by seconds). Grammar-restricted recognition is not used (it maps ordinary speech
   onto the wake words).
-- The worker logs every final result, every phrase decision, and dropped audio. Missing
-  vocabulary (phrase words the model does not know) is part of `WakeStatus`.
+- The worker logs every final result, every phrase decision, and dropped audio (once per
+  10 s, as seconds of skipped speech). Phrases with a word the model does not know are not
+  spotted; those words are listed in `WakeStatus.unknown_words` and in the "wake word ready"
+  log line.
+- Corpus tests: `wake::vosk::tests::vosk_corpus_when_assets_are_provided` runs only when
+  `VOICEBRO_VOSK_DIR` points at an assets directory, with `VOICEBRO_WAKE_PHRASES`,
+  `VOICEBRO_WAKE_WAV`, `VOICEBRO_WAKE_EXPECT`, `VOICEBRO_WAKE_SEQUENCES` and
+  `VOICEBRO_WAKE_NOISE` describing the samples (16 kHz mono WAV). Without the variables the
+  test passes without doing anything, so the suite stays runnable on any machine.
 
 ### 4.5 Assistant (`assistant/`)
 
