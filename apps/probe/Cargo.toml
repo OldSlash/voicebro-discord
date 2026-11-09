@@ -33,6 +33,9 @@ hound = "3.5"
 serenity = { version = "0.12.5", default-features = false, features = ["builder", "cache", "client", "gateway", "http", "model", "rustls_backend"] }
 songbird = { version = "0.6.1", default-features = false, features = ["serenity", "rustls", "driver", "gateway", "tungstenite", "receive"] }
 symphonia-core = "0.5.2"
+# songbird's RawAdapter produces f32 PCM; decoding it needs symphonia's `pcm` feature, which
+# the application has to turn on (songbird does not).
+symphonia = { version = "0.5.2", default-features = false, features = ["pcm"] }
 # Credential Manager, asset hashes, Vosk at runtime.
 sha2 = "0.11"
 libloading = "0.9"

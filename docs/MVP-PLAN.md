@@ -246,12 +246,26 @@ tested.
   words passed on its command line in the model's vocabulary; the v1 wake words were known,
   transliterations of "GPT" were not. Not tested: recognition itself (that is the
   `wake-word-engine` corpus).
-- **Discord lifecycle and receive timing** — code complete (`probe discord-lifecycle`,
-  `probe receive-timing`), **not run yet**: they need the Discord bot token, a test guild and
-  a voice channel with two people, which only the user can provide. Commands are in
-  `AGENTS.md`.
-- **Hotkey** — `apps/probe-hotkey` builds, **not run yet**: needs a full-screen game in front
-  and a hand on the keyboard.
+- **Discord lifecycle** (2026-11-09) **PASS.** songbird 0.6.1 against the test guild: join
+  in 2.7 s; a `VoiceTick` handler registered before `join` ticks every 20 ms (249 in 5 s);
+  a silent `RawAdapter` source is read by the mixer (265 reads in 5 s) and closing it
+  (`read` returns 0) ends the track: exactly one `TrackEvent::End` within 1.5 s;
+  `Songbird::remove` stops the first handler for good (its count does not move after a
+  rejoin) while a handler registered on the new `Call` ticks. Two facts for the Discord
+  adapter: `DecodeMode::Decode` takes a `DecodeConfig` in 0.6.1 (`Channels::Stereo`,
+  `SampleRate::Hz48000`), and decoding `RawAdapter` audio needs the application to enable
+  symphonia's `pcm` feature, otherwise the track fails with "no compatible track found".
+  The `davey` crate prints `[DAVE Binary] …` lines to stdout on join. Not tested: a track
+  with real audio, several guilds.
+- **Receive timing** (2026-11-09) **PASS with a gap.** 20 s in the channel with nobody
+  speaking: 1000 ticks, tick interval p50 15.7 ms, p99 32.1 ms, max 37.4 ms (the Windows
+  timer jitter of tokio-driven ticks, as expected); the handler's own work (mix into `i32`,
+  clamp) p50 20 µs, p99 43 µs, max 132 µs, far under the 2 ms criterion. Not tested: ticks
+  with one or two speakers decoding; that needs people in the channel.
+- **Hotkey** (2026-11-09) **registration PASS, game test pending.** `probe-hotkey` registers
+  `Ctrl+Alt+M` through `tauri-plugin-global-shortcut` and logs two synthetic presses sent
+  with `SendKeys`. Not tested: a press while a full-screen game has focus; that is the user's
+  step.
 - **Credential reboot check** — not run yet (`probe credential --keep`, reboot, `--read-only`).
 
 ### Skeleton

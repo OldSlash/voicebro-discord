@@ -171,7 +171,9 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   0.6's packet-loss recovery for those modes is unproven), mixes it into reusable buffers,
   and calls `gate.process_tick(mixed, per_speaker)`. Participant identity is preserved up
   to the gate and the wake engine; the assistant hears the mix.
-- Output is one `Track` from `RawAdapter<PcmSource>`, attached with `play_only`.
+- Output is one `Track` from `RawAdapter<PcmSource>` (f32 PCM), attached with `play_only`.
+  The crate that owns the track enables symphonia's `pcm` feature; without it songbird
+  cannot decode the raw stream and the track fails with "no compatible track found".
 - Changing the token restarts the client; a running client never keeps stale credentials.
 
 ### 4.3 Session gate (`gate.rs`)

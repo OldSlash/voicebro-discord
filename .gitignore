@@ -1,6 +1,8 @@
 # AI agents: instructions, skills and settings stay local
 AGENTS.md
 AI-REFERENCE.md
+LOCAL-TESTING.md
+probe.local.json
 .agents/
 .claude/
 .codex/

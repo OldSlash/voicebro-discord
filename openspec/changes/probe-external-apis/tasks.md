@@ -18,7 +18,7 @@
 - [x] 3.2 Read the `webrtc` 0.21 examples and build `probe rtc-loopback`: two peer connections in one process exchange an Opus track and a data channel; verify audio arrives on the second peer (this separates crate misuse from remote rejection)
 - [x] 3.3 Implement `probe rtc-call <wav>`: one Opus send track, data channel `oai-events`, offer with ICE gathering awaited (≤ 2 s), `thread/realtime/start` with `transport: webrtc`, `version: v3`, voice `juniper`, the canary developer item last in `initialItems`; set the answer, send the WAV, decode the remote track into `<out>.wav`; verify `PASS` when DTLS connects, remote audio is written, and the `thread/realtime/transcript/done` text starts with the canary word; record the call and canary results
 - [x] 3.4 Not needed: 3.3 passed with `webrtc` 0.21 on the first run (2026-11-09), so the `str0m` attempt was never started
-- [ ] 3.5 Record the chosen crate and any renamed fields in `docs/ARCHITECTURE.md` 4.5 and `docs/MVP-PLAN.md` section 3; verify the documents name one crate and no "to be confirmed" remains for the call
+- [x] 3.5 Record the chosen crate and any renamed fields in `docs/ARCHITECTURE.md` 4.5 and `docs/MVP-PLAN.md` section 3; verify the documents name one crate and no "to be confirmed" remains for the call
 
 ## 4. Credential Manager, Vosk assets, hotkey
 
@@ -28,13 +28,13 @@
 
 ## 5. songbird lifecycle and receive timing
 
-- [ ] 5.1 Implement `probe discord-lifecycle` (needs `VOICEBRO_DISCORD_TOKEN`, `VOICEBRO_TEST_GUILD`, `VOICEBRO_TEST_CHANNEL`): join, register a counting `VoiceTick` handler and a `RawAdapter` source that logs `TrackEvent`s, `remove`, rejoin; verify `PASS` when the first handler's counter stops after `remove` and exactly one `TrackEvent::End` was logged; record the result
-- [ ] 5.2 Implement `probe receive-timing`: with two speakers (a second account or a WAV played from another client), log the interval between ticks and the handler's own duration for one minute; verify the report prints p50/p99 for both and record the result with the stated pass criterion (p99 handler time well under 20 ms)
+- [x] 5.1 Implement `probe discord-lifecycle` (needs `VOICEBRO_DISCORD_TOKEN`, `VOICEBRO_TEST_GUILD`, `VOICEBRO_TEST_CHANNEL`): join, register a counting `VoiceTick` handler and a `RawAdapter` source that logs `TrackEvent`s, `remove`, rejoin; verify `PASS` when the first handler's counter stops after `remove` and exactly one `TrackEvent::End` was logged; record the result
+- [x] 5.2 Implement `probe receive-timing`: with two speakers (a second account or a WAV played from another client), log the interval between ticks and the handler's own duration for one minute; verify the report prints p50/p99 for both and record the result with the stated pass criterion (p99 handler time well under 20 ms)
 
 ## 6. Close-out
 
-- [ ] 6.1 Walk the probe table in `docs/MVP-PLAN.md`: every row has a dated result and a "not tested" note where applicable; verify no row is empty
-- [ ] 6.2 Pin the probed Codex CLI version and the probe prerequisites in `AGENTS.md`; verify the file names the version and the environment variables
+- [x] 6.1 Walk the probe table in `docs/MVP-PLAN.md`: every row has a dated result and a "not tested" note where applicable; verify no row is empty
+- [x] 6.2 Pin the probed Codex CLI version and the probe prerequisites in `AGENTS.md`; verify the file names the version and the environment variables
 
 ## Workflow follow-up
 
