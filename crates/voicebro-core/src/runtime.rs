@@ -1,17 +1,21 @@
-//! The composition root. It owns the settings, the secret store and the event bus, and it
-//! is the only place that knows every subsystem. Later changes add the Discord adapter,
-//! the wake engine and the assistant here.
+//! The composition root. It owns the settings, the secret store, the event bus and the
+//! Discord adapter, and it is the only place that knows every subsystem. Later changes add
+//! the wake engine, the gate and the assistant here.
 
+use crate::audio::{Frame, OutputHandle};
+use crate::discord::{AssistantState, DiscordError, DiscordRuntime, VoiceHost};
 use crate::events::{AppEvent, EventBus};
 use crate::secrets::{SecretError, SecretKey, SecretStore};
 use crate::settings::store::{SettingsStore, StoreError};
 use crate::settings::{Settings, ValidationError};
 use crate::status::{SecretStatus, Status};
 use serde_json::Value;
+use serenity::all::GuildId;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use tokio::runtime::Handle;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
@@ -25,6 +29,71 @@ pub enum RuntimeError {
     Patch(#[from] serde_json::Error),
     #[error("unknown secret «{0}»")]
     UnknownSecret(String),
+    #[error("{0}")]
+    Discord(#[from] DiscordError),
+}
+
+/// What Discord needs from the app before the session gate exists: the mute flag and the
+/// assistant state. The gate replaces this in the next change.
+struct Host {
+    muted: Arc<AtomicBool>,
+    events: EventBus,
+    outputs: Mutex<BTreeMap<u64, OutputHandle>>,
+}
+
+impl VoiceHost for Host {
+    fn on_tick(&self, _guild: u64, _mixed: &Frame, _speakers: &[(u32, &[i16])]) {}
+
+    fn set_speaker_name(&self, _guild: u64, _ssrc: u32, _name: &str) {}
+
+    fn set_participants(&self, _guild: u64, _names: &[String]) {}
+
+    fn on_join(&self, guild: u64, output: OutputHandle) {
+        output.set_muted(self.muted.load(Ordering::Acquire));
+        self.outputs
+            .lock()
+            .expect("outputs lock")
+            .insert(guild, output);
+    }
+
+    fn on_leave(&self, guild: u64) {
+        self.outputs.lock().expect("outputs lock").remove(&guild);
+    }
+
+    fn assistant_state(&self, guild: u64) -> AssistantState {
+        if !self
+            .outputs
+            .lock()
+            .expect("outputs lock")
+            .contains_key(&guild)
+        {
+            AssistantState::Off
+        } else if self.muted.load(Ordering::Acquire) {
+            AssistantState::Muted
+        } else {
+            AssistantState::Listening
+        }
+    }
+
+    fn toggle_mute(&self) -> bool {
+        let muted = !self.muted.fetch_xor(true, Ordering::AcqRel);
+        self.apply_mute(muted);
+        muted
+    }
+
+    fn is_muted(&self) -> bool {
+        self.muted.load(Ordering::Acquire)
+    }
+}
+
+impl Host {
+    fn apply_mute(&self, muted: bool) {
+        for output in self.outputs.lock().expect("outputs lock").values() {
+            output.set_muted(muted);
+        }
+        log::info!("mute {}", if muted { "on" } else { "off" });
+        self.events.publish(AppEvent::MuteChanged { muted });
+    }
 }
 
 pub struct Runtime {
@@ -33,8 +102,11 @@ pub struct Runtime {
     store: SettingsStore,
     secrets: Arc<dyn SecretStore>,
     events: EventBus,
+    handle: Handle,
     settings: RwLock<Settings>,
-    muted: AtomicBool,
+    muted: Arc<AtomicBool>,
+    host: Arc<Host>,
+    discord: Arc<DiscordRuntime>,
     secrets_set: Mutex<HashSet<SecretKey>>,
     connection_errors: Mutex<BTreeMap<String, String>>,
 }
@@ -46,28 +118,42 @@ impl Runtime {
         store: SettingsStore,
         secrets: Arc<dyn SecretStore>,
         events: EventBus,
+        handle: Handle,
     ) -> Self {
+        let muted = Arc::new(AtomicBool::new(false));
+        let host = Arc::new(Host {
+            muted: Arc::clone(&muted),
+            events: events.clone(),
+            outputs: Mutex::new(BTreeMap::new()),
+        });
+        let discord = Arc::new(DiscordRuntime::new(
+            events.clone(),
+            host.clone(),
+            handle.clone(),
+        ));
         Self {
             build_stamp: build_stamp.into(),
             data_dir,
             store,
             secrets,
             events,
+            handle,
             settings: RwLock::new(Settings::default()),
-            muted: AtomicBool::new(false),
+            muted,
+            host,
+            discord,
             secrets_set: Mutex::new(HashSet::new()),
             connection_errors: Mutex::new(BTreeMap::new()),
         }
     }
 
-    /// Loads settings (writing the defaults on first start) and learns which secrets are
-    /// set. A failing secret store is reported in the status and the app keeps running.
+    /// Loads settings (writing the defaults on first start), learns which secrets are set,
+    /// and connects to Discord when a token is stored and auto-connect is on.
     pub fn start(&self) -> Result<(), RuntimeError> {
         self.store.cleanup_partial();
         let settings = match self.store.load()? {
             Some(settings) => {
                 if let Err(error) = settings.validate() {
-                    // A document edited by hand can be invalid; keep running with it but say so.
                     self.events.log(format!(
                         "settings file has a problem ({error}); fix it in Settings"
                     ));
@@ -99,15 +185,32 @@ impl Runtime {
             }
         }
         log::info!("runtime started; data dir {}", self.data_dir.display());
+
+        if self.settings().discord.auto_connect && self.is_secret_set(SecretKey::DiscordToken) {
+            if let Err(error) = self.connect() {
+                self.set_connection_error("discord", Some(error.to_string()));
+            }
+        }
         Ok(())
     }
 
+    /// Stops Discord; waits for it so the process can exit cleanly.
     pub fn shutdown(&self) {
+        let discord = Arc::clone(&self.discord);
+        if discord.is_running() {
+            let _ = self.handle.block_on(async move {
+                tokio::time::timeout(std::time::Duration::from_secs(10), discord.stop()).await
+            });
+        }
         log::info!("runtime stopped");
     }
 
     pub fn events(&self) -> &EventBus {
         &self.events
+    }
+
+    pub fn handle(&self) -> &Handle {
+        &self.handle
     }
 
     pub fn settings(&self) -> Settings {
@@ -127,16 +230,14 @@ impl Runtime {
         Ok(next)
     }
 
-    /// Reconfigures only the subsystems whose section changed. Each later change adds its
-    /// branch here; today every branch is a log line.
+    /// Reconfigures only the subsystems whose section changed.
     fn apply(&self, changed: &[&'static str]) {
         for section in changed {
             match *section {
-                "discord" => log::info!(
-                    "settings: discord changed (connection policy applies at next start)"
-                ),
-                "session" | "wake" | "assistant" | "codex" | "hotkey" => {
-                    log::info!("settings: {section} changed")
+                "discord" => {
+                    log::info!(
+                        "settings: discord changed; the guild id applies at the next connection"
+                    );
                 }
                 other => log::info!("settings: {other} changed"),
             }
@@ -154,6 +255,9 @@ impl Runtime {
             name: key.name().to_owned(),
             is_set: true,
         });
+        if key == SecretKey::DiscordToken {
+            self.reconnect();
+        }
         Ok(())
     }
 
@@ -167,12 +271,57 @@ impl Runtime {
             name: key.name().to_owned(),
             is_set: false,
         });
+        if key == SecretKey::DiscordToken {
+            self.disconnect();
+        }
         Ok(())
     }
 
     /// The value itself, for the one consumer that needs it. Never logged or serialized.
     pub fn secret(&self, key: SecretKey) -> Result<Option<String>, RuntimeError> {
         Ok(self.secrets.get(key)?)
+    }
+
+    pub fn is_secret_set(&self, key: SecretKey) -> bool {
+        self.secrets_set
+            .lock()
+            .expect("secrets lock")
+            .contains(&key)
+    }
+
+    /// Starts the Discord client with the stored token.
+    pub fn connect(&self) -> Result<(), RuntimeError> {
+        let token = self
+            .secret(SecretKey::DiscordToken)?
+            .ok_or(DiscordError::NoToken)?;
+        let guild = self.settings().discord.guild_id_value().map(GuildId::new);
+        self.discord.start(token, guild)?;
+        self.set_connection_error("discord", None);
+        Ok(())
+    }
+
+    /// Stops the Discord client in the background.
+    pub fn disconnect(&self) {
+        let discord = Arc::clone(&self.discord);
+        self.handle.spawn(async move {
+            discord.stop().await;
+        });
+    }
+
+    /// Stops, then starts again with the current token. Used when the token changes.
+    fn reconnect(&self) {
+        let discord = Arc::clone(&self.discord);
+        let token = self.secret(SecretKey::DiscordToken).ok().flatten();
+        let guild = self.settings().discord.guild_id_value().map(GuildId::new);
+        let events = self.events.clone();
+        self.handle.spawn(async move {
+            discord.stop().await;
+            if let Some(token) = token {
+                if let Err(error) = discord.start(token, guild) {
+                    events.log(format!("Discord: could not reconnect: {error}"));
+                }
+            }
+        });
     }
 
     pub fn is_muted(&self) -> bool {
@@ -182,8 +331,8 @@ impl Runtime {
     pub fn set_muted(&self, muted: bool) -> bool {
         let previous = self.muted.swap(muted, Ordering::AcqRel);
         if previous != muted {
-            log::info!("mute {}", if muted { "on" } else { "off" });
-            self.events.publish(AppEvent::MuteChanged { muted });
+            self.host.apply_mute(muted);
+            self.discord.mark_panels_dirty();
         }
         muted
     }
@@ -228,6 +377,7 @@ impl Runtime {
                 })
                 .collect(),
             connection_errors: self.connection_errors.lock().expect("errors lock").clone(),
+            discord: self.discord.status(),
             settings: self.settings(),
         }
     }
@@ -239,22 +389,26 @@ mod tests {
     use crate::secrets::MemoryStore;
     use serde_json::json;
 
-    fn runtime(dir: &tempfile::TempDir) -> Runtime {
+    fn runtime(dir: &tempfile::TempDir, tokio_rt: &tokio::runtime::Runtime) -> Runtime {
         Runtime::new(
             "0.1.0+test 2026-11-09",
             dir.path().to_path_buf(),
             SettingsStore::new(dir.path().join("settings.json")),
             Arc::new(MemoryStore::default()),
             EventBus::new(16),
+            tokio_rt.handle().clone(),
         )
     }
 
     #[test]
     fn first_start_writes_defaults_and_status_has_no_secret_values() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let runtime = runtime(&dir);
+        let runtime = runtime(&dir, &tokio_rt);
         runtime.start().unwrap();
         assert!(dir.path().join("settings.json").exists());
+        // A nonsense token: the connect attempt fails in the background; the secret path
+        // itself must still behave.
         runtime
             .set_secret("discord_token", "  super-secret-token ")
             .unwrap();
@@ -272,12 +426,14 @@ mod tests {
         );
         runtime.clear_secret("discord_token").unwrap();
         assert!(!runtime.status().secrets["discord_token"].is_set);
+        runtime.shutdown();
     }
 
     #[test]
     fn saving_a_patch_validates_persists_and_reports_the_changed_sections() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let runtime = runtime(&dir);
+        let runtime = runtime(&dir, &tokio_rt);
         runtime.start().unwrap();
         let mut events = runtime.events().subscribe();
         let saved = runtime
@@ -306,26 +462,21 @@ mod tests {
 
     #[test]
     fn mute_is_one_state_with_an_event_per_change() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let runtime = runtime(&dir);
+        let runtime = runtime(&dir, &tokio_rt);
         let mut events = runtime.events().subscribe();
         assert!(runtime.toggle_mute());
         assert!(!runtime.toggle_mute());
         runtime.set_muted(false);
-        assert_eq!(
-            events
-                .try_recv()
-                .ok()
-                .map(|e| matches!(e, AppEvent::MuteChanged { muted: true })),
-            Some(true)
-        );
-        assert_eq!(
-            events
-                .try_recv()
-                .ok()
-                .map(|e| matches!(e, AppEvent::MuteChanged { muted: false })),
-            Some(true)
-        );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(AppEvent::MuteChanged { muted: true })
+        ));
+        assert!(matches!(
+            events.try_recv(),
+            Ok(AppEvent::MuteChanged { muted: false })
+        ));
         assert!(
             events.try_recv().is_err(),
             "no event when the state did not change"
@@ -333,9 +484,21 @@ mod tests {
     }
 
     #[test]
-    fn unknown_secret_names_are_rejected() {
+    fn connect_without_a_token_is_refused() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let runtime = runtime(&dir);
+        let runtime = runtime(&dir, &tokio_rt);
+        assert!(matches!(
+            runtime.connect(),
+            Err(RuntimeError::Discord(DiscordError::NoToken))
+        ));
+    }
+
+    #[test]
+    fn unknown_secret_names_are_rejected() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
         assert!(matches!(
             runtime.set_secret("password", "x"),
             Err(RuntimeError::UnknownSecret(_))

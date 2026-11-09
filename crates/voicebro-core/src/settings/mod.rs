@@ -50,11 +50,28 @@ impl Default for Settings {
 pub struct DiscordSettings {
     /// Connect the bot at start-up when a token is stored.
     pub auto_connect: bool,
+    /// The server whose slash commands are registered directly (they appear at once).
+    /// Empty registers them globally, which Discord can take up to an hour to show.
+    pub guild_id: String,
 }
 
 impl Default for DiscordSettings {
     fn default() -> Self {
-        Self { auto_connect: true }
+        Self {
+            auto_connect: true,
+            guild_id: String::new(),
+        }
+    }
+}
+
+impl DiscordSettings {
+    pub fn guild_id_value(&self) -> Option<u64> {
+        let trimmed = self.guild_id.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            trimmed.parse().ok()
+        }
     }
 }
 
@@ -238,6 +255,13 @@ fn validate_shortcut(field: &str, shortcut: &str) -> Result<(), ValidationError>
 impl Settings {
     /// The only validator. Returns the first problem with its field path.
     pub fn validate(&self) -> Result<(), ValidationError> {
+        let guild = self.discord.guild_id.trim();
+        if !guild.is_empty() && !guild.chars().all(|c| c.is_ascii_digit()) {
+            return Err(invalid(
+                "discord.guild_id",
+                "a server id is digits only; leave it empty to register commands globally",
+            ));
+        }
         let timeout = self.session.idle_timeout_seconds;
         if timeout != 0 && !(5..=3600).contains(&timeout) {
             return Err(invalid(
@@ -381,6 +405,19 @@ mod tests {
         assert_eq!(error.field, "wake.deactivation_phrases");
         assert!(error.message.contains("beta"), "{}", error.message);
         assert!(error.message.contains("activation"), "{}", error.message);
+    }
+
+    #[test]
+    fn guild_id_is_digits_or_empty() {
+        let mut settings = Settings::default();
+        settings.discord.guild_id = " 1091401169441656933 ".to_owned();
+        settings.validate().expect("digits with spaces are fine");
+        assert_eq!(settings.discord.guild_id_value(), Some(1091401169441656933));
+        settings.discord.guild_id = "my-server".to_owned();
+        assert_eq!(settings.validate().unwrap_err().field, "discord.guild_id");
+        settings.discord.guild_id = String::new();
+        settings.validate().expect("empty means global");
+        assert_eq!(settings.discord.guild_id_value(), None);
     }
 
     #[test]

@@ -24,6 +24,8 @@ pub enum AppEvent {
         source: String,
         message: Option<String>,
     },
+    /// The Discord connection or a voice channel changed.
+    Discord(Box<crate::discord::DiscordStatus>),
 }
 
 #[derive(Clone)]

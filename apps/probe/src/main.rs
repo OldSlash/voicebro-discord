@@ -12,6 +12,7 @@ mod discord;
 mod hotkey;
 mod opus;
 mod rtc;
+mod seed;
 mod vosk;
 
 use std::process::ExitCode;
@@ -97,6 +98,12 @@ const PROBES: &[Probe] = &[
         summary: "global Ctrl+Alt+M through tauri-plugin-global-shortcut under a full-screen game",
         needs: "the probe-hotkey window (cargo run -p probe-hotkey) and a game in front",
         run: hotkey::run,
+    },
+    Probe {
+        name: "seed-secrets",
+        summary: "store the Discord token from probe.local.json in the app's secret store",
+        needs: "probe.local.json with discord_token",
+        run: seed::secrets,
     },
     Probe {
         name: "discord-lifecycle",

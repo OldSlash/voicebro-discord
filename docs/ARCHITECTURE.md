@@ -169,8 +169,11 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
 - **Participants** are kept current from `voice_state_update` and pushed to the gate.
 - The receive handler decodes per-speaker PCM at 48 kHz stereo (never mono or 24 kHz: songbird
   0.6's packet-loss recovery for those modes is unproven), mixes it into reusable buffers,
-  and calls `gate.process_tick(mixed, per_speaker)`. Participant identity is preserved up
-  to the gate and the wake engine; the assistant hears the mix.
+  and calls the app's `VoiceHost::on_tick(guild, mixed, per_speaker)`. `VoiceHost` is the
+  one trait the adapter needs from the rest of the app (ticks, speaker names, participants,
+  join and leave, the assistant state for the panel, mute); the session gate implements it.
+  Participant identity is preserved up to the gate and the wake engine; the assistant hears
+  the mix.
 - Output is one `Track` from `RawAdapter<PcmSource>` (f32 PCM), attached with `play_only`.
   The crate that owns the track enables symphonia's `pcm` feature; without it songbird
   cannot decode the raw stream and the track fails with "no compatible track found".
