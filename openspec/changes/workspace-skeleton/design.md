@@ -55,7 +55,7 @@ and a log line per changed section are written now so later changes only add a b
 
 **D5. `SecretStore` trait with two implementations.** `CredentialManagerStore` through
 `windows-sys` (`CredWriteW`/`CredReadW`/`CredDeleteW`, generic type, local-machine
-persistence, UTF-16 blob) as confirmed by P0.5, and `MemoryStore` for tests. The UI gets
+persistence, UTF-16 blob) as confirmed by the credential probe, and `MemoryStore` for tests. The UI gets
 `set_secret(name, value)` and `clear_secret(name)`; `get_settings` returns `secrets: {
 discord_token: { is_set } }`. The token value is read once at start and on change by
 `Runtime`, which hands it to the Discord adapter later; nothing else sees it.

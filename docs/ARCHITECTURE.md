@@ -293,7 +293,7 @@ frames into `input`, the assistant pushes decoded answer audio into `output` (th
   the guild's session; history carries over through `initialItems`. A rejected model falls
   back to the account defaults.
 - `rtc.rs`: the realtime call over WebRTC inside the process (`webrtc` 0.21 over its sans-io
-  core `rtc`, decided by probe P0.2): one Opus audio track (registered by hand: 48 kHz,
+  core `rtc`, decided by the live call probe on 2026-11-09): one Opus audio track (registered by hand: 48 kHz,
   2 channels in SDP, `minptime=10;useinbandfec=1`), one data channel named `oai-events`
   created before the offer, a non-trickle offer (ICE gathering waited for, at most 2 s),
   `thread/realtime/start` with `transport: {type: webrtc, sdp}` and `version: "v3"`, the

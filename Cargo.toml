@@ -1,12 +1,22 @@
 [workspace]
 resolver = "2"
-members = ["apps/probe", "apps/probe-hotkey"]
+members = ["crates/voicebro-core", "apps/desktop", "apps/probe", "apps/probe-hotkey"]
 
 [workspace.package]
 edition = "2021"
 rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/OldSlash/voicebro-discord"
+
+[workspace.dependencies]
+voicebro-core = { path = "crates/voicebro-core" }
+anyhow = "1"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "sync", "time"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
 
 # Speed over size: the hot paths are FIR resamplers, mixing and Opus, and the binary is
 # small next to the speech model and the Codex process. See docs/MVP-PLAN.md, section 3.

@@ -1,4 +1,4 @@
-//! P0.4: Opus encode/decode round trip with the crate songbird already links.
+//! Opus encode/decode round trip with the crate songbird already links.
 //!
 //! Pass criterion: a 1 kHz tone at 48 kHz, encoded and decoded in 20 ms mono frames,
 //! comes back with a normalized cross-correlation above 0.9 once the codec delay is

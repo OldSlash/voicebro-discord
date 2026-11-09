@@ -1,7 +1,7 @@
 [package]
 name = "probe-hotkey"
 version = "0.1.0"
-description = "VoiceBro probe P0.9: a minimal Tauri window that logs Ctrl+Alt+M presses. Not shipped."
+description = "VoiceBro hotkey probe: a minimal Tauri window that logs Ctrl+Alt+M presses. Not shipped."
 publish = false
 edition.workspace = true
 rust-version.workspace = true

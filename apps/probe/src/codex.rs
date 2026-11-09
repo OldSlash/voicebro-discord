@@ -1,4 +1,4 @@
-//! P0.1: the Codex app-server protocol as installed.
+//! The Codex app-server protocol as installed.
 //!
 //! `AppServer` is the minimal JSON-RPC-over-stdio client the probes share: one JSON object
 //! per line, requests with numeric ids, notifications broadcast to subscribers, and every
@@ -294,7 +294,7 @@ fn locate() -> anyhow::Result<(PathBuf, String)> {
     Ok((executable, version))
 }
 
-/// P0.1: dump the schema and check that the realtime types are there with the fields the
+/// Dump the schema and check that the realtime types are there with the fields the
 /// plan relies on.
 pub fn schema(args: &[String]) -> anyhow::Result<Outcome> {
     let out = args
@@ -394,7 +394,7 @@ pub fn schema(args: &[String]) -> anyhow::Result<Outcome> {
     Ok(Outcome { pass, details })
 }
 
-/// P0.1 live: handshake, account, models, a read-only thread.
+/// Live: handshake, account, models, a read-only thread.
 pub fn smoke(_args: &[String]) -> anyhow::Result<Outcome> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {

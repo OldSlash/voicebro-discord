@@ -16,7 +16,7 @@
 
 ## 3. Secrets (spec `secret-storage`)
 
-- [ ] 3.1 Implement the `SecretStore` trait, `MemoryStore`, and `CredentialManagerStore` through `windows-sys` as confirmed by P0.5; verify `MemoryStore` unit tests and a `VOICEBRO_SECRET_LIVE=1` gated test that round-trips a `VoiceBro/test` credential
+- [ ] 3.1 Implement the `SecretStore` trait, `MemoryStore`, and `CredentialManagerStore` through `windows-sys` as confirmed by the credential probe; verify `MemoryStore` unit tests and a `VOICEBRO_SECRET_LIVE=1` gated test that round-trips a `VoiceBro/test` credential
 - [ ] 3.2 Wire `Runtime` to read the token at start and on change, exposing only `is_set`; verify a test that the settings snapshot serializes `is_set` and never the value, and that the log output of the secret path contains no value
 
 ## 4. Logging and build identity (spec `diagnostic-logging`)

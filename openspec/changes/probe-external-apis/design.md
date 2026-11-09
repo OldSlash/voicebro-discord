@@ -4,7 +4,7 @@
 
 See proposal.md for motivation. The repository has no code yet. The target shape is in
 `docs/ARCHITECTURE.md` (workspace with `crates/voicebro-core`, `apps/desktop`, `apps/probe`),
-and the probe list with pass criteria is `docs/MVP-PLAN.md` section 4, P0. Facts that fix the
+and the probe list with pass criteria is `docs/MVP-PLAN.md`, the probes phase. Facts that fix the
 approach:
 
 - `webrtc` 0.21.1 has a different API from every example written before 0.17
@@ -46,10 +46,11 @@ the other members. Alternative: a standalone crate outside the workspace. Reject
 dependency versions pinned by the probes are the ones the core will use, and one lock file
 proves they resolve together.
 
-**D3. Probe order follows risk, not the plan numbering.** First P0.1 (Codex schema) because
-P0.2 and P0.3 are written against it. Then P0.2 and P0.4 together (the call needs Opus).
-Then P0.3 inside the same call. P0.5, P0.6, P0.9 are independent and small; they fill the
-gaps while waiting for answers. P0.7 and P0.8 need a Discord bot in a test guild and go last.
+**D3. Probe order follows risk.** First the Codex schema, because the call and the canary
+probes are written against it. Then the WebRTC call together with Opus (the call needs the
+codec), with the canary inside the same call. Credential Manager, Vosk assets and the hotkey
+are independent and small; they fill the gaps while waiting for answers. The Discord
+lifecycle and timing probes need a bot in a test guild and go last.
 
 **D4. The WebRTC decision rule is written before the probe runs.** `webrtc` 0.21 passes →
 it is the crate. It fails after a day of honest effort → `str0m` 0.25 gets one day. Both
@@ -81,7 +82,7 @@ survives a reboot, which the user does by hand.
   rejects us".
 - [Codex updates itself and the schema moves under the probe] → pin the probed version in
   `AGENTS.md`; the probe prints `codex --version` first.
-- [P0.7 and P0.8 need a second person in the channel] → a second account or a WAV played
+- [The Discord probes need a second person in the channel] → a second account or a WAV played
   from another client is enough; the probe reports which was used.
 - [Probe code quality drifts into the core later] → the probe is a dev tool; nothing is
   moved from it into `voicebro-core` by copy, the core is written from the architecture and

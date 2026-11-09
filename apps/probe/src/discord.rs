@@ -1,4 +1,4 @@
-//! P0.7 and P0.8: songbird lifecycle and receive-path timing.
+//! songbird lifecycle and receive-path timing.
 //!
 //! Both probes join a real voice channel (token, guild and channel from the environment).
 //! `discord-lifecycle` registers a counting `VoiceTick` handler and a silent output track,

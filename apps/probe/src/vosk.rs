@@ -1,4 +1,4 @@
-//! P0.6: the pinned Vosk assets still download, verify and load.
+//! The pinned Vosk assets still download, verify and load.
 //!
 //! Downloads go through the system `curl.exe` to `<name>.part`, are hashed with SHA-256,
 //! renamed, extracted with the system `tar.exe`, and `libvosk.dll` is loaded at runtime with

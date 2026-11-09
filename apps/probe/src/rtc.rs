@@ -1,4 +1,4 @@
-//! P0.2 and P0.3: the WebRTC call inside the Rust process.
+//! The WebRTC call inside the Rust process.
 //!
 //! `rtc-loopback` connects two peer connections in one process and streams an Opus tone
 //! from one to the other: it separates "we hold the crate wrong" from "the remote side
@@ -367,7 +367,7 @@ fn drain_log(log: &mut mpsc::UnboundedReceiver<String>, details: &mut Vec<String
 }
 
 // ---------------------------------------------------------------------------------------
-// P0.2 part 1: loopback
+// Loopback: two peers in one process
 // ---------------------------------------------------------------------------------------
 
 pub fn loopback(_args: &[String]) -> anyhow::Result<Outcome> {
@@ -517,7 +517,7 @@ pub fn loopback(_args: &[String]) -> anyhow::Result<Outcome> {
 }
 
 // ---------------------------------------------------------------------------------------
-// P0.2 part 2 and P0.3: the real call
+// The real call to Codex realtime, with the canary instruction
 // ---------------------------------------------------------------------------------------
 
 const CANARY_WORD: &str = "банан";
