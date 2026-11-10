@@ -75,6 +75,24 @@
     control.addEventListener("change", () => saveControl(control));
   });
 
+  function wakeText(wake) {
+    const state = wake.state || {};
+    let text;
+    switch (state.kind) {
+      case "off": text = "off (session mode is not wake word)"; break;
+      case "no_phrases": text = "no phrases configured"; break;
+      case "downloading": text = `downloading the ${state.label}: ${state.percent}%`; break;
+      case "loading": text = `loading ${wake.model}`; break;
+      case "ready": text = `ready (${wake.model})`; break;
+      case "error": text = `error: ${state.message}`; break;
+      default: text = "unknown";
+    }
+    const extras = [];
+    if ((wake.unknown_words || []).length) extras.push(`not in the model vocabulary: ${wake.unknown_words.join(", ")}`);
+    if (wake.dropped_chunks) extras.push(`${wake.dropped_chunks} audio chunks dropped`);
+    return extras.length ? `${text}; ${extras.join("; ")}` : text;
+  }
+
   function renderStatus(status) {
     const discord = status.discord || {};
     let discordText = discord.state || "unknown";
@@ -88,6 +106,7 @@
     $("status-mute").textContent = status.muted ? "muted" : "not muted";
     $("mute-toggle").textContent = status.muted ? "Unmute" : "Mute";
     $("status-data-dir").textContent = status.data_dir;
+    $("status-wake").textContent = wakeText(status.wake || {});
     const tokenSet = Boolean(status.secrets?.discord_token?.is_set);
     $("status-token").textContent = tokenSet ? "set" : "not set";
     const badge = $("token-badge");
@@ -200,7 +219,13 @@
             appendLog(payload.muted ? "muted" : "unmuted");
             refresh();
             break;
+          case "assets":
+            if (payload.error) appendLog(`${payload.label}: download failed: ${payload.error}`);
+            else appendLog(`${payload.label}: ${payload.percent}%`);
+            refresh();
+            break;
           case "discord":
+          case "wake":
           case "settings_changed":
           case "secret_changed":
           case "connection_error":

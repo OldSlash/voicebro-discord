@@ -26,6 +26,14 @@ pub enum AppEvent {
     },
     /// The Discord connection or a voice channel changed.
     Discord(Box<crate::discord::DiscordStatus>),
+    /// The wake-word engine changed state (downloading, loading, ready, error).
+    Wake(Box<crate::wake::WakeStatus>),
+    /// Progress of a first-use asset download, in steps of at least 20 %.
+    Assets {
+        label: String,
+        percent: u8,
+        error: Option<String>,
+    },
 }
 
 #[derive(Clone)]
