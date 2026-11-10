@@ -19,7 +19,9 @@
 - [x] 4.1 Add `scripts\measure.ps1` (private bytes per process, receive-path CPU) and run it for idle always-on, idle wake-word, during a call, each three times; verify the numbers are written into `docs/MVP-PLAN.md` (idle always and idle wake-word done three times each; during a call needs a person in the channel, the user's step)
 - [x] 4.2 Compare the receive-path CPU between `opt-level = 3` and `z` once; verify the decision and numbers are written into the plan's release profile section (239 µs versus 253 µs per tick; `3` stays)
 - [x] 4.3 Run the acceptance checklist (mute, wake word on noisy recordings, Codex canary and continuity, app lifecycle) and record pass/fail per item with what was not tested; verify every item has a result
-- [ ] 4.4 Real-channel session with two or more people and a game running (the user's step; the agent prepares the build and reads the log afterwards); verify the log shows the session and the results are recorded in the plan
+- [x] 4.4 Real-channel session with two or more people and a game running (the user's step; the agent prepares the build and reads the log afterwards); verify the log shows the session and the results are recorded in the plan
+
+  Closed by the user's decision of 2026-11-10 at the merge into `main` (every remaining check counts as done); not verified separately as a task.
 - [x] 4.5 Bump the version to 0.2.0 in `apps/desktop/Cargo.toml` and `tauri.conf.json`; verify the stamp in the UI and the log shows 0.2.0 (the log shows `VoiceBro 0.2.0+b5baf5d.dirty 2026-11-09`)
 
 ## 5. Close-out
