@@ -69,17 +69,21 @@ Each call SHALL count:
 - the frames bridged after a dry buffer and the audible gaps in speech;
 - the current and the highest buffer depth.
 
-The counters SHALL be in the status while the call runs and SHALL be written as one log
-line when the call ends. Frames bridged after a dry buffer SHALL NOT be counted as concealed
-frames, which count lost packets only.
+#### Scenario: Clean local network
+- **WHEN** a ten-second question is sent through a call on a loopback connection
+- **THEN** the input drop, late and concealed counters are zero, and no audible gap is counted
+
+### Requirement: Call counters reach the status and the log
+The call's counters SHALL be in the status while the call runs and SHALL be written as one
+log line when the call ends.
 
 #### Scenario: End of a call
 - **WHEN** a call ends
 - **THEN** one log line names the guild and every counter of that call with its value
 
-#### Scenario: Clean local network
-- **WHEN** a ten-second question is sent through a call on a loopback connection
-- **THEN** the input drop, late and concealed counters are zero, and no audible gap is counted
+### Requirement: Bridged frames are not counted as concealed
+Frames bridged after a dry buffer SHALL NOT be counted as concealed frames, which count lost
+packets only.
 
 #### Scenario: A stall is not a loss
 - **WHEN** the server stalls for 200 ms in the middle of an answer and every packet arrives

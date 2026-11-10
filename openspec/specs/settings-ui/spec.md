@@ -7,17 +7,28 @@ clear messages, so the settings file never has to be edited by hand.
 ## Requirements
 
 ### Requirement: Every setting is editable
-Every field of the settings document SHALL have a control, split as in the first version.
-The Settings tab: Appearance (theme, font size); Audio (input and output gain, earcons and
-volume); Assistant (session mode, idle timeout, wake engine, wake model, activation phrases,
-deactivation phrases); Codex (model, reasoning effort, voice, instructions, speaker labels);
-Hotkey (mute); Diagnostics (performance monitoring, memory measurement). The Config tab:
-Discord token (write-only with set and clear), guild id, Codex executable. There is no
-auto-connect control: the bot always connects when a token is stored.
+Every field of the settings document SHALL have a control, split between the Settings and
+Config tabs as in the first version. The Settings tab: Appearance (theme, font size); Audio
+(input and output gain, earcons and volume); Assistant (session mode, idle timeout, wake
+engine, wake model, activation phrases, deactivation phrases); Codex (model, reasoning
+effort, voice, instructions, speaker labels); Hotkey (mute); Diagnostics (performance
+monitoring, memory measurement).
 
 #### Scenario: Field for each setting
 - **WHEN** the Settings and Config tabs are opened
 - **THEN** each field above is present on its tab and shows the current value
+
+### Requirement: Config tab fields
+The Config tab SHALL hold the Discord token (write-only, with set and clear), the guild id
+and the Codex executable.
+
+#### Scenario: Config fields
+- **WHEN** the Config tab is opened
+- **THEN** the token field shows whether a token is stored but never the token, and the guild id and the Codex executable show their stored values
+
+### Requirement: No auto-connect control
+The window SHALL have no control for connecting at start-up: the bot always connects when a
+token is stored.
 
 #### Scenario: No auto-connect control
 - **WHEN** the Settings or Config tab is opened
