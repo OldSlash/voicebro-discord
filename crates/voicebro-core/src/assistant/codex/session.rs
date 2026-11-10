@@ -7,6 +7,7 @@ use super::app_server::AppServer;
 use super::conversation::{
     call_instructions, call_names_note, speaker_note, CallContext, Conversation,
 };
+use super::playout::DepthEstimator;
 use super::rtc::{CallReport, CallSlot, RtcCall};
 use super::thread::{open_thread, ThreadSettings};
 use super::CodexConfig;
@@ -182,6 +183,8 @@ pub struct SessionParts {
     pub account: Arc<Mutex<Option<AccountInfo>>>,
     pub voices: Arc<Mutex<Option<Voices>>>,
     pub conversation: Arc<Mutex<Conversation>>,
+    /// What the guild's calls learnt about the server's lateness (kept for the app's run).
+    pub learned_depth: Arc<Mutex<Option<DepthEstimator>>>,
     pub workspace: PathBuf,
     pub ports: AudioPorts,
     pub chat: Arc<ChatLog>,
@@ -222,7 +225,7 @@ impl CodexSession {
                 last_assistant_text: None,
             }),
             rtc: Mutex::new(None),
-            report: CallReport::new(parts.guild),
+            report: CallReport::with_learned(parts.guild, parts.learned_depth),
             pending_answer: Mutex::new(None),
             chat: parts.chat,
             events: parts.events,
@@ -1074,6 +1077,7 @@ mod tests {
             account: Arc::new(Mutex::new(None)),
             voices: Arc::new(Mutex::new(None)),
             conversation: Arc::new(Mutex::new(Conversation::new(1))),
+            learned_depth: Arc::default(),
             workspace: dir.path().to_path_buf(),
             ports: AudioPorts { input, output },
             chat: Arc::clone(&chat),

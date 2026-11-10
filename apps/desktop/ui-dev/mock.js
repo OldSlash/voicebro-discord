@@ -49,7 +49,12 @@
   let lossRate = 0;
   let concealed = 0;
   let lastTick = Date.now();
-  const callAudio = { frames_sent: 0, input_drops: 0, input_underruns: 0, packets_received: 0, late: 0, concealed: 0, concealed_fec: 0, playout_underruns: 0, output_drops: 0, decode_errors: 0 };
+  const callAudio = {
+    frames_sent: 0, input_drops: 0, input_underruns: 0, packets_received: 0, late: 0, concealed: 0,
+    concealed_fec: 0, playout_underruns: 0, output_drops: 0, decode_errors: 0,
+    stretched_pause_ms: 0, stretched_speech_ms: 0, removed_ms: 0, bridged_frames: 0, speech_gaps: 0,
+    depth_ms: 60, depth_max_ms: 60,
+  };
   function advanceCall() {
     const now = Date.now();
     const packets = ((now - lastTick) / 1000) * 50;
@@ -59,6 +64,10 @@
     concealed += packets * lossRate;
     callAudio.concealed = Math.round(concealed);
     callAudio.concealed_fec = Math.floor(callAudio.concealed / 2);
+    // A server a little slower than real time: the playout lengthens pauses to keep up.
+    callAudio.stretched_pause_ms += Math.round(packets) % 3 === 0 ? 20 : 0;
+    callAudio.depth_ms = 220;
+    callAudio.depth_max_ms = 360;
   }
   const turns = [];
   function addTurn() {

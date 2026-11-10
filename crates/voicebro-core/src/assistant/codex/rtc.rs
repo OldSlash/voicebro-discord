@@ -6,6 +6,7 @@
 
 use super::jitter::JitterBuffer;
 use super::pacing::{Pick, SendPacer};
+use super::playout::DepthEstimator;
 use crate::audio::dsp::StereoDownsampler;
 use crate::audio::{AudioPorts, Frame, FrameProvider, FrameReceiver, OutputHandle};
 use bytes::Bytes;
@@ -61,13 +62,26 @@ pub struct CallAudioCounters {
     /// Packets of the assistant's voice dropped because the buffer was full.
     pub output_drops: u64,
     pub decode_errors: u64,
+    /// Time the playout added by lengthening pauses, in ms.
+    pub stretched_pause_ms: u64,
+    /// Time the playout added by lengthening voiced speech, in ms.
+    pub stretched_speech_ms: u64,
+    /// Time the playout removed from pauses and speech, in ms.
+    pub removed_ms: u64,
+    /// Frames bridged with concealment while the buffer was dry in speech.
+    pub bridged_frames: u64,
+    /// Dry spells in speech that bridging could not cover: heard as a gap.
+    pub speech_gaps: u64,
+    /// The playout depth now and at its highest, in ms.
+    pub depth_ms: u64,
+    pub depth_max_ms: u64,
 }
 
 impl CallAudioCounters {
     /// The one log line written when a call ends.
     pub fn log_line(&self, guild: u64) -> String {
         format!(
-            "call audio for guild {guild}: frames sent {}, input drops {}, input underruns {}, packets received {}, late {}, concealed {} (FEC {}), playout underruns {}, output drops {}, decode errors {}",
+            "call audio for guild {guild}: frames sent {}, input drops {}, input underruns {}, packets received {}, late {}, concealed {} (FEC {}), playout underruns {}, output drops {}, decode errors {}, stretched pause {} ms, stretched speech {} ms, removed {} ms, bridged frames {}, speech gaps {}, depth {} ms (max {} ms)",
             self.frames_sent,
             self.input_drops,
             self.input_underruns,
@@ -77,7 +91,14 @@ impl CallAudioCounters {
             self.concealed_fec,
             self.playout_underruns,
             self.output_drops,
-            self.decode_errors
+            self.decode_errors,
+            self.stretched_pause_ms,
+            self.stretched_speech_ms,
+            self.removed_ms,
+            self.bridged_frames,
+            self.speech_gaps,
+            self.depth_ms,
+            self.depth_max_ms
         )
     }
 }
@@ -134,19 +155,28 @@ fn local_ip() -> String {
         .unwrap_or_else(|_| "127.0.0.1".to_owned())
 }
 
-/// Where a call reports its counters when it ends: the guild for the log line, and the
-/// slot the session shows in its status after the call is gone.
+/// Where a call reports its counters when it ends: the guild for the log line, the slot the
+/// session shows in its status after the call is gone, and what the call's playout learnt
+/// about the server's lateness, which the next call of the guild starts from.
 #[derive(Clone)]
 pub struct CallReport {
     pub guild: u64,
     pub last: Arc<Mutex<Option<CallAudioCounters>>>,
+    pub learned: Arc<Mutex<Option<DepthEstimator>>>,
 }
 
 impl CallReport {
     pub fn new(guild: u64) -> Self {
+        Self::with_learned(guild, Arc::default())
+    }
+
+    /// A report whose learnt playout depth is kept in `learned` (the assistant keeps one per
+    /// guild for the app's run, so it outlives the session).
+    pub fn with_learned(guild: u64, learned: Arc<Mutex<Option<DepthEstimator>>>) -> Self {
         Self {
             guild,
             last: Arc::new(Mutex::new(None)),
+            learned,
         }
     }
 }
@@ -303,7 +333,17 @@ impl RtcCall {
 
         let closed = Arc::new(AtomicBool::new(false));
         let counters = Arc::new(Counters::default());
-        let jitter = Arc::new(JitterBuffer::new());
+        // The playout starts from what the guild's previous call learnt, or from the prior.
+        let learned = report.learned.lock().expect("call report lock").clone();
+        let (estimator, start) = match learned {
+            Some(estimator) => (estimator, "learnt in the previous call"),
+            None => (DepthEstimator::with_prior(), "initial"),
+        };
+        let jitter = Arc::new(JitterBuffer::with_estimator(true, estimator));
+        log::info!(
+            "[rtc] call opens with a voice buffer of {} ms ({start})",
+            jitter.depth_ms()
+        );
         ports
             .output
             .attach_provider(Arc::clone(&jitter) as Arc<dyn FrameProvider>);
@@ -438,6 +478,13 @@ impl RtcCall {
             playout_underruns: jitter.playout_underruns,
             output_drops: jitter.overflow_drops,
             decode_errors: jitter.decode_errors,
+            stretched_pause_ms: jitter.stretched_pause_ms,
+            stretched_speech_ms: jitter.stretched_speech_ms,
+            removed_ms: jitter.removed_ms,
+            bridged_frames: jitter.bridged_frames,
+            speech_gaps: jitter.speech_gaps,
+            depth_ms: jitter.depth_ms,
+            depth_max_ms: jitter.depth_max_ms,
         }
     }
 
@@ -449,6 +496,7 @@ impl RtcCall {
             let counters = self.counters();
             log::info!("[rtc] {}", counters.log_line(self.report.guild));
             *self.report.last.lock().expect("call report lock") = Some(counters);
+            *self.report.learned.lock().expect("call report lock") = Some(self.jitter.learned());
             self.output.detach_provider();
             self.jitter.reset();
         }
@@ -567,7 +615,14 @@ mod tests {
             concealed_fec: 1,
             playout_underruns: 5,
             output_drops: 6,
-            decode_errors: 0,
+            decode_errors: 7,
+            stretched_pause_ms: 820,
+            stretched_speech_ms: 41,
+            removed_ms: 60,
+            bridged_frames: 9,
+            speech_gaps: 1,
+            depth_ms: 220,
+            depth_max_ms: 360,
         };
         let line = counters.log_line(42);
         for part in [
@@ -580,6 +635,13 @@ mod tests {
             "concealed 4 (FEC 1)",
             "playout underruns 5",
             "output drops 6",
+            "decode errors 7",
+            "stretched pause 820 ms",
+            "stretched speech 41 ms",
+            "removed 60 ms",
+            "bridged frames 9",
+            "speech gaps 1",
+            "depth 220 ms (max 360 ms)",
         ] {
             assert!(line.contains(part), "{part} missing in {line}");
         }
@@ -855,6 +917,7 @@ mod tests {
         );
         assert_eq!(counters.late, 0);
         assert_eq!(counters.concealed, 0);
+        assert_eq!(counters.speech_gaps, 0, "no gap heard on a clean network");
         let skip = 48_000;
         let heard_corr = correlation(&near_tone[skip..skip + 96_000], &heard[skip..], 9_600);
         let played_start = played
