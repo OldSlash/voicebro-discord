@@ -6,6 +6,7 @@
 //! handler or track survives. The receive path mixes the speakers and hands every tick to
 //! the [`VoiceHost`] the app provides (the session gate).
 
+mod delivery;
 mod handler;
 mod panel;
 mod receive;
@@ -25,6 +26,7 @@ use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 
+pub use delivery::{for_each_report_block, host_of, region_of, DeliveryCounters, ReportBlock};
 pub use panel::{mute_button_id, parse_mute_button_id};
 pub use speakers::{clean_display_name, SpeakerDirectory};
 
@@ -74,6 +76,8 @@ pub struct VoiceChannelStatus {
     pub channel_name: String,
     pub participants: Vec<String>,
     pub output: OutputCounters,
+    /// The leg toward Discord: voice server, region, our encoder and Discord's reports.
+    pub delivery: DeliveryCounters,
 }
 
 /// A server the bot is in, as the Status tab lists it.
@@ -267,6 +271,7 @@ impl DiscordRuntime {
         for (guild, session) in self.shared.sessions.lock().expect("sessions lock").iter() {
             if let Some(entry) = status.voice_channels.get_mut(&guild.to_string()) {
                 entry.output = session.output.counters();
+                entry.delivery = session.delivery.counters();
                 entry.participants = session.participants.clone();
             }
         }

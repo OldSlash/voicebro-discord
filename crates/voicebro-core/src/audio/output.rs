@@ -332,6 +332,23 @@ impl PcmSource {
     pub fn jitter_target(&self) -> usize {
         self.inner.lock().expect("output lock").jitter_target
     }
+
+    /// One 20 ms frame of f32 stereo ([`FRAME_SAMPLES`] values) into `out`: the same frame
+    /// `read` hands out as bytes, for the Opus output (change `discord-voice-delivery`).
+    /// Returns `false` at the end of the stream.
+    pub fn fill_frame(&mut self, out: &mut [f32]) -> bool {
+        let filled = self.fill_packet();
+        for line in self.latency_lines.drain(..) {
+            log::info!("{line}");
+        }
+        if !filled {
+            return false;
+        }
+        for (slot, sample) in out.iter_mut().zip(self.scratch.iter()) {
+            *slot = *sample;
+        }
+        true
+    }
 }
 
 impl Read for PcmSource {

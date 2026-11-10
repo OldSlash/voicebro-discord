@@ -1,8 +1,10 @@
 //! One voice connection per guild: join in the fixed order, leave by removing everything.
 
+use super::delivery::{self, DeliveryHandler, DeliveryLeg};
 use super::panel::{self, PanelRef, PanelView};
 use super::receive::ReceiveHandler;
 use super::{ConnectionState, Shared, VoiceChannelStatus};
+use crate::audio::opus_out::{self, DeliveryShared};
 use crate::audio::{output_pair, OutputHandle, CHANNELS, SAMPLE_RATE};
 use serenity::all::{ChannelId, GuildId};
 use serenity::async_trait;
@@ -22,6 +24,8 @@ pub(crate) struct VoiceSession {
     pub(crate) track: TrackHandle,
     pub(crate) track_ended: Arc<Notify>,
     pub(crate) panel: Option<PanelRef>,
+    /// The leg toward Discord: voice server, our encoder's counters, Discord's reports.
+    pub(crate) delivery: Arc<DeliveryLeg>,
 }
 
 struct TrackLogger {
@@ -126,6 +130,9 @@ pub(crate) async fn join_voice(
         .unwrap_or_else(|| channel.get().to_string());
 
     let directory = shared.directory(guild.get());
+    // The leg toward Discord: its connection and RTCP handlers go in before the join, so
+    // the server and our SSRC from `DriverConnect` are not missed.
+    let delivery = Arc::new(DeliveryLeg::new(Arc::new(DeliveryShared::default())));
     let call = manager.get_or_insert(guild);
     {
         let mut call = call.lock().await;
@@ -138,6 +145,13 @@ pub(crate) async fn join_voice(
             CoreEvent::VoiceTick.into(),
             ReceiveHandler::new(Arc::clone(shared), guild, Arc::clone(&directory)),
         );
+        for event in [
+            CoreEvent::DriverConnect,
+            CoreEvent::DriverReconnect,
+            CoreEvent::RtcpPacket,
+        ] {
+            call.add_global_event(event.into(), DeliveryHandler(Arc::clone(&delivery)));
+        }
     }
     if let Err(error) = manager.join(guild, channel).await {
         let _ = manager.remove(guild).await;
@@ -145,13 +159,32 @@ pub(crate) async fn join_voice(
     }
 
     let (output, source) = output_pair();
+    // The voice goes out as Opus packets the app encodes with FEC, which songbird passes
+    // through (change `discord-voice-delivery`); songbird's own PCM path if that track
+    // cannot be built.
     let input: songbird::input::Input =
-        RawAdapter::new(source, SAMPLE_RATE, CHANNELS as u32).into();
+        match opus_out::live_input(source, Arc::clone(&delivery.shared)) {
+            Ok(input) => input,
+            Err(source) => {
+                log::warn!(
+                    "the Opus output could not be built; songbird encodes the voice (no FEC)"
+                );
+                RawAdapter::new(source, SAMPLE_RATE, CHANNELS as u32).into()
+            }
+        };
     let track_ended = Arc::new(Notify::new());
-    let track = {
+    let (track, endpoint) = {
         let mut call = call.lock().await;
-        call.play_only_input(input)
+        // The endpoint's host only; the connection's session id and token stay out.
+        let endpoint = call
+            .current_connection()
+            .map(|connection| delivery::host_of(&connection.endpoint).to_owned());
+        (call.play_only_input(input), endpoint)
     };
+    log::info!(
+        "{}",
+        delivery::join_line(guild.get(), delivery.server().or(endpoint).as_deref())
+    );
     for event in [TrackEvent::End, TrackEvent::Error] {
         let _ = track.add_event(
             Event::Track(event),
@@ -169,6 +202,7 @@ pub(crate) async fn join_voice(
     }
     shared.host.on_join(guild.get(), output.clone());
 
+    let delivery_counters = delivery.counters();
     shared.sessions.lock().expect("sessions lock").insert(
         guild.get(),
         VoiceSession {
@@ -179,6 +213,7 @@ pub(crate) async fn join_voice(
             track,
             track_ended,
             panel: None,
+            delivery,
         },
     );
     let guild_name = shared
@@ -193,6 +228,7 @@ pub(crate) async fn join_voice(
                 channel_name: channel_name.clone(),
                 participants: Vec::new(),
                 output: Default::default(),
+                delivery: delivery_counters,
             },
         );
     });
@@ -221,6 +257,10 @@ async fn leave_voice_locked(shared: &Arc<Shared>, guild: GuildId) -> bool {
     session.output.close();
     let _ = tokio::time::timeout(Duration::from_millis(200), session.track_ended.notified()).await;
     let _ = session.track.stop();
+    log::info!(
+        "{}",
+        delivery::leave_line(guild.get(), &session.delivery.counters())
+    );
     if let Some(manager) = shared.songbird() {
         if let Err(error) = manager.remove(guild).await {
             log::debug!("remove call for guild {}: {error}", guild.get());

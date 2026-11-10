@@ -142,6 +142,19 @@
             channel_name: "General",
             participants: ["Alex"],
             output: { pushed: 0, dropped: 0, played: 0, underruns: 0, silence_frames: 0, flushed: 0 },
+            delivery: (() => {
+              // About one receiver report a second from Discord, with a lossy second now and then.
+              const seconds = Math.floor((Date.now() - started) / 1000);
+              const packets = Math.floor((Date.now() - started) / 20);
+              return {
+                voice_server: "finland14098.discord.media", region: "finland",
+                packets_encoded: packets, passed_through: packets, encode_errors: 0,
+                expected_loss_percent: seconds < 1 ? 10 : 4,
+                expected_loss_source: seconds < 1 ? "default" : "measured",
+                reports: seconds, last_reported_loss_percent: seconds ? (seconds % 7 === 0 ? 5.9 : 0.4) : null,
+                last_reported_jitter_ms: seconds ? 1.4 : null,
+              };
+            })(),
           },
         },
         last_error: null,

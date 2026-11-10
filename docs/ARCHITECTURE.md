@@ -46,8 +46,8 @@ voicebro-discord/
     voicebro-core/             the application core, no Tauri
       src/
         lib.rs
-        audio/                 frame types, queues, resamplers, earcons, output source
-        discord/               serenity + songbird adapter, slash commands, member panel
+        audio/                 frame types, queues, resamplers, earcons, output source, Opus output
+        discord/               serenity + songbird adapter, slash commands, member panel, the leg toward Discord
         gate.rs                session gate: mute, wake session state machine, pre-roll
         wake/                  wake-word engine trait, phrase spotter, model catalog, Vosk
         assistant/             assistant trait and the Codex implementation
@@ -86,7 +86,8 @@ The realtime call (WebRTC) lives inside the Rust process.
 |---|---|---|
 | Discord gateway, songbird driver, HTTP, downloads | Tauri's tokio runtime | Ordinary async code. |
 | Receive path: `VoiceTick` → mix → gate → assistant input, wake feed | Songbird's event task (tokio) | Must return within a fraction of 20 ms: no blocking calls, no locks held across awaits, only necessary allocation after warm-up. |
-| Discord output: songbird's mixer pulls `PcmSource::read` | Songbird's mixer thread | A read never blocks for more than a few ms; on underrun it returns silence and counts it. |
+| Discord output: songbird's mixer pulls one packet from `OpusOutput` (one `PcmSource` frame, then our Opus encode) | Songbird's mixer thread | A read never blocks for more than a few ms; on underrun it returns silence and counts it. Our encode replaces songbird's (passthrough), so the thread still encodes once per 20 ms; it costs about 0.64 ms on average (worst 1.4 ms) against songbird's 0.30 ms (`output_pull_cost`, release). |
+| Discord RTCP: report blocks about our stream → expected loss | Songbird's event task (tokio) | Only atomics are written; the mixer thread reads them per packet. |
 | Wake worker: recognizers, trailing silence, phrase detectors | One dedicated OS thread per engine, 20 ms tick | Fed through a bounded channel; a full queue drops and counts. |
 | WebRTC call: ICE/DTLS/SRTP, RTP in and out | The webrtc crate's runtime tasks | Incoming RTP packets are only inserted into the call's jitter buffer; nothing is decoded here. |
 | WebRTC send: pacing and Opus encode | One dedicated OS thread per call (`voicebro-rtc-send`), 20 ms tick | Sends exactly one packet per tick: the oldest waiting frame or silence. |
@@ -142,12 +143,35 @@ Owns the formats, queues and conversions shared by everything else.
 - **`OutputQueue` / `PcmSource`**: the assistant's audio toward Discord. A small adaptive
   jitter buffer (3 to 8 frames), drop-oldest when full, a flush epoch (so a cut answer never
   plays after unmute), an output mute that still lets earcons through, and counters
-  (supplied silence, drops, underruns). `PcmSource` implements songbird's `MediaSource`
-  through `RawAdapter`. A producer with its own clock-free buffer (the Codex call's jitter
+  (supplied silence, drops, underruns). `PcmSource::fill_frame` gives one 20 ms frame of
+  f32 stereo to the Opus output below; `PcmSource` still implements songbird's
+  `MediaSource` for the `RawAdapter` fallback. A producer with its own clock-free buffer (the Codex call's jitter
   buffer) attaches as a `FrameProvider`: while attached, `PcmSource` pulls one frame from it
   per read before the queue, flush and mute changes reset it, and a muted read still pulls
   and discards so the provider's playout keeps time. `OutputHandle::push` stays for the stub
   assistant and the tests.
+- **Opus output** (`opus_out.rs`, change `discord-voice-delivery`): the assistant's voice
+  leaves as Opus packets the app encodes, so each packet carries in-band FEC that rebuilds a
+  lost predecessor at the listener. songbird's own encoder has none.
+  - **`OpusOutput`**: a symphonia `FormatReader` with one 48 kHz stereo Opus track of 20 ms
+    frames. Each `next_packet` fills one frame through `PcmSource` (playout, gain, mute and
+    earcons as before) and encodes it with `DiscordEncoder`. A closed source ends the
+    track.
+  - **`DiscordEncoder`**: VOIP, 128 kbit/s, complexity 10, in-band FEC, `packet_loss_perc`
+    from the expected loss; the output buffer is allocated once. With FEC on and a loss
+    expected, libopus stays in SILK or hybrid, the modes that carry FEC. An encode error
+    sends a silence packet encoded at the start and is counted.
+  - **Passthrough**: `live_input` hands songbird a `LiveInput::Parsed` with this format and
+    songbird's Opus decoder wrapped in `CountingDecoder`. When the track is the only one
+    playing, songbird copies each packet into the RTP payload (DAVE encrypts it after) and
+    never calls the decoder. Encoded minus decoded is the number passed through; a decode
+    means passthrough was refused and is logged once per spell.
+  - **Expected loss** (`DeliveryShared`): an upper envelope of the loss Discord reports on
+    our stream. A higher report raises it at once; otherwise it moves toward each report by
+    a forgetting of 0.9983 per packet we send (the playout's memory, about 12 s), counted in
+    packets so it does not depend on how often Discord reports. It starts from the default
+    (10 %). With no new report it returns toward the default by the same forgetting, and the
+    source shows "default" once the default outweighs the last report.
 - **Source lifetime.** One output track per join. An empty queue (session over, nothing to
   say) produces silence, so a temporary underrun never ends the track. Only leaving the
   channel closes the source: `OutputHandle::close()` makes the next `read` return end of
@@ -207,9 +231,22 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   join and leave, the assistant state for the panel, mute); the session gate implements it.
   Participant identity is preserved up to the gate and the wake engine; the assistant hears
   the mix.
-- Output is one `Track` from `RawAdapter<PcmSource>` (f32 PCM), attached with `play_only`.
-  The crate that owns the track enables symphonia's `pcm` feature; without it songbird
-  cannot decode the raw stream and the track fails with "no compatible track found".
+- Output is one `Track` from `opus_out::live_input` (Opus packets songbird passes through),
+  attached with `play_only`. If that track cannot be built, the session falls back to
+  `RawAdapter<PcmSource>` (f32 PCM, songbird encodes, no FEC) with a warning. The crate
+  that owns the track enables symphonia's `pcm` feature; without it songbird cannot decode
+  the raw stream and the fallback fails with "no compatible track found".
+- **The leg toward Discord** (`delivery.rs`): a `DeliveryHandler` for `DriverConnect`,
+  `DriverReconnect` and `RtcpPacket` is registered before the join. It keeps the voice
+  server's host and our SSRC (never the session id or token). Each RTCP packet is cut at
+  songbird's `payload_end_pad` and its report blocks (sender and receiver reports) about
+  our SSRC feed the expected loss. Discord sends a receiver report about our stream about
+  once a second (probe of 2026-11-10). The host and the region read from it are logged at the
+  join. Discord names hosts in two forms, `finland14057.discord.media` (region `finland`)
+  and `c-sin19-5f0d7996.discord.media` (region `sin`): the region is the letters of the
+  first dash-separated part that is letters then a digit, else the label's leading letters.
+  `VoiceChannelStatus.delivery` (`DeliveryCounters`) carries them with the encoder's
+  counters and the last report, and the leave logs one line with them.
 - Changing the token restarts the client; a running client never keeps stale credentials.
 
 ### 4.3 Session gate (`gate.rs`)
@@ -713,8 +750,10 @@ Discord UDP ─► songbird (DAVE, Opus decode) ─► VoiceTick: per-SSRC 48 k 
 Codex: remote track ─► RTP packets ─► JitterBuffer (by sequence number, target 3..8)
    ◄─ pulled as FrameProvider: decode, FEC, concealment, 20 ms frames
 stub assistant, tests ─► OutputHandle.push(Frame) ─► OutputQueue (jitter 3..8 frames)
-   both ─► PcmSource::read (flush epoch, mute, earcons) ◄─ songbird mixer thread
-   ─► Opus, DAVE ─► Discord
+   both ─► PcmSource::fill_frame (flush epoch, mute, gain, earcons)
+   ─► OpusOutput: Opus with FEC (expected loss from Discord's reports) ◄─ songbird mixer thread
+   ─► songbird passthrough, DAVE ─► Discord
+Discord RTCP receiver reports on our SSRC ─► DeliveryShared::on_report ─► expected loss
 ```
 
 ### Control
@@ -754,6 +793,7 @@ Values that worked in the first version. Change them only with a measurement or 
 | Call receive jitter buffer | at most 50 packets; decodes up to 100 ms ahead; concealment at most 5 frames in a row |
 | Call playout (`playout.rs`) | depth 60..500 ms from the 95th percentile of the relative arrival delay (2 s window, 20 ms buckets, forgetting 0.9983 per packet) + 20 ms; a call starts from the guild's last learnt depth, the first from a 200 ms prior (30 % of the mass at 160–180 ms); pauses first (±20 ms, at most 25 stretches without a new packet, at least 60 ms of a pause kept); speech by one pitch period below half or above twice the depth, at most once per 60 ms, correlation ≥ 0.5; bridging at most 3 frames |
 | Queue toward Discord | 8 frames (~160 ms), drop oldest; jitter target 3..8 frames (stub and tests; the call uses its own jitter buffer) |
+| Opus toward Discord | 48 kHz stereo VOIP, 128 kbit/s, complexity 10, in-band FEC; expected loss from Discord's reports (envelope, forgetting 0.9983 per packet sent), default 10 %; songbird passes the packets through |
 | Gains | input and output 0.0..4.0, default 1.0; input applied at the gate's send, output in `PcmSource` before earcons |
 | Speech threshold | peak ≥ 700 (measured on the unscaled channel audio) |
 | Utterance gap | 700 ms |
@@ -781,6 +821,14 @@ Values that worked in the first version. Change them only with a measurement or 
   only in the log.
 - Counters: packets in/out, drops per queue, supplied silence, underruns, wake drops. They
   are part of the status snapshot.
+- **The leg toward Discord**, per voice channel (`DeliveryCounters`): the voice server and
+  region, packets encoded and passed through, encode errors, the expected loss and its
+  source, Discord's reports on our stream with the last loss and jitter. Logged as:
+
+  ```text
+  [delivery:<guild>] voice server <host> (region <region>)
+  [delivery:<guild>] voice server <host> (region <region>): <n> packets encoded, <n> passed through, <n> encode errors; expected loss <p> % (measured|default); <n> reports, last loss <p> %, jitter <ms> ms
+  ```
 - **Turn latency** (`latency.rs`, ported from the first version's tracker with its
   constants): one `LatencyTracker` per guild, owned by the gate. The gate reports every
   frame with speech (peak ≥ 700, before the gain) it sends to the assistant; `PcmSource`

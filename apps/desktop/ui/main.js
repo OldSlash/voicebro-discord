@@ -705,6 +705,7 @@
     const counters = { voice: discord.counters || {}, audio: status.audio || {} };
     for (const [guild, channel] of Object.entries(discord.voice_channels || {})) {
       counters[`output ${guild}`] = channel.output;
+      if (channel.delivery) counters[`delivery ${guild}`] = channel.delivery;
     }
     for (const call of calls) {
       if (call.audio) counters[`call ${call.guild_id}`] = call.audio;
@@ -832,8 +833,13 @@
     $(`${id}-scale`).textContent = `Top of the chart: ${Math.round(top)} ${unit}.`;
   }
   const number = (value) => (Number.isFinite(Number(value)) ? Math.round(Number(value)) : 0);
+  // One decimal, or a dash when nothing was measured.
+  const decimal = (value) => (value === null || value === undefined || !Number.isFinite(Number(value)) ? "—" : Number(value).toFixed(1));
   function statCards(status) {
     const discord = status.discord?.counters || {};
+    // The leg toward Discord of the channel the bot is in (the first, if several).
+    const delivery = Object.values(status.discord?.voice_channels || {}).map((channel) => channel.delivery).find(Boolean) || {};
+    const lossSource = delivery.expected_loss_source === "measured" ? "measured" : "default";
     const audio = callAudio(status) || (status.assistant?.calls || []).map((call) => call.audio).find(Boolean) || {};
     const gates = Object.values(status.gates || {});
     const turns = allTurns(status);
@@ -860,6 +866,16 @@
       ["Speech gaps", number(audio.speech_gaps)],
       ["Voice buffer, ms", number(audio.depth_ms)],
       ["Voice buffer max, ms", number(audio.depth_max_ms)],
+      // The host's first label fits a card; the full host is in the Status tab's counters.
+      ["Discord voice server", (delivery.voice_server || "—").split(".")[0]],
+      ["Discord region", delivery.region || "—"],
+      ["Packets to Discord", number(delivery.packets_encoded)],
+      ["Passed through with FEC", number(delivery.passed_through)],
+      ["Encode errors", number(delivery.encode_errors)],
+      ["Expected loss, %", delivery.expected_loss_source ? `${number(delivery.expected_loss_percent)} (${lossSource})` : "—"],
+      ["Reports from Discord", number(delivery.reports)],
+      ["Reported loss, %", decimal(delivery.last_reported_loss_percent)],
+      ["Reported jitter, ms", decimal(delivery.last_reported_jitter_ms)],
       ["Frames the assistant missed", number(gates.reduce((sum, gate) => sum + (gate.counters?.input_dropped || 0), 0))],
       ["Wake chunks dropped", number(status.wake?.dropped_chunks)],
       ["Input peak, %", number((levels.input?.peak || 0) * 100)],

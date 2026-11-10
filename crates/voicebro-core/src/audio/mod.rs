@@ -5,6 +5,7 @@ pub mod dsp;
 pub mod earcon;
 pub mod frame;
 pub mod gain;
+pub mod opus_out;
 pub mod output;
 pub mod ports;
 pub mod queue;
