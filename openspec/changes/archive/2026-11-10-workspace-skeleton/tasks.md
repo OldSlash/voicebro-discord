@@ -4,7 +4,9 @@
 
 - [x] 1.1 Add `crates/voicebro-core` (lib, `thiserror`, `serde`, `serde_json`, `log`, `tokio` sync) and `apps/desktop` (Tauri 2.12 app, `tauri-build`, `tauri-plugin-log` 2.10) to the workspace; verify `cargo build` succeeds for both members
 - [x] 1.2 Add `build.rs` and `windows-app-manifest.xml` to `apps/desktop` embedding the Common-Controls v6 manifest into every linked target and setting `VOICEBRO_BUILD_STAMP`; verify `cargo test -p voicebro-desktop` runs its (empty) test binary without `STATUS_ENTRYPOINT_NOT_FOUND` and the stamp has the `version+hash date` shape
-- [ ] 1.3 Write `tauri.conf.json` (product `VoiceBro`, identifier `com.voicebro.desktop`, `withGlobalTauri`, one window, NSIS target, `frontendDist` = `ui/`) and `capabilities/default.json`; verify `cargo tauri dev` opens the window
+- [x] 1.3 Write `tauri.conf.json` (product `VoiceBro`, identifier `com.voicebro.desktop`, `withGlobalTauri`, one window, NSIS target, `frontendDist` = `ui/`) and `capabilities/default.json`; verify `cargo tauri dev` opens the window
+
+  Closed by the user's decision of 2026-11-10 at the merge into `main` (every remaining check counts as done); not verified separately as a task.
 
 ## 2. Settings (spec `app-settings`)
 
@@ -27,9 +29,11 @@
 
 ## 5. Desktop commands and UI shell
 
-- [ ] 5.1 Implement commands `get_settings`, `save_settings(patch)`, `set_secret`, `clear_secret`, `status`, `app_info`, `set_muted`; verify each returns the expected shape from the webview console in `cargo tauri dev`
-- [ ] 5.2 Implement the event bridge task forwarding `AppEvent` to the webview as `app-event`, with lag counting; verify a log line emitted from Rust appears in the UI log pane
-- [ ] 5.3 Build the static UI shell: three tabs (Status, Settings, Chat), the log pane, the build stamp in the footer, a token field with set/clear and the `is_set` badge, and one settings control (idle timeout) that exercises save, validate and apply; verify in `cargo tauri dev` that an out-of-range timeout shows the validation message and a valid one persists across restart
+- [x] 5.1 Implement commands `get_settings`, `save_settings(patch)`, `set_secret`, `clear_secret`, `status`, `app_info`, `set_muted`; verify each returns the expected shape from the webview console in `cargo tauri dev`
+- [x] 5.2 Implement the event bridge task forwarding `AppEvent` to the webview as `app-event`, with lag counting; verify a log line emitted from Rust appears in the UI log pane
+- [x] 5.3 Build the static UI shell: three tabs (Status, Settings, Chat), the log pane, the build stamp in the footer, a token field with set/clear and the `is_set` badge, and one settings control (idle timeout) that exercises save, validate and apply; verify in `cargo tauri dev` that an out-of-range timeout shows the validation message and a valid one persists across restart
+
+  5.1–5.3 closed by the user's decision of 2026-11-10 at the merge into `main` (every remaining check counts as done); not verified separately as tasks. Later changes replaced this shell with the first version's layout.
 
 ## 6. Close-out
 
