@@ -215,8 +215,21 @@
     document.querySelectorAll("[data-path]").forEach((control) => fillField(control, false));
     fillConfig(false);
     applyAppearance(stored?.ui);
+    handoffHint();
     $("config-preview").textContent = stored ? JSON.stringify(stored, null, 2) : "";
   }
+
+  // What each answer handoff mode does, and how it behaved in the tests of 2026-11-10.
+  const HANDOFF_HINTS = {
+    items: "The agent's answer is added to the conversation as its own message and the voice retells it. In the tests it kept the agent's facts every time.",
+    commentary: "The agent's answer reaches the voice as commentary. In the tests the facts were kept; once the voice gave the agent the same task twice, once it acknowledged in English.",
+    bem_tags: "The agent's answer reaches the voice with channel tags (analysis, commentary, final). In the tests the facts were kept, sometimes shortened.",
+    thinking: "Codex's own routing, used before this setting existed: the answer is hidden context and the voice speaks in its own words. In the tests it twice made up an answer before the agent had finished.",
+  };
+  function handoffHint() {
+    $("codex-handoff-hint").textContent = HANDOFF_HINTS[$("codex-handoff").value] || "";
+  }
+  $("codex-handoff").addEventListener("change", handoffHint);
 
   async function saveControl(control) {
     if (!invoke) return;

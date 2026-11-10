@@ -64,6 +64,60 @@ fn truncate(text: &str, maximum: usize) -> String {
     format!("{}…", text.chars().take(maximum).collect::<String>())
 }
 
+/// How the Codex agent's answer reaches the voice model (`codex.handoff_mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandoffMode {
+    /// The answer is added to the conversation as its own item (`codexResponsesAsItems`).
+    Items,
+    /// `codexResponseHandoffMode: commentary`.
+    Commentary,
+    /// `codexResponseHandoffMode: bemTags`.
+    BemTags,
+    /// Codex's built-in routing: neither field is sent.
+    Thinking,
+}
+
+impl HandoffMode {
+    /// The setting's value; validation admits only the four, anything else reads as the
+    /// default.
+    pub fn from_setting(value: &str) -> Self {
+        match value {
+            "commentary" => HandoffMode::Commentary,
+            "bem_tags" => HandoffMode::BemTags,
+            "thinking" => HandoffMode::Thinking,
+            _ => HandoffMode::Items,
+        }
+    }
+
+    /// How the log and the chat name the mode.
+    pub fn label(self) -> &'static str {
+        match self {
+            HandoffMode::Items => "conversation items",
+            HandoffMode::Commentary => "commentary",
+            HandoffMode::BemTags => "tagged channels",
+            HandoffMode::Thinking => "built-in (thinking)",
+        }
+    }
+
+    /// Adds this mode's field to `thread/realtime/start`.
+    fn apply(self, params: &mut Value) {
+        match self {
+            HandoffMode::Items => params["codexResponsesAsItems"] = json!(true),
+            HandoffMode::Commentary => params["codexResponseHandoffMode"] = json!("commentary"),
+            HandoffMode::BemTags => params["codexResponseHandoffMode"] = json!("bemTags"),
+            HandoffMode::Thinking => {}
+        }
+    }
+
+    /// Removes every handoff field: what the built-in routing sends.
+    fn strip(params: &mut Value) {
+        if let Some(object) = params.as_object_mut() {
+            object.remove("codexResponsesAsItems");
+            object.remove("codexResponseHandoffMode");
+        }
+    }
+}
+
 /// `thread/realtime/start` for a WebRTC call, before the conversation is added. `voice`
 /// `None` leaves the field out, so the server uses its default voice.
 pub fn realtime_start_params(
@@ -71,6 +125,7 @@ pub fn realtime_start_params(
     prompt: &str,
     offer: &str,
     voice: Option<String>,
+    handoff: HandoffMode,
 ) -> Value {
     let mut params = json!({
         "threadId": thread_id,
@@ -83,7 +138,17 @@ pub fn realtime_start_params(
     if let Some(voice) = voice {
         params["voice"] = json!(voice);
     }
+    handoff.apply(&mut params);
     params
+}
+
+/// The line that opens a call in the log and the chat.
+pub fn call_start_line(voice: Option<&str>, codex: &str, handoff: HandoffMode) -> String {
+    format!(
+        "Call starting: voice {}; Codex: {codex}; answers: {}.",
+        voice.unwrap_or(SERVER_DEFAULT_VOICE),
+        handoff.label()
+    )
 }
 
 pub struct CodexSession {
@@ -340,19 +405,41 @@ impl CodexSession {
         }
     }
 
-    /// Starts realtime, retrying with only this call's notes if Codex rejects the history.
-    async fn start_with_history(&self, mut params: Value) -> Result<Value, String> {
+    /// Starts realtime. If Codex refuses the answer handoff field (it is experimental), it
+    /// retries once with the built-in routing and says so; then, if Codex rejects the
+    /// history, with only this call's notes.
+    async fn start_with_history(
+        &self,
+        mut params: Value,
+        handoff: HandoffMode,
+    ) -> Result<Value, String> {
         self.add_conversation(&mut params, true);
         let had_history = !self
             .conversation
             .lock()
             .expect("conversation lock")
             .is_empty();
-        match self
+        let first = match self
             .server
             .request("thread/realtime/start", params.clone())
             .await
         {
+            Err(error) if handoff != HandoffMode::Thinking => {
+                let line = log_used(
+                    "answer handoff",
+                    handoff.label(),
+                    HandoffMode::Thinking.label(),
+                    &format!("Codex refused the call with it: {error}"),
+                );
+                self.chat("system", None, &line);
+                HandoffMode::strip(&mut params);
+                self.server
+                    .request("thread/realtime/start", params.clone())
+                    .await
+            }
+            result => result,
+        };
+        match first {
             Err(error) if had_history => {
                 self.emit(&format!(
                     "Codex rejected the conversation history ({error}); starting without it"
@@ -385,9 +472,11 @@ impl CodexSession {
             return;
         }
         let voice = self.choose_voice();
+        let handoff = HandoffMode::from_setting(&self.config().handoff_mode);
         self.emit(&format!(
-            "starting the voice call (voice {})",
-            voice.as_deref().unwrap_or(SERVER_DEFAULT_VOICE)
+            "starting the voice call (voice {}, answers: {})",
+            voice.as_deref().unwrap_or(SERVER_DEFAULT_VOICE),
+            handoff.label()
         ));
         {
             let description = self
@@ -408,10 +497,7 @@ impl CodexSession {
             self.chat(
                 "system",
                 None,
-                &format!(
-                    "Call starting: voice {}; Codex: {description}.",
-                    voice.as_deref().unwrap_or(SERVER_DEFAULT_VOICE)
-                ),
+                &call_start_line(voice.as_deref(), &description, handoff),
             );
         }
         if self.config().speaker_labels != SpeakerLabels::Off {
@@ -439,8 +525,9 @@ impl CodexSession {
         let (answer_tx, answer_rx) = oneshot::channel();
         *self.pending_answer.lock().expect("answer lock") = Some(answer_tx);
 
-        let params = realtime_start_params(&self.thread_id(), &self.prompt(), &offer, voice);
-        if let Err(error) = self.start_with_history(params).await {
+        let params =
+            realtime_start_params(&self.thread_id(), &self.prompt(), &offer, voice, handoff);
+        if let Err(error) = self.start_with_history(params, handoff).await {
             self.pending_answer.lock().expect("answer lock").take();
             rtc.close().await;
             self.lock().realtime = Realtime::Idle;
@@ -912,14 +999,120 @@ mod tests {
 
     #[test]
     fn the_start_parameters_leave_out_an_empty_voice() {
-        let default = realtime_start_params("t1", "p", "sdp", None);
+        let default = realtime_start_params("t1", "p", "sdp", None, HandoffMode::Thinking);
         assert!(
             default.get("voice").is_none(),
             "server default: no voice field"
         );
         assert_eq!(default["version"], "v3");
         assert_eq!(default["transport"]["type"], "webrtc");
-        let chosen = realtime_start_params("t1", "p", "sdp", Some("cove".to_owned()));
+        let chosen = realtime_start_params(
+            "t1",
+            "p",
+            "sdp",
+            Some("cove".to_owned()),
+            HandoffMode::Thinking,
+        );
         assert_eq!(chosen["voice"], "cove");
+    }
+
+    #[test]
+    fn each_handoff_mode_sends_its_own_field() {
+        let start = |mode: &str| {
+            realtime_start_params("t1", "p", "sdp", None, HandoffMode::from_setting(mode))
+        };
+        let items = start("items");
+        assert_eq!(items["codexResponsesAsItems"], true);
+        assert!(items.get("codexResponseHandoffMode").is_none());
+        assert_eq!(
+            start("commentary")["codexResponseHandoffMode"],
+            "commentary"
+        );
+        assert!(start("commentary").get("codexResponsesAsItems").is_none());
+        assert_eq!(start("bem_tags")["codexResponseHandoffMode"], "bemTags");
+        let thinking = start("thinking");
+        assert!(thinking.get("codexResponsesAsItems").is_none());
+        assert!(
+            thinking.get("codexResponseHandoffMode").is_none(),
+            "the built-in routing sends what the app sent before"
+        );
+        assert_eq!(HandoffMode::from_setting(""), HandoffMode::Items);
+    }
+
+    /// Codex refuses the handoff field: the start is retried once with the built-in
+    /// routing, the chat and the log name both modes, and the built-in routing itself is
+    /// sent as it is. Uses the Node fake app-server; checks nothing without Node.
+    #[test]
+    fn a_refused_handoff_field_falls_back_to_the_built_in_routing() {
+        use crate::audio::{frame_channel, output_pair, INPUT_CAPACITY};
+        let node = std::process::Command::new("node").arg("--version").output();
+        if !node.is_ok_and(|output| output.status.success()) {
+            return;
+        }
+        let fake = format!(
+            "{}/testdata/fake-codex/fake_codex_rejects_handoff.cmd",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let events = EventBus::new(64);
+        let server = runtime
+            .block_on(AppServer::spawn(
+                runtime.handle().clone(),
+                events.clone(),
+                std::path::Path::new(&fake),
+            ))
+            .expect("the fake starts");
+        let (_sender, input) = frame_channel(INPUT_CAPACITY);
+        let (output, _source) = output_pair();
+        let chat = Arc::new(ChatLog::new(events.clone(), dir.path().to_path_buf()));
+        let session = CodexSession::new(SessionParts {
+            guild: 1,
+            handle: runtime.handle().clone(),
+            server: Arc::clone(&server),
+            config: Arc::new(RwLock::new(CodexConfig::default())),
+            account: Arc::new(Mutex::new(None)),
+            voices: Arc::new(Mutex::new(None)),
+            conversation: Arc::new(Mutex::new(Conversation::new(1))),
+            workspace: dir.path().to_path_buf(),
+            ports: AudioPorts { input, output },
+            chat: Arc::clone(&chat),
+            events: events.clone(),
+            errors: Arc::new(ConnectionErrors::new(events)),
+        });
+
+        let items = realtime_start_params("t1", "p", "sdp", None, HandoffMode::Items);
+        let started = runtime
+            .block_on(session.start_with_history(items, HandoffMode::Items))
+            .expect("the call starts with the built-in routing");
+        assert_eq!(started["attempt"], 2, "one refused start, one retry");
+        assert!(started["received"].get("codexResponsesAsItems").is_none());
+        let line = chat
+            .entries()
+            .into_iter()
+            .map(|entry| entry.text)
+            .find(|text| text.contains("answer handoff"))
+            .expect("the fallback is in the chat");
+        assert!(
+            line.contains("conversation items") && line.contains("built-in (thinking)"),
+            "{line}"
+        );
+
+        let thinking = realtime_start_params("t1", "p", "sdp", None, HandoffMode::Thinking);
+        let started = runtime
+            .block_on(session.start_with_history(thinking, HandoffMode::Thinking))
+            .expect("the built-in routing starts at once");
+        assert_eq!(started["attempt"], 3);
+        server.kill();
+    }
+
+    #[test]
+    fn the_call_start_line_names_voice_model_and_handoff() {
+        assert_eq!(
+            call_start_line(Some("cove"), "default model, reasoning default", HandoffMode::Items),
+            "Call starting: voice cove; Codex: default model, reasoning default; answers: conversation items."
+        );
+        assert!(call_start_line(None, "x", HandoffMode::Thinking)
+            .contains("voice server default; Codex: x; answers: built-in (thinking)"));
     }
 }

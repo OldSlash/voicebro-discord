@@ -65,6 +65,8 @@ pub struct CodexConfig {
     pub voice: String,
     pub instructions: String,
     pub speaker_labels: SpeakerLabels,
+    /// `codex.handoff_mode`, read when a call starts.
+    pub handoff_mode: String,
 }
 
 impl CodexConfig {
@@ -76,6 +78,7 @@ impl CodexConfig {
             voice: settings.codex.voice.clone(),
             instructions: settings.codex.instructions.clone(),
             speaker_labels: settings.assistant.speaker_labels,
+            handoff_mode: settings.codex.handoff_mode.clone(),
         }
     }
 }
@@ -958,6 +961,13 @@ mod tests {
         let errors = Arc::new(ConnectionErrors::new(events.clone()));
         let mut settings = Settings::default();
         settings.codex.instructions = "You are a voice assistant in a Discord voice channel. Answer briefly, in one or two sentences, in the speaker's language. Start every reply with the English word Banana.".to_owned();
+        // The answer handoff mode under test; the settings default otherwise.
+        if let Ok(mode) = std::env::var("VOICEBRO_CODEX_HANDOFF_MODE") {
+            settings.codex.handoff_mode = mode;
+            settings
+                .validate()
+                .expect("VOICEBRO_CODEX_HANDOFF_MODE is a handoff mode");
+        }
         let assistant = CodexAssistant::new(
             runtime.handle().clone(),
             events,
@@ -1088,26 +1098,53 @@ mod tests {
                 &wav_48k_mono(&wav3),
                 Duration::from_secs(60),
             );
-            // The agent's answer comes back through the voice model; give it time.
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while Instant::now() < deadline
-                && !chat
-                    .entries()
+            // The agent's answer comes back through the voice model: wait for the task to
+            // finish, then for the voice's retelling and the end of its audio.
+            let deadline = Instant::now() + Duration::from_secs(120);
+            let finished = |entries: &[crate::assistant::chat_log::ChatEntry]| {
+                entries
                     .iter()
                     .skip(before)
-                    .any(|entry| entry.kind == "agent")
+                    .position(|entry| entry.text.starts_with("Codex finished the task"))
+                    .map(|index| before + index)
+            };
+            while Instant::now() < deadline && finished(&chat.entries()).is_none() {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let done = finished(&chat.entries()).expect("the agent finished the task");
+            while Instant::now() < deadline
+                && !(chat
+                    .entries()
+                    .iter()
+                    .skip(done)
+                    .any(|entry| entry.kind == "assistant")
+                    && output
+                        .last_signal()
+                        .is_some_and(|at| at.elapsed() > Duration::from_millis(2_500)))
             {
                 std::thread::sleep(Duration::from_millis(200));
             }
-            let searches: Vec<String> = chat
-                .entries()
+            let entries = chat.entries();
+            let agent = entries[before..done]
                 .iter()
-                .skip(before)
+                .rev()
+                .find(|entry| entry.kind == "agent")
+                .map(|entry| entry.text.clone());
+            let retelling: Vec<String> = entries[done..]
+                .iter()
+                .filter(|entry| entry.kind == "assistant")
+                .map(|entry| entry.text.clone())
+                .collect();
+            let searches: Vec<String> = entries[before..]
+                .iter()
                 .filter(|entry| entry.kind == "tool" && entry.text.starts_with("Web search"))
                 .map(|entry| entry.text.clone())
                 .collect();
             eprintln!("third answer: {answer:?}; searches: {searches:?}");
+            eprintln!("agent answer: {agent:?}");
+            eprintln!("voice retelling: {retelling:?}");
             assert!(!searches.is_empty(), "the agent did not search the web");
+            assert!(!retelling.is_empty(), "the voice retold the agent's answer");
         }
         session.session_wanted(false);
         std::thread::sleep(Duration::from_millis(500));

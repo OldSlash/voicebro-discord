@@ -398,6 +398,18 @@ assistant is given, so the app never panics on an unknown engine setting.
   answer from the `thread/realtime/sdp` notification. The `voice` field is sent only when
   `codex.voice` is set; empty means the server's default voice ("server default" in the
   log and chat).
+  *Answer handoff* (`codex.handoff_mode`, `HandoffMode` in `session.rs`): how the Codex
+  agent's answer reaches the voice model. `items` (the default) sends
+  `codexResponsesAsItems: true`, `commentary` and `bem_tags` send
+  `codexResponseHandoffMode` `commentary` and `bemTags`, `thinking` sends neither, which is
+  Codex's built-in routing and what the app and the first version sent before. With the
+  built-in routing the voice model sometimes answered with made-up facts before the agent
+  had finished; with `items` it kept the agent's facts in every call of the 2026-11-10
+  tests. The fields are experimental: if Codex refuses a start that carries one, the start
+  is retried once without it, before the retry without history, and `log_used` names the
+  requested mode, the built-in routing and Codex's error (also in the chat). The call's
+  first chat line reads "Call starting: voice …; Codex: …; answers: <mode>". A changed mode
+  applies from the next call.
   *Send:* the gate's frames wait in a FIFO of 5 frames (100 ms, drop-oldest, drops
   counted). The `voicebro-rtc-send` thread keeps a 20 ms clock and sends exactly one
   packet per tick: the oldest waiting frame, downmixed to mono and Opus-encoded
@@ -488,7 +500,7 @@ pub struct Settings {
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog), activation_phrases, deactivation_phrases
     pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off
-    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default)
+    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default), handoff_mode: items (default) | commentary | bem_tags | thinking
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
     pub ui: UiSettings,                    // theme: dark | darcula | light | intellij (default dark); font_size: 11..=20 (default 13)
     pub extra: Map<String, Value>,         // flattened: unknown fields from a newer version, kept as they are
@@ -592,7 +604,10 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     which stays, with the rejected value, until the field is corrected. Lists: the wake engine
     and model come from `wake_models` (the catalog); the Codex model, reasoning effort and
     voice are selects filled from `capabilities` when the engine has them and text inputs
-    with a datalist otherwise; the effort list follows the chosen model. Phrases are one
+    with a datalist otherwise; the effort list follows the chosen model. The Codex card's
+    "Answer handoff" list (`codex.handoff_mode`) offers Conversation items (recommended),
+    Commentary, Tagged channels and Built-in (thinking); the hint under it says what the
+    chosen mode does and how it behaved in the 2026-11-10 tests. Phrases are one
     per line or comma-separated and are shown trimmed and lower-cased after save; the words
     the model does not know are listed under the field. The Audio group has sliders of kind
     `percent` (shown 0 to 400 %, stored as the multiplier): "What the assistant hears",
