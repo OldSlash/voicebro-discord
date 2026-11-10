@@ -1,0 +1,215 @@
+// A stand-in for the app's Tauri commands and events, so the real UI (`../ui/main.js`,
+// `../ui/styles.css`) can be checked in a browser without the app. It keeps a settings
+// document in memory with the app's validation messages for the common cases, answers the
+// commands the page calls with the same names and payload shapes, and emits status events
+// every second. It is outside `frontendDist` and never ships.
+//
+// `window.__mock` exposes what a check needs: `calls` (every command with its arguments),
+// `settings()` (the stored document), `changeCapabilities()` (the engine offers a new
+// model list, as after a sign-in) and `emit(name, payload)`.
+(() => {
+  const THEMES = ["dark", "darcula", "light", "intellij"];
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  let settings = {
+    version: 1,
+    discord: { guild_id: "1091401169441656933" },
+    session: { mode: "wake_word", idle_timeout_seconds: 60, earcons: true, earcon_volume: 0.18 },
+    audio: { input_gain: 1, output_gain: 1 },
+    wake: {
+      engine: "vosk",
+      model: "vosk-model-small-ru-0.22",
+      activation_phrases: ["alpha"],
+      deactivation_phrases: ["omega"],
+    },
+    assistant: { engine: "codex", speaker_labels: "start" },
+    codex: { executable: "", model: "", reasoning_effort: "", voice: "", instructions: "Answer briefly." },
+    hotkey: { mute: "Ctrl+Alt+M" },
+    ui: { theme: "dark", font_size: 13 },
+  };
+  let tokenSet = true;
+  let muted = false;
+  let capabilities = {
+    models: [
+      { id: "model-a", display_name: "Model A", description: "", reasoning_efforts: ["low", "medium", "high"], default_reasoning_effort: "medium", is_default: true },
+      { id: "model-b", display_name: "Model B", description: "", reasoning_efforts: ["low", "high"], default_reasoning_effort: "low", is_default: false },
+    ],
+    voices: ["cove", "juniper", "maple"],
+    default_voice: "cove",
+    signed_in: true,
+  };
+  const wakeModels = [
+    { id: "vosk-model-small-ru-0.22", engine: "vosk", language: "ru", display_name: "Vosk small Russian 0.22 (45 MB)", license: "Apache-2.0" },
+    { id: "vosk-model-small-en-us-0.15", engine: "vosk", language: "en-US", display_name: "Vosk small English 0.15 (40 MB)", license: "Apache-2.0" },
+  ];
+  const started = Date.now();
+  const listeners = {};
+  const calls = [];
+
+  function merge(target, patch) {
+    for (const [key, value] of Object.entries(patch)) {
+      if (value && typeof value === "object" && !Array.isArray(value) && target[key] && typeof target[key] === "object") {
+        merge(target[key], value);
+      } else {
+        target[key] = value;
+      }
+    }
+    return target;
+  }
+  const normalize = (phrases) => phrases.map((p) => String(p).trim().toLowerCase()).filter(Boolean);
+  // The app's messages, `<field>: <message>`, for the cases the checks use.
+  function validate(doc) {
+    const timeout = doc.session.idle_timeout_seconds;
+    if (timeout !== 0 && !(timeout >= 5 && timeout <= 3600)) {
+      throw `session.idle_timeout_seconds: ${timeout} is outside 0 or 5..3600`;
+    }
+    const activation = normalize(doc.wake.activation_phrases);
+    const deactivation = normalize(doc.wake.deactivation_phrases);
+    const shared = activation.find((phrase) => deactivation.includes(phrase));
+    if (shared) {
+      throw `wake.deactivation_phrases: «${shared}» is in both the activation and the deactivation list`;
+    }
+    for (const field of ["input_gain", "output_gain"]) {
+      const gain = doc.audio[field];
+      if (!(gain >= 0 && gain <= 4)) throw `audio.${field}: ${gain} is outside 0 to 4 (0 to 400 %)`;
+    }
+    if (!THEMES.includes(doc.ui.theme)) {
+      throw `ui.theme: «${doc.ui.theme}» is not a theme; use one of ${THEMES.join(", ")}`;
+    }
+    if (!(doc.ui.font_size >= 11 && doc.ui.font_size <= 20)) {
+      throw `ui.font_size: ${doc.ui.font_size} is outside 11 to 20`;
+    }
+  }
+
+  function emit(name, payload) {
+    for (const handler of listeners[name] || []) handler({ payload });
+  }
+
+  function status() {
+    return {
+      build_stamp: "0.2.0+mock 2026-11-10",
+      data_dir: "C:\\VoiceBro",
+      muted,
+      hotkey: { shortcut: settings.hotkey.mute, registered: true, error: null },
+      secrets: { discord_token: { is_set: tokenSet } },
+      connection_errors: {},
+      discord: {
+        state: tokenSet ? "connected" : "disconnected",
+        user_name: "Mock bot",
+        guild_count: 1,
+        guilds: [{ id: "1091401169441656933", name: "Mock server" }],
+        voice_channels: {
+          "1091401169441656933": {
+            guild_name: "Mock server",
+            channel_name: "General",
+            participants: ["Alex"],
+            output: { pushed: 0, dropped: 0, played: 0, underruns: 0, silence_frames: 0, flushed: 0 },
+          },
+        },
+        last_error: null,
+        counters: { ticks: Math.floor((Date.now() - started) / 20), speaker_frames: 0, malformed_frames: 0, unnamed_sources: 0 },
+      },
+      wake: { state: { kind: "ready" }, model: settings.wake.model, unknown_words: [], dropped_chunks: 0 },
+      gates: {
+        "1091401169441656933": {
+          guild_id: "1091401169441656933", mode: settings.session.mode, muted, active: false,
+          listening_for_wake_word: !muted, session_wanted: false, assistant_ready: false,
+          last_wake_phrase: null, replay_held: 0, counters: { input_dropped: 0, replay_dropped: 0, replay_timeouts: 0 },
+        },
+      },
+      audio: {
+        input: { gain: settings.audio.input_gain, peak: 0.12, clips: 0 },
+        output: { gain: settings.audio.output_gain, peak: 0, clips: 0 },
+      },
+      assistant: {
+        engine: "codex", summary: "signed in (chatgpt)", signed_in: true, account_type: "chatgpt",
+        email: null, plan: "plus", executable: "C:\\codex\\codex.exe", version: "codex-cli 0.167.0",
+        running: true, error: null, model_in_use: null, reasoning_effort_in_use: null, calls: [],
+      },
+      settings: clone(settings),
+    };
+  }
+
+  const commands = {
+    status: () => status(),
+    get_settings: () => ({ settings: clone(settings), secrets: { discord_token: { is_set: tokenSet } } }),
+    save_settings: ({ patch }) => {
+      const next = merge(clone(settings), patch);
+      validate(next);
+      settings = next;
+      setTimeout(() => emit("app-event", { kind: "settings_changed" }), 0);
+      return clone(settings);
+    },
+    set_secret: ({ value }) => {
+      if (!String(value).trim()) throw "the value is empty";
+      tokenSet = true;
+    },
+    clear_secret: () => {
+      tokenSet = false;
+    },
+    system_status: () => ({
+      version: "0.2.0", build_stamp: "0.2.0+mock 2026-11-10", process_id: 4242,
+      uptime_seconds: Math.floor((Date.now() - started) / 1000), runtime: "Rust / Tauri 2 / WebView2 (mock)",
+      platform: "Windows (mock)", architecture: "x86_64", cpu_cores: 8,
+    }),
+    wake_models: () => clone(wakeModels),
+    capabilities: () => clone(capabilities),
+    chat_log: () => [
+      { at: "12:00:01", guild_id: "1091401169441656933", kind: "user", who: "Alex", text: "What time is it?" },
+      { at: "12:00:03", guild_id: "1091401169441656933", kind: "assistant", who: "assistant", text: "It is noon." },
+    ],
+    log_history: () => ["[2026-11-10][12:00:00][INFO][voicebro] VoiceBro 0.2.0+mock (mock log)"],
+    set_muted: ({ muted: next }) => {
+      muted = next;
+      return muted;
+    },
+    toggle_mute: () => (muted = !muted),
+    discord_connect: () => {},
+    discord_disconnect: () => {},
+    codex_check: () => ({ signed_in: true, kind: "chatgpt", email: null, plan: "plus" }),
+    codex_sign_in: () => "https://chatgpt.com/mock",
+    codex_models: () => clone(capabilities.models),
+    open_log_folder: () => "C:\\VoiceBro\\logs",
+    app_info: () => ({ version: "0.2.0", build_stamp: "0.2.0+mock 2026-11-10", data_dir: "C:\\VoiceBro" }),
+  };
+
+  async function invoke(name, args = {}) {
+    calls.push({ name, args: clone(args) });
+    const command = commands[name];
+    if (!command) {
+      console.error(`mock: unknown command ${name}`);
+      throw `unknown command ${name}`;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return command(args);
+  }
+
+  async function listen(name, handler) {
+    (listeners[name] = listeners[name] || []).push(handler);
+    return () => {
+      listeners[name] = listeners[name].filter((h) => h !== handler);
+    };
+  }
+
+  // Status events every second, as a connected app sends them.
+  let tick = 0;
+  setInterval(() => {
+    tick += 1;
+    emit("app-event", { kind: tick % 2 ? "discord" : "gate" });
+    emit("app-log", `[2026-11-10][12:00:${String(tick % 60).padStart(2, "0")}][INFO][mock] status tick ${tick}`);
+  }, 1000);
+
+  window.__TAURI__ = { core: { invoke }, event: { listen } };
+  window.__mock = {
+    calls,
+    settings: () => clone(settings),
+    emit,
+    changeCapabilities() {
+      capabilities = clone(capabilities);
+      capabilities.models.push({
+        id: "model-c", display_name: "Model C", description: "", reasoning_efforts: ["minimal", "low"],
+        default_reasoning_effort: "low", is_default: false,
+      });
+      emit("app-event", { kind: "assistant" });
+    },
+  };
+})();

@@ -1,5 +1,10 @@
 // VoiceBro UI. Talks to Rust through window.__TAURI__ (withGlobalTauri): tabs, cards and a
 // status bar over this app's commands and events.
+//
+// The settings form is kept apart from the status: refreshes on events and every 5 s update
+// the status values only. A form field is written from the stored settings at load, after
+// its own save and after a settings change, and only while it is clean (no unsaved or
+// rejected value), not focused and, for a list, not open.
 (() => {
   const tauri = window.__TAURI__;
   const invoke = tauri?.core?.invoke;
@@ -63,7 +68,7 @@
     document.documentElement.style.setProperty("--font-size", `${ui.font_size || 13}px`);
   }
 
-  // ---------- Settings fields: each carries its JSON path and value kind ----------
+  // ---------- Values and paths ----------
   function readByPath(object, path) {
     return path.split(".").reduce((o, key) => (o == null ? undefined : o[key]), object);
   }
@@ -101,71 +106,140 @@
       default: return control.value;
     }
   }
+  function sameValue(a, b) {
+    return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  }
   function percentLabel(control) {
     const label = $(`${control.id}-label`);
     if (label) label.textContent = `${control.value} %`;
   }
-  function setControlValue(control, value) {
-    if (document.activeElement === control) return;
+  function writeControl(control, value) {
     if (control.dataset.kind === "percent") {
       control.value = Math.round(Number(value ?? 0) * 100);
       percentLabel(control);
-      return;
-    }
-    if (control.dataset.kind === "bool") control.checked = Boolean(value);
-    else if (control.dataset.kind === "list") control.value = Array.isArray(value) ? value.join("\n") : "";
-    else control.value = value == null ? "" : value;
-    // A listed field mirrors its text input in the select when the select has options.
-    const select = document.querySelector(`select.listed[data-for="${control.id}"]`);
-    if (select && select.options.length > 0 && document.activeElement !== select) {
-      const text = control.value;
-      if (![...select.options].some((option) => option.value === text)) {
-        const option = document.createElement("option");
-        option.value = text;
-        option.textContent = text ? `${text} (not in the current list)` : "(default)";
-        select.appendChild(option);
-      }
-      select.value = text;
+    } else if (control.dataset.kind === "bool") {
+      control.checked = Boolean(value);
+    } else if (control.dataset.kind === "list") {
+      control.value = Array.isArray(value) ? value.join("\n") : "";
+    } else {
+      control.value = value == null ? "" : value;
     }
   }
-  function fieldMessage(id, text, isError) {
+
+  // ---------- Form state ----------
+  let stored = null; // the stored settings document
+  const fieldState = new Map(); // id → clean | dirty | saving | error
+  const busyLists = new Set(); // selects that are open or focused
+  const pendingRebuilds = new Set(); // lists to rebuild once they are no longer busy
+  const stateOf = (id) => fieldState.get(id) || "clean";
+  function setState(id, state) {
+    fieldState.set(id, state);
+    const control = $(id);
+    const label = control?.closest("label");
+    label?.classList.toggle("is-dirty", state === "dirty");
+    label?.classList.toggle("is-invalid", state === "error");
+  }
+  const messageTimers = new Map();
+  function fieldMessage(id, text, kind) {
     const node = document.querySelector(`.field-message[data-for="${id}"]`);
     if (!node) return;
+    clearTimeout(messageTimers.get(id));
     node.textContent = text;
-    node.classList.toggle("error", Boolean(isError));
-    if (!isError && text) setTimeout(() => {
-      if (node.textContent === text) node.textContent = "";
-    }, 2000);
+    node.classList.toggle("error", kind === "error");
+    node.classList.toggle("pending", kind === "pending");
+    if (kind === "saved") {
+      messageTimers.set(id, setTimeout(() => {
+        if (node.textContent === text) node.textContent = "";
+      }, 2000));
+    }
   }
+  // The listed text fields (Codex model, effort, voice) are edited through their select.
+  const listedSelect = (id) => document.querySelector(`select.listed[data-for="${id}"]`);
+  function isBusy(control) {
+    if (document.activeElement === control || busyLists.has(control.id)) return true;
+    const select = listedSelect(control.id);
+    return Boolean(select && (document.activeElement === select || busyLists.has(select.id)));
+  }
+  function mirrorListed(control) {
+    const select = listedSelect(control.id);
+    if (!select || select.options.length === 0 || busyLists.has(select.id)) return;
+    const text = control.value;
+    if (![...select.options].some((option) => option.value === text)) {
+      const option = document.createElement("option");
+      option.value = text;
+      option.textContent = text ? `${text} (not in the current list)` : "(default)";
+      select.appendChild(option);
+    }
+    select.value = text;
+  }
+  // Writes a field from the stored settings unless it is being edited or holds a value of
+  // its own; `force` after the field's own successful save.
+  function fillField(control, force) {
+    if (!stored) return;
+    if (!force && (stateOf(control.id) !== "clean" || isBusy(control))) return;
+    writeControl(control, readByPath(stored, control.dataset.path));
+    if (control.tagName === "SELECT" && !control.options.length) return;
+    mirrorListed(control);
+  }
+  function fillForm() {
+    document.querySelectorAll("[data-path]").forEach((control) => fillField(control, false));
+    fillConfig(false);
+    applyAppearance(stored?.ui);
+    $("config-preview").textContent = stored ? JSON.stringify(stored, null, 2) : "";
+  }
+
   async function saveControl(control) {
     if (!invoke) return;
-    fieldMessage(control.id, "Saving…", false);
+    setState(control.id, "saving");
+    fieldMessage(control.id, "Saving…", "pending");
     try {
-      await invoke("save_settings", { patch: patchFor(control.dataset.path, controlValue(control)) });
-      fieldMessage(control.id, "Saved", false);
+      stored = await invoke("save_settings", { patch: patchFor(control.dataset.path, controlValue(control)) });
+      setState(control.id, "clean");
+      fillField(control, true);
+      fieldMessage(control.id, "Saved", "saved");
+      if (control.id === "codex-model") applyEffortList();
     } catch (error) {
-      fieldMessage(control.id, String(error), true);
-      // A rejected slider returns to the stored value on the refresh below.
-      if (control.type === "range") control.blur();
+      // The rejected value stays so it can be corrected; the stored value is unchanged.
+      setState(control.id, "error");
+      fieldMessage(control.id, String(error), "error");
     }
-    await refresh();
   }
+
   // Every Settings field saves on its own change: text when leaving the field or on Enter,
-  // sliders on release, selects and switches at once.
+  // sliders on release, lists and switches at once.
   document.querySelectorAll("[data-path]").forEach((control) => {
-    if (control.dataset.kind === "percent") control.addEventListener("input", () => percentLabel(control));
+    control.addEventListener("input", () => {
+      if (control.dataset.kind === "percent") percentLabel(control);
+      if (stateOf(control.id) === "saving") return;
+      const differs = !stored || !sameValue(controlValue(control), readByPath(stored, control.dataset.path));
+      if (stateOf(control.id) !== "error") setState(control.id, differs ? "dirty" : "clean");
+    });
     control.addEventListener("change", () => {
       if (control.dataset.path.startsWith("ui.")) {
         applyAppearance({ theme: $("setting-theme").value, font_size: Number($("setting-font-size").value) });
       }
       saveControl(control);
     });
+    if (control.tagName === "SELECT") trackOpenList(control);
   });
 
-  // Listed fields: a select from the live list when there is one, the text input otherwise.
+  // A list counts as open from the first press or focus until a choice or blur, and is
+  // never rebuilt meanwhile.
+  function trackOpenList(select) {
+    const done = () => {
+      busyLists.delete(select.id);
+      if (pendingRebuilds.size) runPendingRebuilds();
+    };
+    select.addEventListener("pointerdown", () => busyLists.add(select.id));
+    select.addEventListener("focus", () => busyLists.add(select.id));
+    select.addEventListener("change", done);
+    select.addEventListener("blur", done);
+  }
+
+  // ---------- Lists ----------
   function fillListed(id, options) {
     const input = $(id);
-    const select = document.querySelector(`select.listed[data-for="${id}"]`);
+    const select = listedSelect(id);
     const datalist = $(`${id}-list`);
     datalist.innerHTML = "";
     for (const option of options) {
@@ -185,53 +259,55 @@
       select.appendChild(node);
     }
     input.style.display = "none";
-    const current = input.value;
-    if (![...select.options].some((option) => option.value === current)) {
-      const node = document.createElement("option");
-      node.value = current;
-      node.textContent = current ? `${current} (not in the current list)` : "(default)";
-      select.appendChild(node);
-    }
-    select.value = current;
+    mirrorListed(input);
   }
   document.querySelectorAll("select.listed").forEach((select) => {
+    trackOpenList(select);
     select.addEventListener("change", () => {
       const input = $(select.dataset.for);
       input.value = select.value;
-      if (select.dataset.for === "codex-model") applyEffortList();
       saveControl(input);
     });
   });
 
   let wakeModels = [];
   let capabilities = { models: [], voices: [] };
-  function applyWakeLists(settings) {
-    const fill = (select, items, current) => {
-      if (document.activeElement === select) return;
-      select.innerHTML = "";
-      for (const item of items) {
-        const option = document.createElement("option");
-        option.value = item.value;
-        option.textContent = item.label;
-        select.appendChild(option);
-      }
-      if (current && ![...select.options].some((option) => option.value === current)) {
-        const option = document.createElement("option");
-        option.value = current;
-        option.textContent = `${current} (not in the catalog)`;
-        select.appendChild(option);
-      }
-      select.value = current || "";
-    };
+  let capabilitiesKey = "";
+  function fillSelect(select, items, current) {
+    select.innerHTML = "";
+    for (const item of items) {
+      const option = document.createElement("option");
+      option.value = item.value;
+      option.textContent = item.label;
+      select.appendChild(option);
+    }
+    if (current && ![...select.options].some((option) => option.value === current)) {
+      const option = document.createElement("option");
+      option.value = current;
+      option.textContent = `${current} (not in the catalog)`;
+      select.appendChild(option);
+    }
+    select.value = current || "";
+  }
+  // The wake lists come from the catalog, which is fixed while the app runs: built once.
+  function buildWakeLists() {
+    if (busyLists.has("wake-engine") || busyLists.has("wake-model")) {
+      pendingRebuilds.add("wake");
+      return;
+    }
     const engines = [...new Set(wakeModels.map((model) => model.engine))];
-    fill($("wake-engine"), engines.map((engine) => ({ value: engine, label: engine })), settings?.wake?.engine);
-    fill(
+    fillSelect($("wake-engine"), engines.map((engine) => ({ value: engine, label: engine })), readByPath(stored, "wake.engine"));
+    fillSelect(
       $("wake-model"),
       wakeModels.map((model) => ({ value: model.id, label: `${model.display_name} [${model.language}, ${model.license}]` })),
-      settings?.wake?.model,
+      readByPath(stored, "wake.model"),
     );
   }
   function applyEffortList() {
+    if (busyLists.has("codex-effort-select")) {
+      pendingRebuilds.add("codex");
+      return;
+    }
     const modelId = $("codex-model").value;
     const model = capabilities.models.find((entry) => entry.id === modelId)
       || capabilities.models.find((entry) => entry.is_default);
@@ -240,7 +316,11 @@
       .concat(efforts.map((effort) => ({ value: effort, label: effort })));
     fillListed("codex-effort", efforts.length ? options : []);
   }
-  function applyCodexLists() {
+  function buildCodexLists() {
+    if (["codex-model-select", "codex-effort-select", "codex-voice-select"].some((id) => busyLists.has(id))) {
+      pendingRebuilds.add("codex");
+      return;
+    }
     const models = capabilities.models || [];
     fillListed(
       "codex-model",
@@ -262,66 +342,96 @@
         : [],
     );
   }
-  async function loadLists() {
+  function runPendingRebuilds() {
+    const pending = [...pendingRebuilds];
+    pendingRebuilds.clear();
+    if (pending.includes("wake")) buildWakeLists();
+    if (pending.includes("codex")) buildCodexLists();
+  }
+  // Rebuilds the Codex lists only when what the engine offers has changed.
+  async function loadCapabilities() {
     if (!invoke) return;
     try {
-      wakeModels = await invoke("wake_models");
-    } catch (error) {
-      appendLog(`wake_models failed: ${error}`);
-    }
-    try {
-      capabilities = await invoke("capabilities");
+      const next = await invoke("capabilities");
+      const key = JSON.stringify({ models: next.models, voices: next.voices, default_voice: next.default_voice });
+      if (key === capabilitiesKey) return;
+      capabilitiesKey = key;
+      capabilities = next;
+      buildCodexLists();
     } catch (error) {
       appendLog(`capabilities failed: ${error}`);
     }
-    applyCodexLists();
+  }
+  async function loadSettings() {
+    if (!invoke) return;
+    try {
+      stored = (await invoke("get_settings")).settings;
+      fillForm();
+    } catch (error) {
+      appendLog(`settings failed: ${error}`);
+    }
   }
 
   // ---------- Config tab: edited fields wait for Save changes ----------
-  const configDirty = new Set();
-  let storedSettings = null;
+  function configDiffers(control) {
+    return stored && control.value.trim() !== String(readByPath(stored, control.dataset.configPath) ?? "");
+  }
+  function updateConfigActions() {
+    const dirty = [...document.querySelectorAll("[data-config-path]")].some((control) => stateOf(control.id) === "dirty");
+    const token = $("config-token").value.trim().length > 0;
+    $("config-save").disabled = !dirty && !token;
+    $("config-reset").disabled = !dirty && !token;
+    $("config-token").closest("label").classList.toggle("is-dirty", token);
+    const feedback = $("config-feedback");
+    if (dirty || token) {
+      feedback.textContent = "Unsaved changes.";
+      feedback.className = "form-feedback warning-text";
+    } else if (feedback.textContent === "Unsaved changes.") {
+      feedback.textContent = "";
+    }
+  }
   document.querySelectorAll("[data-config-path]").forEach((control) => {
     control.addEventListener("input", () => {
-      configDirty.add(control.id);
-      $("config-feedback").textContent = "Unsaved changes.";
-      $("config-feedback").className = "form-feedback warning-text";
+      setState(control.id, configDiffers(control) ? "dirty" : "clean");
+      updateConfigActions();
     });
   });
-  $("config-token").addEventListener("input", () => {
-    $("config-feedback").textContent = "Unsaved changes.";
-    $("config-feedback").className = "form-feedback warning-text";
-  });
-  function fillConfig(settings, force) {
+  $("config-token").addEventListener("input", updateConfigActions);
+  function fillConfig(force) {
     document.querySelectorAll("[data-config-path]").forEach((control) => {
-      if (!force && (configDirty.has(control.id) || document.activeElement === control)) return;
-      const value = readByPath(settings, control.dataset.configPath);
+      if (!stored) return;
+      if (!force && (stateOf(control.id) !== "clean" || document.activeElement === control)) return;
+      const value = readByPath(stored, control.dataset.configPath);
       control.value = value == null ? "" : value;
+      setState(control.id, "clean");
     });
+    updateConfigActions();
   }
   $("config-reset").addEventListener("click", () => {
-    configDirty.clear();
     $("config-token").value = "";
-    if (storedSettings) fillConfig(storedSettings, true);
+    fillConfig(true);
     $("config-feedback").textContent = "Reset to the stored values.";
     $("config-feedback").className = "form-feedback";
   });
   $("config-save").addEventListener("click", async () => {
     const feedback = $("config-feedback");
     const patch = {};
-    for (const id of configDirty) {
-      const control = $(id);
-      mergePatch(patch, patchFor(control.dataset.configPath, control.value.trim()));
+    for (const control of document.querySelectorAll("[data-config-path]")) {
+      if (stateOf(control.id) === "dirty") mergePatch(patch, patchFor(control.dataset.configPath, control.value.trim()));
     }
     const token = $("config-token").value.trim();
+    feedback.textContent = "Saving…";
+    feedback.className = "form-feedback";
     try {
-      if (Object.keys(patch).length) await invoke("save_settings", { patch });
+      if (Object.keys(patch).length) stored = await invoke("save_settings", { patch });
       if (token) {
         await invoke("set_secret", { name: "discord_token", value: token });
         $("config-token").value = "";
       }
-      configDirty.clear();
-      feedback.textContent = Object.keys(patch).length || token ? "Saved." : "Nothing to save.";
+      fillConfig(true);
+      feedback.textContent = "Saved.";
       feedback.className = "form-feedback";
+      $("config-preview").textContent = JSON.stringify(stored, null, 2);
     } catch (error) {
       feedback.textContent = String(error);
       feedback.className = "form-feedback error-text";
@@ -420,7 +530,7 @@
     }
   }
 
-  // ---------- Status ----------
+  // ---------- Status (never touches the form) ----------
   function wakeText(wake) {
     const state = wake.state || {};
     let text;
@@ -450,7 +560,6 @@
     return `Peak in the last second: ${peak} % of full scale. Clipped samples since start: ${reading.clips || 0}.`;
   }
   const STATE_LABELS = { connected: "Connected", connecting: "Connecting", disconnected: "Disconnected", error: "Error" };
-  let lastStatus = null;
 
   function renderGuilds(discord) {
     const list = $("guild-list");
@@ -479,7 +588,6 @@
   }
 
   function renderStatus(status) {
-    lastStatus = status;
     const discord = status.discord || {};
     const assistant = status.assistant || {};
     const channels = Object.values(discord.voice_channels || {});
@@ -548,30 +656,18 @@
     }
     $("status-counters").textContent = JSON.stringify(counters, null, 2);
 
-    // Settings tab.
-    applyAppearance(status.settings?.ui);
-    applyWakeLists(status.settings);
-    document.querySelectorAll("[data-path]").forEach((control) => {
-      setControlValue(control, readByPath(status.settings, control.dataset.path));
-    });
+    // Readings next to the form, not form fields.
     $("input-gain-level").textContent = levelText(status.audio?.input);
     $("output-gain-level").textContent = levelText(status.audio?.output);
     const unknown = (status.wake || {}).unknown_words || [];
     $("unknown-words").textContent = unknown.length
       ? `Not in the model vocabulary (these phrases are ignored): ${unknown.join(", ")}`
       : "";
-
-    // Config tab.
-    storedSettings = status.settings;
-    fillConfig(status.settings, false);
     const badge = $("token-badge");
     badge.textContent = tokenSet ? "stored" : "not stored";
     badge.className = `badge ${tokenSet ? "ok" : "warn"}`;
-    $("config-preview").textContent = JSON.stringify(status.settings, null, 2);
     const settingsPath = `${status.data_dir}\\settings.json`;
     setText("config-path", settingsPath);
-
-    // System tab, the parts the status knows.
     setText("system-data-dir", status.data_dir || "—");
     setText("system-settings-path", settingsPath);
     setText("system-codex", assistant.executable || "not found");
@@ -596,13 +692,9 @@
     const pad = (n) => String(n).padStart(2, "0");
     return h > 0 ? `${h}h ${pad(m)}m ${pad(s)}s` : `${m}m ${pad(s)}s`;
   }
-  function uptimeNow() {
-    if (!systemFacts) return null;
-    return systemFacts.uptime_seconds + (Date.now() - systemFetchedAt) / 1000;
-  }
   function renderUptime() {
-    const uptime = uptimeNow();
-    if (uptime == null) return;
+    if (!systemFacts) return;
+    const uptime = systemFacts.uptime_seconds + (Date.now() - systemFetchedAt) / 1000;
     $("footer-uptime").textContent = formatUptime(uptime);
     $("system-uptime").textContent = formatUptime(uptime);
   }
@@ -660,7 +752,7 @@
     } catch (error) {
       $("status-feedback").textContent = `Codex check failed: ${error}`;
     }
-    await loadLists();
+    await loadCapabilities();
     await refresh();
   });
   $("status-refresh").addEventListener("click", () => {
@@ -692,9 +784,13 @@
           case "chat":
             addChatEntry(payload);
             break;
+          case "settings_changed":
+            loadSettings();
+            refresh();
+            break;
           case "assistant":
             refresh();
-            loadLists();
+            loadCapabilities();
             break;
           default:
             refresh();
@@ -702,7 +798,15 @@
       });
     }
     await refreshSystem();
-    await loadLists();
+    try {
+      wakeModels = await invoke("wake_models");
+    } catch (error) {
+      appendLog(`wake_models failed: ${error}`);
+    }
+    await loadSettings();
+    buildWakeLists();
+    await loadCapabilities();
+    fillForm();
     await refresh();
     await loadChat();
     setInterval(refresh, 5000);

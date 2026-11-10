@@ -570,8 +570,9 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
   - Settings has the cards Appearance, Audio, Assistant, Codex and Hotkey, one control per
     field with its JSON path (`data-path`) and kind (string, number, bool, list, percent).
     Each control saves itself on `change` with one `save_settings` patch (text when leaving
-    the field or on Enter, sliders on release, selects and switches at once); a rejected
-    value shows the validation message under the field. Lists: the wake engine
+    the field or on Enter, sliders on release, selects and switches at once); the line
+    under the field shows "Saving…", "Saved" for two seconds, or the validation message,
+    which stays, with the rejected value, until the field is corrected. Lists: the wake engine
     and model come from `wake_models` (the catalog); the Codex model, reasoning effort and
     voice are selects filled from `capabilities` when the engine has them and text inputs
     with a datalist otherwise; the effort list follows the chosen model. Phrases are one
@@ -581,6 +582,15 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     "How loud the assistant speaks" and the tone volume, saved on release without a Save
     button, with the earcon switch, and under each gain the last second's peak and the clip
     count from `Status.audio`.
+  - **Form state is kept apart from the status.** `main.js` holds the stored settings
+    (from `get_settings`, refreshed on `settings_changed` and returned by each
+    `save_settings`) and a state per field: clean, dirty (unsaved), saving or error
+    (rejected). Status refreshes (events and the 5 s timer) never write a form field; a
+    field is written from the stored settings only when it is clean, not focused and, for
+    a list, not open (a press or focus marks a select busy until a choice or blur). Lists
+    are built when their source changes: the wake catalog once, the Codex lists when
+    `capabilities` differ from the last ones; a rebuild that would hit an open list waits
+    for it to close and keeps the selection.
   - Config holds the Discord token (write-only, with help on getting one, a stored badge and
     Clear stored token), the guild id (with help on copying it) and the Codex executable,
     an "Auto-start enabled" badge, Save changes (one settings patch for the edited fields
@@ -596,6 +606,14 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
 - Checking the window without a person: start the app with
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`; the page is then
   reachable through the Chrome DevTools protocol (evaluate expressions, take screenshots).
+- Checking the UI without the app: `apps/desktop/ui-dev/` (outside `frontendDist`, never
+  shipped) holds `mock.js`, a stand-in for every command the page calls and its events
+  (an in-memory settings document with the app's validation messages for the timeout,
+  phrase overlap, gains, theme and font size; status events every second;
+  `window.__mock` with the calls made, the stored document and a capabilities change),
+  `make.mjs`, which writes `ui-dev/index.html` from `ui/index.html` with the mock loaded
+  first, and `serve.mjs`, which serves it on `http://127.0.0.1:5174/` for browsers that do
+  not run scripts from `file://`.
 - Window lifecycle: destroying the main window exits the app, which stops `codex.exe`.
 
 ### 4.9 Probe binary (`apps/probe`)
