@@ -1,14 +1,19 @@
 //! The memory of the app's processes as Task Manager shows it: the private working set of
 //! `voicebro.exe`, of the WebView2 processes it started and of its Codex process (with that
-//! process's helpers). Read every 3 s on a thread of its own; the window asks for the
-//! latest reading.
+//! process's helpers). Read every 3 s on a thread of its own while the `diagnostics.memory`
+//! setting is on; the window asks for the latest reading, which is `None` while it is off.
 
 use serde::Serialize;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// How often the reading is taken.
 pub const INTERVAL: Duration = Duration::from_secs(3);
+
+/// Where the latest reading is kept; `None` while no reader runs.
+pub type Slot = Arc<Mutex<Option<MemoryReading>>>;
 
 /// One entry of the system's process list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,21 +110,45 @@ pub fn read_now() -> MemoryReading {
     reading(&tree, private_working_set)
 }
 
-/// Starts the 3 s reading thread; the latest reading is in the returned slot.
-pub fn start() -> Arc<Mutex<Option<MemoryReading>>> {
-    let slot = Arc::new(Mutex::new(None));
-    let writer = Arc::clone(&slot);
-    let spawned = std::thread::Builder::new()
-        .name("voicebro-memory".to_owned())
-        .spawn(move || loop {
-            let next = read_now();
-            *writer.lock().expect("memory slot lock") = Some(next);
-            std::thread::sleep(INTERVAL);
-        });
-    if let Err(error) = spawned {
-        log::warn!("memory reading not started: {error}");
+/// The reading thread: one reading at once, then one per interval, until stopped.
+pub struct Reader {
+    stop: mpsc::Sender<()>,
+    thread: Option<JoinHandle<()>>,
+    slot: Slot,
+}
+
+impl Reader {
+    /// Starts the thread writing into `slot`. `Err` when the thread could not be spawned.
+    pub fn start(slot: Slot) -> std::io::Result<Reader> {
+        let (stop, stopped) = mpsc::channel::<()>();
+        let writer = Arc::clone(&slot);
+        let thread = std::thread::Builder::new()
+            .name("voicebro-memory".to_owned())
+            .spawn(move || loop {
+                let next = read_now();
+                *writer.lock().expect("memory slot lock") = Some(next);
+                // A stop, or the sender dropped, ends the loop at once; only a timeout
+                // takes the next reading.
+                if stopped.recv_timeout(INTERVAL) != Err(RecvTimeoutError::Timeout) {
+                    break;
+                }
+            })?;
+        Ok(Reader {
+            stop,
+            thread: Some(thread),
+            slot,
+        })
     }
-    slot
+
+    /// Stops the thread, waits for it (at most one reading, a few milliseconds) and clears
+    /// the slot, so the window sees no stale number.
+    pub fn stop(mut self) {
+        let _ = self.stop.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        *self.slot.lock().expect("memory slot lock") = None;
+    }
 }
 
 #[cfg(windows)]
@@ -262,5 +291,31 @@ mod tests {
         }
         let reading = read_now();
         assert!(reading.app_mb > 0.0, "{reading:?}");
+    }
+
+    #[test]
+    fn a_reader_fills_the_empty_slot_and_stop_clears_it_within_100_ms() {
+        let slot: Slot = Arc::new(Mutex::new(None));
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "nothing before a reader runs"
+        );
+        let reader = Reader::start(Arc::clone(&slot)).expect("thread spawns");
+        let started = std::time::Instant::now();
+        while slot.lock().unwrap().is_none() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "no first reading"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let stopping = std::time::Instant::now();
+        reader.stop();
+        assert!(
+            stopping.elapsed() < Duration::from_millis(100),
+            "stop waited {:?}, not the 3 s interval",
+            stopping.elapsed()
+        );
+        assert!(slot.lock().unwrap().is_none(), "stopped means no reading");
     }
 }

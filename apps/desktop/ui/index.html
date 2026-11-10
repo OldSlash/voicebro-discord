@@ -95,31 +95,39 @@
 
         <section class="tab-panel" data-panel="performance" role="tabpanel">
           <div class="panel-toolbar">
-            <label>Window
-              <select id="performance-window">
-                <option value="30">30 seconds</option>
-                <option value="60" selected>60 seconds</option>
-                <option value="300">5 minutes</option>
-              </select>
-            </label>
-            <button type="button" class="button" id="performance-refresh">Refresh</button>
-            <span class="health-dot idle" id="performance-health">●</span>
-            <strong id="performance-quality">Quality: idle</strong>
+            <!-- The switch is the diagnostics.performance setting, saved like every Settings
+                 field; the Diagnostics card on the Settings tab mirrors it. -->
+            <label class="checkbox"><input type="checkbox" id="performance-monitoring" data-path="diagnostics.performance" data-kind="bool"> Performance monitoring</label>
+            <span class="toolbar-inline" id="performance-live">
+              <label>Window
+                <select id="performance-window">
+                  <option value="30">30 seconds</option>
+                  <option value="60" selected>60 seconds</option>
+                  <option value="300">5 minutes</option>
+                </select>
+              </label>
+              <button type="button" class="button" id="performance-refresh">Refresh</button>
+              <span class="health-dot idle" id="performance-health">●</span>
+              <strong id="performance-quality">Quality: idle</strong>
+            </span>
           </div>
-          <div class="chart-grid">
-            <article class="card chart-card">
-              <header class="card-title-row"><h2>Audio timing</h2><span class="chart-legend"><i class="series-a"></i>first speech → playback <i class="series-b"></i>last speech → answer</span></header>
-              <canvas id="latency-chart" width="560" height="190"></canvas>
-              <small class="field-help" id="latency-chart-scale"></small>
-            </article>
-            <article class="card chart-card">
-              <header class="card-title-row"><h2>Media packets</h2><span class="chart-legend"><i class="series-a"></i>sent / s <i class="series-b"></i>received / s</span></header>
-              <canvas id="packets-chart" width="560" height="190"></canvas>
-              <small class="field-help" id="packets-chart-scale"></small>
-            </article>
+          <p class="muted performance-off" id="performance-off">Performance monitoring is off. With the switch above on, the window reads the status once a second and keeps the last five minutes for the charts and the cards below, which costs one status read per second and the kept samples in the window. The choice is saved with the other settings and kept across restarts.</p>
+          <div id="performance-content">
+            <div class="chart-grid">
+              <article class="card chart-card">
+                <header class="card-title-row"><h2>Audio timing</h2><span class="chart-legend"><i class="series-a"></i>first speech → playback <i class="series-b"></i>last speech → answer</span></header>
+                <canvas id="latency-chart" width="560" height="190"></canvas>
+                <small class="field-help" id="latency-chart-scale"></small>
+              </article>
+              <article class="card chart-card">
+                <header class="card-title-row"><h2>Media packets</h2><span class="chart-legend"><i class="series-a"></i>sent / s <i class="series-b"></i>received / s</span></header>
+                <canvas id="packets-chart" width="560" height="190"></canvas>
+                <small class="field-help" id="packets-chart-scale"></small>
+              </article>
+            </div>
+            <div class="stat-grid" id="performance-stats"></div>
+            <p class="muted performance-note">Counters are totals since the call started (Discord ones since the app started, the voice toward Discord since the bot joined the channel); the quality and the charts use the chosen window. Each answer's timing is also written to the log as a "[latency:…] turn …" line.</p>
           </div>
-          <div class="stat-grid" id="performance-stats"></div>
-          <p class="muted performance-note">Counters are totals since the call started (Discord ones since the app started, the voice toward Discord since the bot joined the channel); the quality and the charts use the chosen window. Each answer's timing is also written to the log as a "[latency:…] turn …" line.</p>
         </section>
 
         <section class="tab-panel" data-panel="system" role="tabpanel">
@@ -145,14 +153,17 @@
             </article>
             <article class="card">
               <h2>Memory use</h2>
-              <div class="memory-bar" aria-hidden="true"><span class="bar-app" id="memory-meter-app"></span><span class="bar-webview" id="memory-meter-webview"></span><span class="bar-codex" id="memory-meter-codex"></span></div>
-              <dl class="info-list">
-                <div><dt>Rust process</dt><dd id="memory-app">—</dd></div>
-                <div><dt>WebView2</dt><dd id="memory-webview">—</dd></div>
-                <div><dt>Codex</dt><dd id="memory-codex">—</dd></div>
-                <div><dt>Total</dt><dd id="memory-total">—</dd></div>
-              </dl>
-              <p class="muted system-help">Private working set, the memory Task Manager shows, read every 3 seconds. Codex runs only while the bot is in a voice channel.</p>
+              <div id="memory-on">
+                <div class="memory-bar" aria-hidden="true"><span class="bar-app" id="memory-meter-app"></span><span class="bar-webview" id="memory-meter-webview"></span><span class="bar-codex" id="memory-meter-codex"></span></div>
+                <dl class="info-list">
+                  <div><dt>Rust process</dt><dd id="memory-app">—</dd></div>
+                  <div><dt>WebView2</dt><dd id="memory-webview">—</dd></div>
+                  <div><dt>Codex</dt><dd id="memory-codex">—</dd></div>
+                  <div><dt>Total</dt><dd id="memory-total">—</dd></div>
+                </dl>
+                <p class="muted system-help">Private working set, the memory Task Manager shows, read every 3 seconds. Codex runs only while the bot is in a voice channel.</p>
+              </div>
+              <p class="muted system-help" id="memory-off">Memory measurement is off. Turn it on in the Diagnostics card of the Settings tab: the app then reads the private working set of its own process, its WebView2 processes and Codex every 3 seconds, which costs a scan of the process list each time.</p>
             </article>
             <article class="card">
               <h2>Files</h2>
@@ -166,54 +177,61 @@
         </section>
 
         <section class="tab-panel" data-panel="settings" role="tabpanel">
+          <!-- Every control has its help line (what it affects, when a change applies, the
+               default); the message line under it holds a validation error only. -->
           <div class="settings-column">
             <div class="card settings-section"><h2>Appearance</h2>
               <div class="form-grid">
-                <label>Theme<select id="setting-theme" data-path="ui.theme" data-kind="string"><option value="dark">Dark</option><option value="darcula">Darcula</option><option value="light">Light</option><option value="intellij">IntelliJ</option></select></label>
-                <label>Font size<input id="setting-font-size" type="number" min="11" max="20" data-path="ui.font_size" data-kind="number"></label>
+                <label>Theme<select id="setting-theme" data-path="ui.theme" data-kind="string"><option value="dark">Dark</option><option value="darcula">Darcula</option><option value="light">Light</option><option value="intellij">IntelliJ</option></select><small class="field-help">The window's colours. Applies at once. Default: Dark.</small><small class="field-message" data-for="setting-theme"></small></label>
+                <label>Font size<input id="setting-font-size" type="number" min="11" max="20" data-path="ui.font_size" data-kind="number"><small class="field-help">The window's text, 11 to 20 px. Applies at once. Default: 13.</small><small class="field-message" data-for="setting-font-size"></small></label>
               </div>
-              <p class="form-note">Theme and font size apply at once and are stored in settings.json, so they travel with the app folder.</p>
-              <p class="field-message" data-for="setting-theme"></p>
-              <p class="field-message" data-for="setting-font-size"></p>
+              <p class="form-note">Both are stored in settings.json, so they travel with the app folder.</p>
             </div>
 
             <div class="card settings-section"><h2>Audio</h2>
               <div class="form-grid">
-                <label>What the assistant hears <output id="input-gain-label" for="input-gain">100 %</output><input id="input-gain" type="range" min="0" max="400" step="1" data-path="audio.input_gain" data-kind="percent"><small class="field-help" id="input-gain-level"></small><small class="field-message" data-for="input-gain"></small></label>
-                <label>How loud the assistant speaks <output id="output-gain-label" for="output-gain">100 %</output><input id="output-gain" type="range" min="0" max="400" step="1" data-path="audio.output_gain" data-kind="percent"><small class="field-help" id="output-gain-level"></small><small class="field-message" data-for="output-gain"></small></label>
-                <label class="inline-check">Earcons<input id="earcons" type="checkbox" data-path="session.earcons" data-kind="bool"><small class="field-message" data-for="earcons"></small></label>
-                <label>Earcon volume <output id="earcon-volume-label" for="earcon-volume">18 %</output><input id="earcon-volume" type="range" min="0" max="100" step="1" data-path="session.earcon_volume" data-kind="percent"><small class="field-message" data-for="earcon-volume"></small></label>
+                <label>What the assistant hears <output id="input-gain-label" for="input-gain">100 %</output><input id="input-gain" type="range" min="0" max="400" step="1" data-path="audio.input_gain" data-kind="percent"><small class="field-help">Multiplies what the assistant receives during a session; the wake word and the speech detection hear the channel unchanged. 100 % is unchanged. Applies at once, also in a running call. Default: 100 %.</small><small class="field-help" id="input-gain-level"></small><small class="field-message" data-for="input-gain"></small></label>
+                <label>How loud the assistant speaks <output id="output-gain-label" for="output-gain">100 %</output><input id="output-gain" type="range" min="0" max="400" step="1" data-path="audio.output_gain" data-kind="percent"><small class="field-help">Multiplies the assistant's voice played into Discord; earcons keep their own volume. 100 % is unchanged. Applies at once. Default: 100 %.</small><small class="field-help" id="output-gain-level"></small><small class="field-message" data-for="output-gain"></small></label>
+                <label>Earcons <output id="earcons-label" for="earcons">on</output><input id="earcons" type="checkbox" data-path="session.earcons" data-kind="bool"><small class="field-help">The short tones at session start and end, mute and unmute; they play while muted too. Applies at once. Default: on.</small><small class="field-message" data-for="earcons"></small></label>
+                <label>Earcon volume <output id="earcon-volume-label" for="earcon-volume">18 %</output><input id="earcon-volume" type="range" min="0" max="100" step="1" data-path="session.earcon_volume" data-kind="percent"><small class="field-help">The tones' volume, independent of how loud the assistant speaks. Applies at once. Default: 18 %.</small><small class="field-message" data-for="earcon-volume"></small></label>
               </div>
-              <p class="form-note">Changes save when you release a slider and apply to a running call at once. Earcons are the short tones for session start and end, mute and unmute.</p>
+              <p class="form-note">A slider saves when you release it.</p>
             </div>
 
             <div class="card settings-section"><h2>Assistant</h2>
               <div class="form-grid">
-                <label>Engine<select id="assistant-engine" data-path="assistant.engine" data-kind="string"><option value="codex">Codex CLI (official app-server)</option></select><small class="field-message" data-for="assistant-engine"></small></label>
-                <label>Activation<select id="session-mode" data-path="session.mode" data-kind="string"><option value="wake_word">Wake word (offline, Vosk)</option><option value="always">Always listening</option></select><small class="field-message" data-for="session-mode"></small></label>
-                <label class="wide">Activation phrases<textarea id="activation-phrases" rows="2" spellcheck="false" data-path="wake.activation_phrases" data-kind="list"></textarea><small class="field-help">One per line or comma-separated. Every word must exist in the wake model's vocabulary. Repeating an activation phrase during a session does nothing.</small><small class="field-help warning-text" id="unknown-words"></small><small class="field-message" data-for="activation-phrases"></small></label>
-                <label class="wide">Deactivation phrases<textarea id="deactivation-phrases" rows="2" spellcheck="false" data-path="wake.deactivation_phrases" data-kind="list"></textarea><small class="field-help">Ends the session at once and cuts off the current answer. Avoid words that come up in normal game talk.</small><small class="field-message" data-for="deactivation-phrases"></small></label>
-                <label>Auto-stop after no input, seconds<input id="idle-timeout" type="number" min="0" max="3600" step="1" data-path="session.idle_timeout_seconds" data-kind="number"><small class="field-help">0 = only the deactivation phrase ends a session; otherwise 5 to 3600. The assistant's own answer does not count as silence.</small><small class="field-message" data-for="idle-timeout"></small></label>
-                <label>Wake engine<select id="wake-engine" data-path="wake.engine" data-kind="string"></select><small class="field-message" data-for="wake-engine"></small></label>
-                <label class="wide">Wake model<select id="wake-model" data-path="wake.model" data-kind="string"></select><small class="field-help">The model and the Vosk library download the first time wake-word activation is enabled.</small><small class="field-message" data-for="wake-model"></small></label>
+                <label>Engine<select id="assistant-engine" data-path="assistant.engine" data-kind="string"><option value="codex">Codex CLI (official app-server)</option></select><small class="field-help">Codex CLI through its app-server with your ChatGPT sign-in; no API key. The only engine today. Applies at once.</small><small class="field-message" data-for="assistant-engine"></small></label>
+                <label>Activation<select id="session-mode" data-path="session.mode" data-kind="string"><option value="wake_word">Wake word (offline, Vosk)</option><option value="always">Always listening</option></select><small class="field-help">Wake word: a session starts when someone says an activation phrase and ends at a deactivation phrase or the auto-stop; nothing is sent to the assistant between sessions. Always listening: the assistant hears the channel and the call runs the whole time the bot is in it. Applies at once. Default: wake word.</small><small class="field-message" data-for="session-mode"></small></label>
+                <label class="wide">Activation phrases<textarea id="activation-phrases" rows="2" spellcheck="false" data-path="wake.activation_phrases" data-kind="list"></textarea><small class="field-help">One per line or comma-separated. Every word must exist in the wake model's vocabulary. Repeating an activation phrase during a session does nothing. Applies at once. Empty by default: the wake word listens for nothing until you add one.</small><small class="field-help warning-text" id="unknown-words"></small><small class="field-message" data-for="activation-phrases"></small></label>
+                <label class="wide">Deactivation phrases<textarea id="deactivation-phrases" rows="2" spellcheck="false" data-path="wake.deactivation_phrases" data-kind="list"></textarea><small class="field-help">Ends the session at once and cuts off the current answer. Avoid words that come up in normal game talk. Applies at once. Empty by default.</small><small class="field-message" data-for="deactivation-phrases"></small></label>
+                <label>Auto-stop after no input, seconds<input id="idle-timeout" type="number" min="0" max="3600" step="1" data-path="session.idle_timeout_seconds" data-kind="number"><small class="field-help">0 = only the deactivation phrase ends a session; otherwise 5 to 3600. The assistant's own answer does not count as silence. Applies at once, to the running session too. Default: 60.</small><small class="field-message" data-for="idle-timeout"></small></label>
+                <label>Wake engine<select id="wake-engine" data-path="wake.engine" data-kind="string"></select><small class="field-help">The offline recognizer that listens for the phrases on this PC; Vosk is the only one today. Applies at once (the engine reloads).</small><small class="field-message" data-for="wake-engine"></small></label>
+                <label class="wide">Wake model<select id="wake-model" data-path="wake.model" data-kind="string"></select><small class="field-help">The recognizer's language model; the phrases must be in its language. The model and the Vosk library download the first time wake-word activation is enabled. A change downloads and loads the new model at once; the phrases stay. Default: the catalog's first entry.</small><small class="field-message" data-for="wake-model"></small></label>
               </div>
             </div>
 
             <div class="card settings-section"><h2>Codex</h2>
               <div class="form-grid">
-                <label>Model<select id="codex-model-select" class="listed" data-for="codex-model"></select><input id="codex-model" type="text" spellcheck="false" list="codex-model-list" placeholder="account default" data-path="codex.model" data-kind="string"><datalist id="codex-model-list"></datalist><small class="field-help">For the work the voice assistant hands to Codex (searching, longer reasoning). The voice itself stays the realtime voice model. Applies from the next call.</small><small class="field-message" data-for="codex-model"></small></label>
-                <label>Reasoning<select id="codex-effort-select" class="listed" data-for="codex-effort"></select><input id="codex-effort" type="text" spellcheck="false" list="codex-effort-list" placeholder="model default" data-path="codex.reasoning_effort" data-kind="string"><datalist id="codex-effort-list"></datalist><small class="field-help">How long Codex thinks about a handed-off task. Higher levels answer better but take longer.</small><small class="field-message" data-for="codex-effort"></small></label>
-                <label>Voice<select id="codex-voice-select" class="listed" data-for="codex-voice"></select><input id="codex-voice" type="text" spellcheck="false" list="codex-voice-list" placeholder="server default" data-path="codex.voice" data-kind="string"><datalist id="codex-voice-list"></datalist><small class="field-message" data-for="codex-voice"></small></label>
+                <label>Model<select id="codex-model-select" class="listed" data-for="codex-model"></select><input id="codex-model" type="text" spellcheck="false" list="codex-model-list" placeholder="account default" data-path="codex.model" data-kind="string"><datalist id="codex-model-list"></datalist><small class="field-help">For the work the voice assistant hands to Codex (searching, longer reasoning). The voice itself stays the realtime voice model. Applies from the next call, which opens a new thread. Default: the account's default model.</small><small class="field-message" data-for="codex-model"></small></label>
+                <label>Reasoning<select id="codex-effort-select" class="listed" data-for="codex-effort"></select><input id="codex-effort" type="text" spellcheck="false" list="codex-effort-list" placeholder="model default" data-path="codex.reasoning_effort" data-kind="string"><datalist id="codex-effort-list"></datalist><small class="field-help">How long Codex thinks about a handed-off task. Higher levels answer better but take longer. Applies from the next call, which opens a new thread. Default: the model's default.</small><small class="field-message" data-for="codex-effort"></small></label>
+                <label>Voice<select id="codex-voice-select" class="listed" data-for="codex-voice"></select><input id="codex-voice" type="text" spellcheck="false" list="codex-voice-list" placeholder="server default" data-path="codex.voice" data-kind="string"><datalist id="codex-voice-list"></datalist><small class="field-help">The voice the realtime call speaks with. Empty is the server's default voice. Applies from the next call.</small><small class="field-message" data-for="codex-voice"></small></label>
                 <label>Answer handoff<select id="codex-handoff" data-path="codex.handoff_mode" data-kind="string"><option value="items">Conversation items (recommended)</option><option value="commentary">Commentary</option><option value="bem_tags">Tagged channels</option><option value="thinking">Built-in (thinking)</option></select><small class="field-help" id="codex-handoff-hint"></small><small class="field-message" data-for="codex-handoff"></small></label>
-                <label>Speaker names<select id="speaker-labels" data-path="assistant.speaker_labels" data-kind="string"><option value="start">At call start (recommended)</option><option value="changes">At call start and when the speaker changes</option><option value="off">Off</option></select><small class="field-help">At call start the assistant gets the people in the voice channel and who said the activation phrase. Discord nicknames go to OpenAI.</small><small class="field-message" data-for="speaker-labels"></small></label>
-                <label class="wide">Instructions<textarea id="codex-instructions" class="prompt-input" rows="5" data-path="codex.instructions" data-kind="string"></textarea><small class="field-help">Your instructions for the assistant. There is no built-in default.</small><small class="field-message" data-for="codex-instructions"></small></label>
+                <label>Speaker names<select id="speaker-labels" data-path="assistant.speaker_labels" data-kind="string"><option value="start">At call start (recommended)</option><option value="changes">At call start and when the speaker changes</option><option value="off">Off</option></select><small class="field-help">At call start the assistant gets the people in the voice channel and who said the activation phrase. Discord nicknames go to OpenAI. Applies from the next session. Default: at call start.</small><small class="field-message" data-for="speaker-labels"></small></label>
+                <label class="wide">Instructions<textarea id="codex-instructions" class="prompt-input" rows="5" data-path="codex.instructions" data-kind="string"></textarea><small class="field-help">Your instructions for the assistant: sent to the voice at every call start and to the Codex agent as its developer instructions. There is no built-in default. The voice follows a change from the next call, the agent from the next /join.</small><small class="field-message" data-for="codex-instructions"></small></label>
               </div>
               <p class="form-note">Threads are read-only and ephemeral, the shell tool is disabled, and VoiceBro declines every request to run commands or change files. The agent may search the web. Codex starts at /join and stops when the bot leaves its last voice channel.</p>
             </div>
 
             <div class="card settings-section"><h2>Hotkey</h2>
               <div class="form-grid">
-                <label>Mute hotkey<input id="hotkey-mute" type="text" spellcheck="false" placeholder="Ctrl+Alt+M" data-path="hotkey.mute" data-kind="string"><small class="field-help">Works system-wide, also in games. Empty disables it. Mutes both what the assistant hears and what it says, and ends the session.</small><small class="field-message" data-for="hotkey-mute"></small></label>
+                <label>Mute hotkey<input id="hotkey-mute" type="text" spellcheck="false" placeholder="Ctrl+Alt+M" data-path="hotkey.mute" data-kind="string"><small class="field-help">Works system-wide, also in games. Empty disables it. Mutes both what the assistant hears and what it says, and ends the session. Applies at once. Default: Ctrl+Alt+M.</small><small class="field-message" data-for="hotkey-mute"></small></label>
+              </div>
+            </div>
+
+            <div class="card settings-section"><h2>Diagnostics</h2>
+              <div class="form-grid">
+                <label>Performance monitoring <output id="diagnostics-performance-label" for="diagnostics-performance">off</output><input id="diagnostics-performance" type="checkbox" data-path="diagnostics.performance" data-kind="bool"><small class="field-help">Samples the status once a second and keeps five minutes of it for the Performance tab's charts and cards. While on it costs one status read per second and the kept samples in the window. The same switch is on the Performance tab. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-performance"></small></label>
+                <label>Memory measurement <output id="diagnostics-memory-label" for="diagnostics-memory">off</output><input id="diagnostics-memory" type="checkbox" data-path="diagnostics.memory" data-kind="bool"><small class="field-help">Reads the private working set of the app, its WebView2 processes and Codex every 3 seconds for the status bar and the System tab. While on it costs a scan of the process list every 3 seconds. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-memory"></small></label>
               </div>
             </div>
             <div class="settings-actions"><span class="form-feedback" id="settings-feedback">Changes save automatically.</span></div>
@@ -228,16 +246,16 @@
             </header>
             <div class="form-grid config-grid">
               <label>Discord bot token <span class="badge" id="token-badge">unknown</span>
-                <small class="field-help">To get one, open discord.com/developers/applications, pick or create your application, go to Bot and press Reset Token; copy the token right away and keep it private.</small>
+                <small class="field-help">To get one, open discord.com/developers/applications, pick or create your application, go to Bot and press Reset Token; copy the token right away and keep it private. A new token replaces the stored one and the Discord connection restarts with it.</small>
                 <input type="password" id="config-token" placeholder="****************" autocomplete="off" spellcheck="false">
                 <span class="row-actions"><button type="button" class="button" id="token-clear">Clear stored token</button></span>
               </label>
               <label>Discord guild ID
-                <small class="field-help">Turn on Developer Mode (User Settings → Advanced), then right-click your server and pick Copy Server ID. Slash commands are registered globally and in this server too, where they show up at once.</small>
+                <small class="field-help">Turn on Developer Mode (User Settings → Advanced), then right-click your server and pick Copy Server ID. Slash commands are registered globally and in this server too, where they show up at once. Applies at the next connection. Empty by default: global registration only.</small>
                 <input type="text" id="config-guild-id" inputmode="numeric" spellcheck="false" data-config-path="discord.guild_id">
               </label>
               <label class="wide">Codex executable
-                <small class="field-help">Empty finds Codex CLI by itself (npm install -g @openai/codex).</small>
+                <small class="field-help">Empty finds Codex CLI by itself (npm install -g @openai/codex). Applies at the next start of Codex: the next /join after the bot has left every channel. Default: automatic.</small>
                 <input type="text" id="config-codex-executable" spellcheck="false" placeholder="Automatic" data-config-path="codex.executable">
               </label>
             </div>
@@ -265,7 +283,7 @@
           <span>Uptime: <strong id="footer-uptime">—</strong></span>
         </div>
         <div class="status-bar-right">
-          <span>Memory: <strong id="footer-memory">—</strong></span><span class="separator"></span><span id="build-stamp">build …</span>
+          <span class="status-inline" id="footer-memory-item"><span>Memory: <strong id="footer-memory">—</strong></span><span class="separator"></span></span><span id="build-stamp">build …</span>
         </div>
       </footer>
     </div>

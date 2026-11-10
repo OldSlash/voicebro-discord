@@ -139,9 +139,12 @@
   function sameValue(a, b) {
     return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
   }
+  // The value line between a field's name and its control: the percentage of a slider,
+  // "on" or "off" for a switch, so a switch column has the same rows as a slider column.
   function percentLabel(control) {
     const label = $(`${control.id}-label`);
-    if (label) label.textContent = `${control.value} %`;
+    if (!label) return;
+    label.textContent = control.dataset.kind === "bool" ? (control.checked ? "on" : "off") : `${control.value} %`;
   }
   function writeControl(control, value) {
     if (control.dataset.kind === "percent") {
@@ -149,6 +152,7 @@
       percentLabel(control);
     } else if (control.dataset.kind === "bool") {
       control.checked = Boolean(value);
+      percentLabel(control);
     } else if (control.dataset.kind === "list") {
       control.value = Array.isArray(value) ? value.join("\n") : "";
     } else {
@@ -168,20 +172,38 @@
     const label = control?.closest("label");
     label?.classList.toggle("is-dirty", state === "dirty");
     label?.classList.toggle("is-invalid", state === "error");
+    label?.classList.toggle("is-saving", state === "saving");
   }
-  const messageTimers = new Map();
-  function fieldMessage(id, text, kind) {
+  // The line under a field holds its validation error and nothing else, so a save never
+  // changes the layout: the saved mark is the field's name in the success colour.
+  function fieldMessage(id, text) {
     const node = document.querySelector(`.field-message[data-for="${id}"]`);
-    if (!node) return;
-    clearTimeout(messageTimers.get(id));
-    node.textContent = text;
-    node.classList.toggle("error", kind === "error");
-    node.classList.toggle("pending", kind === "pending");
-    if (kind === "saved") {
-      messageTimers.set(id, setTimeout(() => {
-        if (node.textContent === text) node.textContent = "";
-      }, 2000));
+    if (node) node.textContent = text;
+  }
+  // The field's name as the user reads it: the label's own text, or its span for a
+  // toolbar switch.
+  function fieldName(control) {
+    const label = control.closest("label");
+    if (!label) return control.id;
+    const text = [...label.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+    return (text?.textContent || label.querySelector("span")?.textContent || control.id).trim();
+  }
+  const SAVED_MARK_MS = 2000;
+  const savedTimers = new Map();
+  let feedbackTimer = 0;
+  function markSaved(control) {
+    const label = control.closest("label");
+    if (label) {
+      label.classList.add("is-saved");
+      clearTimeout(savedTimers.get(control.id));
+      savedTimers.set(control.id, setTimeout(() => label.classList.remove("is-saved"), SAVED_MARK_MS));
     }
+    const feedback = $("settings-feedback");
+    feedback.textContent = `Saved: ${fieldName(control)}`;
+    clearTimeout(feedbackTimer);
+    feedbackTimer = setTimeout(() => {
+      feedback.textContent = "Changes save automatically.";
+    }, SAVED_MARK_MS);
   }
   // The listed text fields (Codex model, effort, voice) are edited through their select.
   const listedSelect = (id) => document.querySelector(`select.listed[data-for="${id}"]`);
@@ -216,6 +238,7 @@
     fillConfig(false);
     applyAppearance(stored?.ui);
     handoffHint();
+    applyDiagnostics();
     $("config-preview").textContent = stored ? JSON.stringify(stored, null, 2) : "";
   }
 
@@ -227,24 +250,33 @@
     thinking: "Codex's own routing, used before this setting existed: the answer is hidden context and the voice speaks in its own words. In the tests it twice made up an answer before the agent had finished.",
   };
   function handoffHint() {
-    $("codex-handoff-hint").textContent = HANDOFF_HINTS[$("codex-handoff").value] || "";
+    const hint = HANDOFF_HINTS[$("codex-handoff").value];
+    $("codex-handoff-hint").textContent = hint
+      ? `${hint} Applies from the next call. Default: conversation items.`
+      : "";
   }
   $("codex-handoff").addEventListener("change", handoffHint);
 
   async function saveControl(control) {
     if (!invoke) return;
     setState(control.id, "saving");
-    fieldMessage(control.id, "Saving…", "pending");
     try {
       stored = await invoke("save_settings", { patch: patchFor(control.dataset.path, controlValue(control)) });
       setState(control.id, "clean");
+      fieldMessage(control.id, "");
       fillField(control, true);
-      fieldMessage(control.id, "Saved", "saved");
+      // A second control of the same setting (the Performance tab's switch and the
+      // Diagnostics card) follows at once, before the settings event arrives.
+      document.querySelectorAll(`[data-path="${control.dataset.path}"]`).forEach((other) => {
+        if (other !== control) fillField(other, false);
+      });
+      markSaved(control);
       if (control.id === "codex-model") applyEffortList();
+      if (control.dataset.path.startsWith("diagnostics.")) applyDiagnostics();
     } catch (error) {
       // The rejected value stays so it can be corrected; the stored value is unchanged.
       setState(control.id, "error");
-      fieldMessage(control.id, String(error), "error");
+      fieldMessage(control.id, String(error));
     }
   }
 
@@ -252,7 +284,7 @@
   // sliders on release, lists and switches at once.
   document.querySelectorAll("[data-path]").forEach((control) => {
     control.addEventListener("input", () => {
-      if (control.dataset.kind === "percent") percentLabel(control);
+      if (control.dataset.kind === "percent" || control.dataset.kind === "bool") percentLabel(control);
       if (stateOf(control.id) === "saving") return;
       const differs = !stored || !sameValue(controlValue(control), readByPath(stored, control.dataset.path));
       if (stateOf(control.id) !== "error") setState(control.id, differs ? "dirty" : "clean");
@@ -740,6 +772,45 @@
     }
   }
 
+  // ---------- Diagnostics: what runs is decided by the two switches ----------
+  // Performance monitoring on: the status is read once a second and sampled for the
+  // Performance tab. Off: the status is read every 5 s and on events, nothing is kept, and
+  // the tab shows its switch and a note. Memory measurement on: `memory_status` every 3 s.
+  // Off: no reading, no status bar item, the System card says so.
+  const STATUS_POLL_MS = 5000;
+  const STATUS_SAMPLE_MS = 1000;
+  const MEMORY_POLL_MS = 3000;
+  let statusTimer = 0;
+  let statusTimerMs = 0;
+  let memoryTimer = 0;
+  const monitoringOn = () => Boolean(stored?.diagnostics?.performance);
+  const memoryOn = () => Boolean(stored?.diagnostics?.memory);
+  function applyDiagnostics() {
+    const wantedMs = monitoringOn() ? STATUS_SAMPLE_MS : STATUS_POLL_MS;
+    if (wantedMs !== statusTimerMs) {
+      clearInterval(statusTimer);
+      statusTimer = setInterval(refresh, wantedMs);
+      statusTimerMs = wantedMs;
+    }
+    if (!monitoringOn()) samples = [];
+    $("performance-live").classList.toggle("hidden", !monitoringOn());
+    $("performance-content").classList.toggle("hidden", !monitoringOn());
+    $("performance-off").classList.toggle("hidden", monitoringOn());
+    if (monitoringOn()) renderPerformance();
+
+    if (memoryOn() && !memoryTimer) {
+      memoryTimer = setInterval(refreshMemory, MEMORY_POLL_MS);
+      refreshMemory();
+    } else if (!memoryOn() && memoryTimer) {
+      clearInterval(memoryTimer);
+      memoryTimer = 0;
+    }
+    $("footer-memory-item").classList.toggle("hidden", !memoryOn());
+    $("memory-on").classList.toggle("hidden", !memoryOn());
+    $("memory-off").classList.toggle("hidden", memoryOn());
+    if (!memoryOn()) setText("system-memory", "not measured (Settings → Diagnostics)");
+  }
+
   // ---------- Performance: samples of the status, once a second, five minutes kept ----------
   const SAMPLE_KEEP_MS = 5 * 60 * 1000;
   let samples = [];
@@ -753,6 +824,7 @@
     return Object.values(status.latency || {}).flat();
   }
   function samplePerformance(status) {
+    if (!monitoringOn()) return;
     const now = Date.now();
     if (now - lastSampleAt < 900) return;
     lastSampleAt = now;
@@ -890,6 +962,7 @@
     ];
   }
   function renderPerformance() {
+    if (!monitoringOn()) return;
     const inWindow = windowSamples();
     const verdict = quality(inWindow);
     $("performance-health").className = `health-dot ${verdict.kind}`;
@@ -989,11 +1062,12 @@
     }
   }
 
-  // ---------- Memory: the private working set, read by the shell every 3 s ----------
+  // ---------- Memory: the private working set, read by the shell every 3 s while on ----------
   async function refreshMemory() {
-    if (!invoke) return;
+    if (!invoke || !memoryOn()) return;
     try {
       const memory = await invoke("memory_status");
+      // `null` until the shell's first reading after the switch went on.
       if (!memory) return;
       const mb = (value) => `${Number(value).toFixed(1)} MB`;
       $("footer-memory").textContent = mb(memory.total_mb);
@@ -1106,10 +1180,9 @@
     fillForm();
     await refresh();
     await loadChat();
-    // Once a second: the status values and a Performance sample.
-    setInterval(refresh, 1000);
-    await refreshMemory();
-    setInterval(refreshMemory, 3000);
+    // The status timer and the memory timer are set by the diagnostics switches
+    // (`applyDiagnostics`, run by `fillForm`); without stored settings both are off.
+    if (!statusTimer) applyDiagnostics();
     setInterval(renderUptime, 1000);
   }
 

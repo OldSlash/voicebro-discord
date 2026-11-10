@@ -383,6 +383,21 @@ impl Runtime {
                     self.assistant.configure(&settings);
                 }
                 "codex" => self.assistant.configure(&settings),
+                // Nothing in the core reads the section: the window and the desktop shell
+                // act on it themselves from the settings change event.
+                "diagnostics" => log::info!(
+                    "settings: performance monitoring {}, memory measurement {}",
+                    if settings.diagnostics.performance {
+                        "on"
+                    } else {
+                        "off"
+                    },
+                    if settings.diagnostics.memory {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                ),
                 _ => {}
             }
         }

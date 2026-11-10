@@ -27,6 +27,7 @@ pub struct Settings {
     pub codex: CodexSettings,
     pub hotkey: HotkeySettings,
     pub ui: UiSettings,
+    pub diagnostics: DiagnosticsSettings,
     /// Fields this build does not know (from a newer version). Kept through load and save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -44,9 +45,25 @@ impl Default for Settings {
             codex: CodexSettings::default(),
             hotkey: HotkeySettings::default(),
             ui: UiSettings::default(),
+            diagnostics: DiagnosticsSettings::default(),
             extra: Map::new(),
         }
     }
+}
+
+/// The measurements built for the tuning work, off by default so that a user who never
+/// opens the Performance tab pays nothing for them. Nothing in the core reads this section:
+/// the window polls and samples by `performance`, and the desktop shell runs its memory
+/// reader by `memory`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiagnosticsSettings {
+    /// The window samples the status once a second and keeps five minutes of it for the
+    /// Performance tab's charts and cards.
+    pub performance: bool,
+    /// The desktop shell reads the private working set of the app's processes every 3 s
+    /// for the status bar and the System tab.
+    pub memory: bool,
 }
 
 /// The window's themes, as in the first version.
@@ -451,6 +468,9 @@ impl Settings {
         if self.ui != other.ui {
             changed.push("ui");
         }
+        if self.diagnostics != other.diagnostics {
+            changed.push("diagnostics");
+        }
         changed
     }
 }
@@ -507,6 +527,33 @@ mod tests {
         for mode in HANDOFF_MODES {
             assert!(error.message.contains(mode), "{}", error.message);
         }
+    }
+
+    #[test]
+    fn diagnostics_default_to_off_and_change_only_their_own_section() {
+        let older: Settings = serde_json::from_str(r#"{ "version": 1, "ui": {} }"#).unwrap();
+        assert_eq!(older.diagnostics, DiagnosticsSettings::default());
+        assert!(!older.diagnostics.performance && !older.diagnostics.memory);
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(
+            written["diagnostics"],
+            json!({ "performance": false, "memory": false }),
+            "the next save writes the section"
+        );
+
+        let patched = older
+            .with_patch(&json!({ "diagnostics": { "memory": true } }))
+            .unwrap();
+        patched.validate().expect("a boolean is valid");
+        assert!(patched.diagnostics.memory && !patched.diagnostics.performance);
+        assert_eq!(older.changed_sections(&patched), vec!["diagnostics"]);
+
+        assert!(
+            older
+                .with_patch(&json!({ "diagnostics": { "performance": "yes" } }))
+                .is_err(),
+            "a string is not a switch"
+        );
     }
 
     #[test]
