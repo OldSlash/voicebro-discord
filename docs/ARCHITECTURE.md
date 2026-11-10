@@ -487,6 +487,7 @@ pub struct Settings {
     pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off
     pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default)
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
+    pub ui: UiSettings,                    // theme: dark | darcula | light | intellij (default dark); font_size: 11..=20 (default 13)
     pub extra: Map<String, Value>,         // flattened: unknown fields from a newer version, kept as they are
 }
 ```
@@ -508,8 +509,10 @@ recognizes; the code ships none.
   the log. Codex's own ChatGPT sign-in is stored by Codex itself (`~/.codex`), not by the app.
 - The app is portable: its data directory is the folder the executable runs from
   (`VOICEBRO_DATA_DIR` overrides it for tests). It holds `settings.json`, `logs\`, `assets\`
-  (Vosk library and models) and `codex-workspace\` (the empty, read-only cwd for Codex
-  threads). Nothing is written under the user profile.
+  (Vosk library and models), `codex-workspace\` (the empty, read-only cwd for Codex
+  threads) and `webview-data\` (the window's WebView2 data, about 11 MB). Nothing is written
+  under the user profile; builds before change `ui-layout-port` left a
+  `%LOCALAPPDATA%\com.voicebro.desktop` folder (WebView2 data) that the user may delete.
 
 ### 4.7 Composition root (`runtime.rs`)
 
@@ -538,17 +541,37 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
   window loaded. The pane no longer lists `AppEvent::Log` separately.
 - `build.rs` embeds the Common-Controls v6 manifest into every linked target and stamps the
   build (version plus short git hash plus date) for the UI.
-- UI: static HTML, CSS and JS with `withGlobalTauri: true`, no framework or bundler. Tabs:
-  Status, Settings, Chat, plus the log pane and the build stamp.
-  - Status renders from one `status` snapshot (`renderStatus`): Discord state and bot user,
-    voice channels with participants, mute, the gates (session state, assistant ready, last
-    phrase, held frames), the hotkey, the Codex account, process and calls, the token, the
-    wake engine state with download progress and unknown words, the data directory,
-    connection errors, and the counters behind a details toggle. Events trigger a refresh;
-    a 5 s timer backs it up. Buttons: Connect, Disconnect, Mute, Sign in to Codex, Check.
-  - Settings has one control per field with its JSON path (`data-path`) and kind (string,
-    number, bool, list). Each Save sends one `save_settings` patch; a rejected value shows
-    the validation message at the field and the stored value stays. Lists: the wake engine
+- **The main window is built in `setup`** (`build_main_window`, label `main`) with
+  `WebviewWindowBuilder::data_directory(<data dir>\webview-data)`; `tauri.conf.json` lists no
+  window, because its `dataDirectory` is relative to `%APPDATA%`.
+- UI: static HTML, CSS and JS with `withGlobalTauri: true`, no framework or bundler. The
+  window has the first version's look, written new for this app: a tab bar with **Console,
+  Codex chat, Status,
+  Performance, System, Settings, Config**, cards, and a status bar (Discord state in colour,
+  guild count, voice channel count, uptime, a memory slot, the build stamp). Switching tabs
+  keeps each tab's content and scroll position. Four themes (Dark, Darcula, Light,
+  IntelliJ) as CSS variables on `html[data-theme]` and a font size, both from the `ui`
+  settings section, applied at once and at load.
+  - Console shows the app log (`app-log` events plus `log_history`) with Clear, Copy and
+    Auto-scroll.
+  - Status renders from one `status` snapshot (`renderStatus`): the connected guilds on the
+    left (`DiscordStatus.guilds`, read from the serenity cache), and fact tiles on the right:
+    Discord state, bot account, voice channel, people in it, assistant engine, the gates
+    (session state, assistant ready, last phrase, held frames), wake word, mute, Codex
+    account, call, Codex thread, mute hotkey, token stored, build; then connection errors
+    and the counters behind a details toggle. Events trigger a refresh; a 5 s timer backs
+    it up. Buttons: Mute, Connect, Disconnect, Sign in to Codex, Check Codex, Refresh.
+  - Performance has the first version's toolbar, two chart cards and a tile grid; the
+    content comes with change `performance-statistics`.
+  - System shows `system_status` (version, build stamp, process id, uptime, runtime,
+    platform with the Windows build, architecture, CPU cores) and the files (data folder,
+    `settings.json`, the Codex CLI path); the memory row is filled by change
+    `memory-measurement`.
+  - Settings has the cards Appearance, Audio, Assistant, Codex and Hotkey, one control per
+    field with its JSON path (`data-path`) and kind (string, number, bool, list, percent).
+    Each control saves itself on `change` with one `save_settings` patch (text when leaving
+    the field or on Enter, sliders on release, selects and switches at once); a rejected
+    value shows the validation message under the field. Lists: the wake engine
     and model come from `wake_models` (the catalog); the Codex model, reasoning effort and
     voice are selects filled from `capabilities` when the engine has them and text inputs
     with a datalist otherwise; the effort list follows the chosen model. Phrases are one
@@ -558,13 +581,21 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     "How loud the assistant speaks" and the tone volume, saved on release without a Save
     button, with the earcon switch, and under each gain the last second's peak and the clip
     count from `Status.audio`.
-  - Chat lists the chat log entries (pulled at start, then one event per entry) with
+  - Config holds the Discord token (write-only, with help on getting one, a stored badge and
+    Clear stored token), the guild id (with help on copying it) and the Codex executable,
+    an "Auto-start enabled" badge, Save changes (one settings patch for the edited fields
+    plus `set_secret` when a token was typed) and Reset (back to the stored values), and the
+    stored `settings.json` read-only with its path. The token is never in that view.
+  - Codex chat lists the chat log entries (pulled at start, then one event per entry) with
     filters (names and notes, agent work, call events), auto-scroll, Copy and Open log
     folder.
   - Commands: `get_settings`, `save_settings`, `set_secret`, `clear_secret`, `status`,
-    `app_info`, `set_muted`, `toggle_mute`, `discord_connect`, `discord_disconnect`,
-    `codex_sign_in`, `codex_check`, `codex_models`, `capabilities`, `wake_models`,
-    `chat_log`, `open_log_folder`.
+    `app_info`, `system_status`, `set_muted`, `toggle_mute`, `discord_connect`,
+    `discord_disconnect`, `codex_sign_in`, `codex_check`, `codex_models`, `capabilities`,
+    `wake_models`, `chat_log`, `log_history`, `open_log_folder`.
+- Checking the window without a person: start the app with
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`; the page is then
+  reachable through the Chrome DevTools protocol (evaluate expressions, take screenshots).
 - Window lifecycle: destroying the main window exits the app, which stops `codex.exe`.
 
 ### 4.9 Probe binary (`apps/probe`)

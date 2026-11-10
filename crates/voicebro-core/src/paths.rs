@@ -33,6 +33,12 @@ pub fn codex_workspace_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("codex-workspace")
 }
 
+/// The window's WebView2 data (cache, local storage), kept with the app instead of under
+/// `%LOCALAPPDATA%`.
+pub fn webview_data_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("webview-data")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,6 +53,7 @@ mod tests {
             codex_workspace_dir(dir),
             Path::new("X:/data/codex-workspace")
         );
+        assert_eq!(webview_data_dir(dir), Path::new("X:/data/webview-data"));
     }
 
     #[test]

@@ -4,10 +4,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod log_ring;
+mod system;
 
 use log_ring::LogRing;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
@@ -64,6 +66,8 @@ struct AppState {
     hotkey: Mutex<Option<Shortcut>>,
     /// The last log lines, for the window's log pane.
     log: Arc<LogRing>,
+    /// When the app started, for the uptime.
+    started: Instant,
 }
 
 fn codex(state: &AppState) -> Result<CodexAssistant, String> {
@@ -256,6 +260,25 @@ fn log_history(state: State<'_, AppState>) -> Vec<String> {
     state.log.history()
 }
 
+/// The System tab and the status bar: the process and the operating system.
+#[tauri::command]
+fn system_status(state: State<'_, AppState>) -> system::SystemFacts {
+    system::facts(BUILD_STAMP, state.started, Instant::now())
+}
+
+/// The main window, built here rather than in `tauri.conf.json` so its WebView2 data stays
+/// next to the app (`webview-data`) instead of under `%LOCALAPPDATA%`.
+fn build_main_window(app: &tauri::App, data_dir: &std::path::Path) -> tauri::Result<()> {
+    tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+        .title("VoiceBro")
+        .inner_size(1040.0, 720.0)
+        .min_inner_size(860.0, 560.0)
+        .resizable(true)
+        .data_directory(paths::webview_data_dir(data_dir))
+        .build()?;
+    Ok(())
+}
+
 /// The file, the window's ring and, in debug builds, stdout: one level table for all three.
 fn log_plugin(
     data_dir: &std::path::Path,
@@ -341,11 +364,21 @@ fn main() {
             codex,
             hotkey: Mutex::new(None),
             log: Arc::clone(&log),
+            started: Instant::now(),
         })
         .setup(move |app| {
             log.attach(app.handle().clone());
             // The first log line identifies the build.
             log::info!("VoiceBro {BUILD_STAMP}");
+            let facts = system::facts(BUILD_STAMP, Instant::now(), Instant::now());
+            log::info!(
+                "{}, {}, {} CPU cores, process {}",
+                facts.platform,
+                facts.architecture,
+                facts.cpu_cores,
+                facts.process_id
+            );
+            build_main_window(app, &data_dir)?;
             if let Err(error) = runtime.start() {
                 log::error!("runtime start: {error}");
                 runtime.set_connection_error("runtime", Some(error.to_string()));
@@ -400,6 +433,7 @@ fn main() {
             wake_models,
             chat_log,
             log_history,
+            system_status,
             open_log_folder
         ])
         .build(tauri::generate_context!())
