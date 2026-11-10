@@ -85,7 +85,7 @@ The realtime call (WebRTC) lives inside the Rust process.
 | Work | Runs on | Rule |
 |---|---|---|
 | Discord gateway, songbird driver, HTTP, downloads | Tauri's tokio runtime | Ordinary async code. |
-| Receive path: `VoiceTick` → mix → gate → assistant input, wake feed | Songbird's event task (tokio) | Must return within a fraction of 20 ms: no blocking calls, no locks held across awaits, no allocation after warm-up. |
+| Receive path: `VoiceTick` → mix → gate → assistant input, wake feed | Songbird's event task (tokio) | Must return within a fraction of 20 ms: no blocking calls, no locks held across awaits, only necessary allocation after warm-up. |
 | Discord output: songbird's mixer pulls `PcmSource::read` | Songbird's mixer thread | A read never blocks for more than a few ms; on underrun it returns silence and counts it. |
 | Wake worker: recognizers, trailing silence, phrase detectors | One dedicated OS thread per engine, 20 ms tick | Fed through a bounded channel; a full queue drops and counts. |
 | WebRTC call: ICE/DTLS/SRTP, RTP in and out | The webrtc crate's runtime tasks | Incoming RTP packets are only inserted into the call's jitter buffer; nothing is decoded here. |
