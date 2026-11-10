@@ -22,7 +22,8 @@
       deactivation_phrases: ["omega"],
     },
     assistant: { engine: "codex", speaker_labels: "start" },
-    codex: { executable: "", model: "", reasoning_effort: "", voice: "", instructions: "Answer briefly." },
+    // `handoff_mode` as the app fills it for a file without the field: the default.
+    codex: { executable: "", model: "", reasoning_effort: "", voice: "", instructions: "Answer briefly.", handoff_mode: "items" },
     hotkey: { mute: "Ctrl+Alt+M" },
     ui: { theme: "dark", font_size: 13 },
   };
@@ -102,6 +103,10 @@
     }
     if (!(doc.ui.font_size >= 11 && doc.ui.font_size <= 20)) {
       throw `ui.font_size: ${doc.ui.font_size} is outside 11 to 20`;
+    }
+    const modes = ["items", "commentary", "bem_tags", "thinking"];
+    if (!modes.includes(doc.codex.handoff_mode)) {
+      throw `codex.handoff_mode: «${doc.codex.handoff_mode}» is not an answer handoff mode; use one of ${modes.join(", ")}`;
     }
   }
 

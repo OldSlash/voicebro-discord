@@ -200,7 +200,13 @@ impl Default for AssistantSettings {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// How the Codex agent's answer reaches the voice model, one of these. `items` adds it to
+/// the conversation as its own item and is the default: in the tests of 2026-11-10 it kept
+/// the agent's facts in every call. `thinking` is Codex's built-in routing.
+pub const HANDOFF_MODES: &[&str] = &["items", "commentary", "bem_tags", "thinking"];
+pub const DEFAULT_HANDOFF_MODE: &str = "items";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CodexSettings {
     /// Path to `codex.exe`; empty means auto-detect.
@@ -214,6 +220,21 @@ pub struct CodexSettings {
     pub voice: String,
     /// Instructions for the assistant. There is no default: the user writes their own.
     pub instructions: String,
+    /// One of [`HANDOFF_MODES`].
+    pub handoff_mode: String,
+}
+
+impl Default for CodexSettings {
+    fn default() -> Self {
+        Self {
+            executable: String::new(),
+            model: String::new(),
+            reasoning_effort: String::new(),
+            voice: String::new(),
+            instructions: String::new(),
+            handoff_mode: DEFAULT_HANDOFF_MODE.to_owned(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -358,6 +379,16 @@ impl Settings {
             ));
         }
         // An empty voice is valid: the call then uses the server's default voice.
+        if !HANDOFF_MODES.contains(&self.codex.handoff_mode.as_str()) {
+            return Err(invalid(
+                "codex.handoff_mode",
+                format!(
+                    "«{}» is not an answer handoff mode; use one of {}",
+                    self.codex.handoff_mode,
+                    HANDOFF_MODES.join(", ")
+                ),
+            ));
+        }
         validate_shortcut("hotkey.mute", &self.hotkey.mute)?;
         if !THEMES.contains(&self.ui.theme.as_str()) {
             return Err(invalid(
@@ -450,6 +481,32 @@ mod tests {
     #[test]
     fn defaults_validate() {
         Settings::default().validate().expect("defaults are valid");
+    }
+
+    #[test]
+    fn the_handoff_mode_takes_four_values_and_defaults_to_items() {
+        let older: Settings =
+            serde_json::from_str(r#"{ "version": 1, "codex": { "voice": "juniper" } }"#).unwrap();
+        assert_eq!(older.codex.handoff_mode, "items");
+        assert_eq!(older.codex.voice, "juniper");
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(
+            written["codex"]["handoff_mode"], "items",
+            "the next save writes it"
+        );
+        for mode in HANDOFF_MODES {
+            let patched = older
+                .with_patch(&json!({ "codex": { "handoff_mode": mode } }))
+                .unwrap();
+            patched.validate().unwrap_or_else(|e| panic!("{mode}: {e}"));
+        }
+        let mut settings = Settings::default();
+        settings.codex.handoff_mode = "verbatim".to_owned();
+        let error = settings.validate().unwrap_err();
+        assert_eq!(error.field, "codex.handoff_mode");
+        for mode in HANDOFF_MODES {
+            assert!(error.message.contains(mode), "{}", error.message);
+        }
     }
 
     #[test]
