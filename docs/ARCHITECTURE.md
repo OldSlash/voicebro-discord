@@ -634,7 +634,8 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
   window has the first version's look, written new for this app: a tab bar with **Console,
   Codex chat, Status,
   Performance, System, Settings, Config**, cards, and a status bar (Discord state in colour,
-  guild count, voice channel count, uptime, a memory slot, the build stamp). Switching tabs
+  guild count, voice channel count, uptime, a memory slot while memory measurement is on,
+  the build stamp). Switching tabs
   keeps each tab's content and scroll position. Four themes (Dark, Darcula, Light,
   IntelliJ) as CSS variables on `html[data-theme]` and a font size, both from the `ui`
   settings section, applied at once and at load.
@@ -652,8 +653,13 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     it up. Buttons: Mute, Connect, Disconnect, Sign in to Codex, Check Codex, Refresh.
   - Performance, as in the first version: a window selector (30 s, 60 s, 5 min), Refresh,
     a health dot and a quality label, two canvas charts drawn with the first version's
-    `drawChart` (no library), and stat cards. The window samples the status once a second
-    (the same poll refreshes the status values) and keeps five minutes. Quality: "idle"
+    `drawChart` (no library), and stat cards, all behind the "Performance monitoring"
+    switch in the tab's toolbar, which is the `diagnostics.performance` setting (off by
+    default; the Diagnostics card of the Settings tab holds a second control of the same
+    setting). While it is on the window samples the status once a second (the same poll
+    refreshes the status values) and keeps five minutes; while it is off the window reads
+    the status every 5 s and on events, keeps no samples, and the tab shows the switch and
+    a note on what the monitoring costs. Turning it off drops the kept samples. Quality: "idle"
     without a connected call; "stable" when, over the chosen window, late plus concealed
     packets stay under 1 % of those received and no input frame was dropped; otherwise
     "degraded" naming the counter (dropped input frames, concealed packets, late packets).
@@ -665,14 +671,23 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
   - System shows `system_status` (version, build stamp, process id, uptime, runtime,
     platform with the Windows build, architecture, CPU cores), the memory (the "Native
     host" card: a bar and the private working set of the Rust process, WebView2 and Codex,
-    "not running" while Codex is stopped, and the total, which the status bar shows too)
-    and the files (data folder, `settings.json`, the Codex CLI path).
-  - Settings has the cards Appearance, Audio, Assistant, Codex and Hotkey, one control per
-    field with its JSON path (`data-path`) and kind (string, number, bool, list, percent).
-    Each control saves itself on `change` with one `save_settings` patch (text when leaving
-    the field or on Enter, sliders on release, selects and switches at once); the line
-    under the field shows "Saving…", "Saved" for two seconds, or the validation message,
-    which stays, with the rejected value, until the field is corrected. Lists: the wake engine
+    "not running" while Codex is stopped, and the total, which the status bar shows too;
+    while `diagnostics.memory` is off the card says the measurement is off and where to
+    turn it on, the status bar has no memory item, and the window does not call
+    `memory_status`) and the files (data folder, `settings.json`, the Codex CLI path).
+  - Settings has the cards Appearance, Audio, Assistant, Codex, Hotkey and Diagnostics,
+    one control per field with its JSON path (`data-path`) and kind (string, number, bool,
+    list, percent), and under every control a help line saying what the setting affects,
+    when a change applies (at once, from the next call, from the next session, at the next
+    connection) and the default. Each control saves itself on `change` with one
+    `save_settings` patch (text when leaving the field or on Enter, sliders on release,
+    selects and switches at once). A save changes no geometry: the field's name takes the
+    success colour for two seconds and the tab's one feedback line reads "Saved: <field>"
+    for the same time; the line under the field holds the validation message only, which
+    stays, with the rejected value, until the field is corrected. A switch has an on/off
+    value line where a slider has its percentage, so a row of a switch and a slider lines
+    up. Two controls may share a `data-path` (the Performance tab's switch and the
+    Diagnostics card): a save from one fills the other at once. Lists: the wake engine
     and model come from `wake_models` (the catalog); the Codex model, reasoning effort and
     voice are selects filled from `capabilities` when the engine has them and text inputs
     with a datalist otherwise; the effort list follows the chosen model. The Codex card's
@@ -854,7 +869,12 @@ Values that worked in the first version. Change them only with a measurement or 
   from the app's id with a ToolHelp snapshot (the app, its `msedgewebview2.exe`
   descendants, its `codex*` child and everything under it) and reads each process with
   `GetProcessMemoryInfo` into `PROCESS_MEMORY_COUNTERS_EX2` (`PrivateWorkingSetSize`)
-  every 3 s on its own thread; the `memory_status` command returns the latest reading.
+  every 3 s on its own thread (`memory::Reader`), which runs only while the
+  `diagnostics.memory` setting is on: the shell starts it at start-up when the setting
+  says so and starts or stops it on every settings change, logging "memory reading
+  started" / "stopped". The `memory_status` command returns the latest reading, `None`
+  while the reader is not running. The `diagnostics` section (`performance`, `memory`,
+  both off by default) is read by nothing in the core: `Runtime::apply` only logs it.
   `scripts\measure.ps1` reads the same metric from the `Working Set - Private` counter for
   release builds; private bytes (the commit charge) are printed only for diagnosis.
 - The status snapshot holds measured values only. A quantity that is not measured is
