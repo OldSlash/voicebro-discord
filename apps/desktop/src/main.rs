@@ -69,8 +69,35 @@ struct AppState {
     log: Arc<LogRing>,
     /// When the app started, for the uptime.
     started: Instant,
-    /// The latest memory reading of the app's processes, renewed every 3 s.
-    memory: Arc<Mutex<Option<memory::MemoryReading>>>,
+    /// The latest memory reading of the app's processes, renewed every 3 s while the
+    /// reader runs; `None` otherwise.
+    memory: memory::Slot,
+    /// The reading thread, present while `diagnostics.memory` is on.
+    memory_reader: Mutex<Option<memory::Reader>>,
+}
+
+/// Starts or stops the memory reader so that it runs exactly while `diagnostics.memory`
+/// is on. Called at start-up and after every settings change.
+fn apply_memory_reader(state: &AppState) {
+    let wanted = state.runtime.settings().diagnostics.memory;
+    let mut reader = state.memory_reader.lock().expect("memory reader lock");
+    match (wanted, reader.take()) {
+        (true, None) => match memory::Reader::start(Arc::clone(&state.memory)) {
+            Ok(started) => {
+                log::info!(
+                    "memory reading started (every {} s)",
+                    memory::INTERVAL.as_secs()
+                );
+                *reader = Some(started);
+            }
+            Err(error) => log::warn!("memory reading not started: {error}"),
+        },
+        (false, Some(running)) => {
+            running.stop();
+            log::info!("memory reading stopped");
+        }
+        (_, kept) => *reader = kept,
+    }
 }
 
 fn codex(state: &AppState) -> Result<CodexAssistant, String> {
@@ -270,7 +297,7 @@ fn system_status(state: State<'_, AppState>) -> system::SystemFacts {
 }
 
 /// The latest memory reading (private working set of the app, WebView2 and Codex); `None`
-/// until the first reading is taken.
+/// while memory measurement is off and until the first reading after it is turned on.
 #[tauri::command]
 fn memory_status(state: State<'_, AppState>) -> Option<memory::MemoryReading> {
     state.memory.lock().expect("memory slot lock").clone()
@@ -375,7 +402,8 @@ fn main() {
             hotkey: Mutex::new(None),
             log: Arc::clone(&log),
             started: Instant::now(),
-            memory: memory::start(),
+            memory: Arc::new(Mutex::new(None)),
+            memory_reader: Mutex::new(None),
         })
         .setup(move |app| {
             log.attach(app.handle().clone());
@@ -395,9 +423,10 @@ fn main() {
                 runtime.set_connection_error("runtime", Some(error.to_string()));
             }
             apply_hotkey(app.handle(), &app.state::<AppState>());
+            apply_memory_reader(&app.state::<AppState>());
 
             // Forward every core event to the webview as one Tauri event, and re-register
-            // the hotkey when the settings change.
+            // the hotkey and the memory reader when the settings change.
             let app_handle = app.handle().clone();
             let mut events = runtime.events().subscribe();
             let mut last_hotkey = runtime.settings().hotkey.mute.clone();
@@ -412,6 +441,7 @@ fn main() {
                                     last_hotkey = now;
                                     apply_hotkey(&app_handle, &state);
                                 }
+                                apply_memory_reader(&state);
                             }
                             if let Err(error) = app_handle.emit("app-event", &event) {
                                 log::warn!("event bridge: {error}");
