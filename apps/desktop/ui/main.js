@@ -44,6 +44,8 @@
   function controlValue(control) {
     switch (control.dataset.kind) {
       case "number": return Number(control.value);
+      // A slider in percent for a multiplier: 339 % is stored as 3.39.
+      case "percent": return Number(control.value) / 100;
       case "bool": return control.checked;
       case "list":
         return control.value
@@ -55,6 +57,11 @@
   }
   function setControlValue(control, value) {
     if (document.activeElement === control) return;
+    if (control.dataset.kind === "percent") {
+      control.value = Math.round(Number(value ?? 0) * 100);
+      percentLabel(control);
+      return;
+    }
     if (control.dataset.kind === "bool") control.checked = Boolean(value);
     else if (control.dataset.kind === "list") control.value = Array.isArray(value) ? value.join("\n") : "";
     else control.value = value == null ? "" : value;
@@ -200,6 +207,8 @@
       fieldMessage(control.id, "Saved.", false);
     } catch (error) {
       fieldMessage(control.id, String(error), true);
+      // A rejected slider returns to the stored value on the refresh below.
+      if (control.type === "range") control.blur();
     }
     await refresh();
   }
@@ -209,6 +218,21 @@
   document.querySelectorAll("[data-kind='bool']").forEach((control) => {
     control.addEventListener("change", () => saveControl(control));
   });
+  function percentLabel(control) {
+    const label = $(`${control.id}-label`);
+    if (label) label.textContent = `${control.value} %`;
+  }
+  // Sliders: the label follows while dragging, the value is saved on release.
+  document.querySelectorAll("[data-kind='percent']").forEach((control) => {
+    control.addEventListener("input", () => percentLabel(control));
+    control.addEventListener("change", () => saveControl(control));
+  });
+  function levelText(reading) {
+    if (!reading) return "";
+    const peak = Math.round((reading.peak || 0) * 100);
+    const clips = reading.clips || 0;
+    return `Peak in the last second: ${peak} % of full scale. Clipped samples since start: ${clips}.`;
+  }
 
   function wakeText(wake) {
     const state = wake.state || {};
@@ -390,6 +414,8 @@
       counters[`output ${guild}`] = channel.output;
     }
     $("status-counters").textContent = JSON.stringify(counters, null, 2);
+    $("input-gain-level").textContent = levelText(status.audio?.input);
+    $("output-gain-level").textContent = levelText(status.audio?.output);
 
     applyWakeLists(status.settings);
     document.querySelectorAll("[data-path]").forEach((control) => {

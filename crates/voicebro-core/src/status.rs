@@ -75,6 +75,8 @@ pub struct Status {
     pub wake: crate::wake::WakeStatus,
     /// One gate per guild the bot is in a voice channel of, keyed by guild id.
     pub gates: BTreeMap<String, crate::gate::GateStatus>,
+    /// The two gains with the peak of the last second and the clip counters.
+    pub audio: crate::audio::AudioLevels,
     pub assistant: crate::assistant::AssistantStatus,
     pub settings: Settings,
 }
