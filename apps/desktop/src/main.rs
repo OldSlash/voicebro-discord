@@ -88,6 +88,16 @@ fn set_muted(state: State<'_, AppState>, muted: bool) -> bool {
     state.runtime.set_muted(muted)
 }
 
+#[tauri::command]
+fn discord_connect(state: State<'_, AppState>) -> Result<(), String> {
+    state.runtime.connect().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn discord_disconnect(state: State<'_, AppState>) {
+    state.runtime.disconnect();
+}
+
 fn log_plugin(data_dir: &std::path::Path) -> tauri::plugin::TauriPlugin<tauri::Wry> {
     let mut targets = vec![Target::new(TargetKind::Folder {
         path: paths::logs_dir(data_dir),
@@ -110,12 +120,14 @@ fn log_plugin(data_dir: &std::path::Path) -> tauri::plugin::TauriPlugin<tauri::W
 
 fn main() {
     let data_dir = paths::data_dir();
+    let handle = tauri::async_runtime::handle().inner().clone();
     let runtime = Arc::new(Runtime::new(
         BUILD_STAMP,
         data_dir.clone(),
         SettingsStore::new(paths::settings_path(&data_dir)),
         Arc::from(secrets::platform_store()),
         EventBus::default(),
+        handle,
     ));
 
     tauri::Builder::default()
@@ -132,13 +144,13 @@ fn main() {
             }
 
             // Forward every core event to the webview as one Tauri event.
-            let handle = app.handle().clone();
+            let app_handle = app.handle().clone();
             let mut events = runtime.events().subscribe();
             tauri::async_runtime::spawn(async move {
                 loop {
                     match events.recv().await {
                         Ok(event) => {
-                            if let Err(error) = handle.emit("app-event", &event) {
+                            if let Err(error) = app_handle.emit("app-event", &event) {
                                 log::warn!("event bridge: {error}");
                             }
                         }
@@ -158,7 +170,9 @@ fn main() {
             clear_secret,
             status,
             app_info,
-            set_muted
+            set_muted,
+            discord_connect,
+            discord_disconnect
         ])
         .build(tauri::generate_context!())
         .expect("error while building the VoiceBro application")

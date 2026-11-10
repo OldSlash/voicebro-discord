@@ -21,6 +21,7 @@ pub struct Status {
     pub secrets: BTreeMap<String, SecretStatus>,
     /// Keyed by source (`discord`, `codex`, `call`, `secret_store`); present while failing.
     pub connection_errors: BTreeMap<String, String>,
+    pub discord: crate::discord::DiscordStatus,
     pub settings: Settings,
 }
 

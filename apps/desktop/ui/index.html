@@ -17,6 +17,10 @@
       <section id="tab-status" class="panel active">
         <h2>Status</h2>
         <dl class="facts">
+          <dt>Discord</dt>
+          <dd id="status-discord">…</dd>
+          <dt>Voice channels</dt>
+          <dd id="status-voice">none</dd>
           <dt>Assistant</dt>
           <dd id="status-mute">not muted</dd>
           <dt>Discord token</dt>
@@ -25,10 +29,16 @@
           <dd id="status-data-dir">…</dd>
         </dl>
         <div class="row">
+          <button id="discord-connect">Connect</button>
+          <button id="discord-disconnect" class="secondary">Disconnect</button>
           <button id="mute-toggle">Mute</button>
         </div>
         <h3>Connection errors</h3>
         <ul id="status-errors" class="errors"><li class="muted-text">none</li></ul>
+        <details>
+          <summary>Counters</summary>
+          <pre id="status-counters" class="counters"></pre>
+        </details>
       </section>
 
       <section id="tab-settings" class="panel">
@@ -43,17 +53,29 @@
             <button id="token-clear" class="secondary">Clear</button>
             <span id="token-badge" class="badge">unknown</span>
           </div>
-          <p class="hint">The token never appears in the settings file, the log or this window again.</p>
+          <p class="hint">The token never appears in the settings file, the log or this window again. Storing a token connects the bot.</p>
+        </div>
+        <div class="field">
+          <label for="guild-id">Server id (digits; empty registers the slash commands globally, which can take up to an hour to appear)</label>
+          <div class="row">
+            <input id="guild-id" type="text" inputmode="numeric" data-path="discord.guild_id" data-kind="string">
+            <button class="save" data-for="guild-id">Save</button>
+          </div>
+          <p class="hint field-message" data-for="guild-id"></p>
+        </div>
+        <div class="field">
+          <label class="row"><input id="auto-connect" type="checkbox" data-path="discord.auto_connect" data-kind="bool"> Connect at start-up when a token is stored</label>
+          <p class="hint field-message" data-for="auto-connect"></p>
         </div>
 
         <h3>Session</h3>
         <div class="field">
           <label for="idle-timeout">Idle timeout, seconds (0 disables; otherwise 5 to 3600)</label>
           <div class="row">
-            <input id="idle-timeout" type="number" min="0" max="3600" step="1">
-            <button id="idle-save">Save</button>
+            <input id="idle-timeout" type="number" min="0" max="3600" step="1" data-path="session.idle_timeout_seconds" data-kind="number">
+            <button class="save" data-for="idle-timeout">Save</button>
           </div>
-          <p id="settings-message" class="hint"></p>
+          <p class="hint field-message" data-for="idle-timeout"></p>
         </div>
       </section>
 
