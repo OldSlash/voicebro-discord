@@ -1,0 +1,21 @@
+[package]
+name = "voicebro-core"
+version = "0.1.0"
+description = "VoiceBro application core: settings, secrets, events, runtime. No Tauri dependency."
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

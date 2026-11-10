@@ -2,7 +2,7 @@
 
 The plan for the first milestone. It follows [ARCHITECTURE.md](ARCHITECTURE.md); where the two
 disagree, the architecture wins and this file is fixed. Written 2026-11-09, before any code
-exists. Nothing in it has been built or verified yet.
+existed; the probe results below are the first things that were verified.
 
 Sources: `REWRITE-SPEC.md`, `REWRITE-NOTES.md` and `STACK-DECISION.md` in
 `D:\SideProjects\gptvoice-discord`, the research summary of 2026-11-09, and the source of
@@ -14,7 +14,7 @@ Sources: `REWRITE-SPEC.md`, `REWRITE-NOTES.md` and `STACK-DECISION.md` in
 `feature/codex-voice-assistant`), rebuilt on the new architecture, with the API-key path left
 out. A user installs the app, pastes a Discord bot token, signs in to Codex with a ChatGPT
 account, says `/join` in Discord, and talks to the assistant with a wake phrase. The session
-ends on «отбой» or after a configurable idle time. Mute works from the app, a hotkey and the
+ends on the deactivation phrase or after a configurable idle time. Mute works from the app, a hotkey and the
 Discord member panel.
 
 ### In scope
@@ -56,17 +56,17 @@ copied. Each imports things that will not exist here; the "adaptation" column li
 | `src-tauri/build.rs`, `windows-app-manifest.xml` | | As is, plus a build stamp | None. |
 
 Not copied, by decision: `audio.rs`, `discord.rs`, `config.rs`, `lib.rs`, `main.js`,
-`index.html`, `styles.css`. Their behaviour is written anew
-from the spec: the member panel (embed, buttons, custom ids, state), the speaker directory,
-the hotkey registration, the config model as one schema, the UI.
+`index.html`, `styles.css`. Their behaviour is written anew from the spec: the member panel
+(embed, buttons, custom ids, state), the speaker directory, the hotkey registration, the
+config model as one schema, the UI.
 
 ## 3. Dependencies
 
 ### Toolchain (installed)
 
-Rust 1.99.1 MSVC, MSVC Build Tools 2022 with Windows SDK, CMake on PATH, Tauri CLI 2.12.4,
-Codex CLI 0.167.0 (`npm install -g @openai/codex`, fine for development; users need their own
-install).
+Rust 1.99.1 MSVC, MSVC Build Tools 2022 with Windows SDK, CMake (the VS Build Tools copy,
+not on PATH), Tauri CLI 2.12.4, Codex CLI 0.167.0 (`npm install -g @openai/codex`, fine for
+development; users need their own install).
 
 ### Crates
 
@@ -82,7 +82,7 @@ pins the rest.
 | `serenity` | 0.12.5 | Discord gateway/HTTP, features `builder cache client gateway http model rustls_backend`, no defaults |
 | `songbird` | 0.6.1 | Voice, features `serenity rustls driver gateway tungstenite receive`, no defaults |
 | `opus2` | 0.4 | Opus encode/decode for the WebRTC call. The same crate and version songbird 0.6.1 uses, so libopus is built once. |
-| `webrtc`, `rtc` | 0.21.1 | In-process WebRTC, decided by P0.2 on 2026-11-09. `rtc` is the sans-io core; the `webrtc` crate drives it on tokio (`PeerConnectionBuilder`, `TrackLocalStaticSample`, event handler trait). |
+| `webrtc`, `rtc` | 0.21.1 | In-process WebRTC, decided by the live call probe on 2026-11-09. `rtc` is the sans-io core; the `webrtc` crate drives it on tokio (`PeerConnectionBuilder`, `TrackLocalStaticSample`, event handler trait). |
 | `symphonia-core`, `symphonia` (`pcm`) | 0.5 | `MediaSource` for `RawAdapter` |
 | `serde`, `serde_json` | 1 | Settings, JSON-RPC |
 | `thiserror` | 2 | Core error types |
@@ -103,40 +103,44 @@ Check at skeleton time that `rust-version` in the manifests matches what the loc
 
 `opt-level = 3`, `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`, `panic = "abort"`.
 The first version used `opt-level = "z"` for size; here the hot paths (FIR resamplers, mixing,
-Opus) matter more than a few megabytes next to a 45 MB model and a 350 MB Codex binary. P8
-compares CPU on the receive path between `3` and `z` once, and the result is written here.
+Opus) matter more than a few megabytes next to a 45 MB model and a 350 MB Codex binary. The
+real-channel phase compares CPU on the receive path between `3` and `z` once, and the result
+is written here.
 
 ### External assets (downloaded at first use, pinned)
 
 | Asset | Source | SHA-256 |
 |---|---|---|
-| `vosk-win64-0.3.45.zip` (14.2 MB) | `github.com/alphacep/vosk-api/releases/download/v0.3.45/` | `f1dcc9cc…dff34b` (full hash in v1 `wake.rs`) |
-| `vosk-model-small-ru-0.22.zip` (44.1 MB) | `alphacephei.com/vosk/models/` | `961d5ff9…a46d4` |
+| `vosk-win64-0.3.45.zip` (14.9 MB) | `github.com/alphacep/vosk-api/releases/download/v0.3.45/` | `f1dcc9cca460630f81ea8f71794f69c80bed6556d2a4e6237b5785e1d2dff34b` |
+| `vosk-model-small-ru-0.22.zip` (46.2 MB) | `alphacephei.com/vosk/models/` | `961d5ff98a17f4aa6de69864d0aa71fa5bac682301d2b5d17a3f24c5c99a46d4` |
 
-Phase 0 re-downloads both and confirms the hashes still match.
+Both were re-downloaded on 2026-11-09 and matched.
 
 ## 4. Phases and dependencies
 
 ```text
-P0 probes ──┬──────────────────────────────────────────────┐
-            ▼                                              │
-P1 skeleton ─┬─► P2 Discord ─────┐                         │
-             ├─► P3 audio core ──┼─► P5 gate ─► P6 Codex ◄─┘ (needs P0 RTC result)
-             └─► P4 wake ────────┘        │         │
-                                          ▼         ▼
-                                     P7 UI, hotkey, chat tab
-                                          │
-                                          ▼
-                                     P8 real-channel test and measurements
+probes ─────┬──────────────────────────────────────────────────────────┐
+            ▼                                                          │
+skeleton ───┬─► Discord adapter ──┐                                    │
+            ├─► audio core ───────┼─► session gate ─► Codex assistant ◄┘ (needs the call probe)
+            └─► wake engine ──────┘          │              │
+                                             ▼              ▼
+                                        UI, hotkey, chat tab
+                                             │
+                                             ▼
+                                real-channel test and measurements
 ```
 
-P2, P3 and P4 are independent once P1 is in. P5 needs P3 and P4 and is integrated through
-P2. P6 needs P3 and the WebRTC probe. P7 needs everything that has a setting. P8 is last and
-is the only thing that makes a feature "verified".
+The Discord adapter, the audio core and the wake engine are independent once the skeleton
+is in. The gate needs the audio core and the wake engine and is integrated through the
+Discord adapter. The Codex assistant needs the audio core and the call probe. The UI needs
+everything that has a setting. The real-channel test is last and is the only thing that
+makes a feature "verified".
 
-Rough sizes: P0 2–3 days, P1 1 day, P2 3 days (panel included), P3 2 days, P4 2 days (mostly
-a port), P5 1–2 days (port), P6 4–6 days (the RTC transport is new), P7 2–3 days, P8 2 days
-plus the fixes it finds. These are estimates for planning the order, not commitments.
+Rough sizes: probes 2–3 days, skeleton 1 day, Discord adapter 3 days (panel included), audio
+core 2 days, wake engine 2 days (mostly a port), session gate 1–2 days (port), Codex
+assistant 4–6 days (the RTC transport is new), UI 2–3 days, real-channel test 2 days plus the
+fixes it finds. These are estimates for planning the order, not commitments.
 
 ### OpenSpec changes
 
@@ -146,42 +150,42 @@ because their designs depend on the probe results.
 
 | Change | Phases | Created |
 |---|---|---|
-| `probe-external-apis` | P0 | yes |
-| `workspace-skeleton` | P1 | yes |
-| `discord-voice-adapter` | P2 + P3 | after probes |
-| `wake-word-engine` | P4 | after probes |
-| `session-gate-and-mute` | P5 + the hotkey from P7 | after probes |
-| `codex-assistant` | P6 | after probes |
-| `settings-ui-and-acceptance` | P7 without the hotkey + P8 | after probes |
+| `probe-external-apis` | probes | yes |
+| `workspace-skeleton` | skeleton | yes |
+| `discord-voice-adapter` | Discord adapter + audio core | after probes |
+| `wake-word-engine` | wake engine | after probes |
+| `session-gate-and-mute` | session gate + the hotkey from the UI phase | after probes |
+| `codex-assistant` | Codex assistant | after probes |
+| `settings-ui-and-acceptance` | UI without the hotkey + real-channel test | after probes |
 
-### P0. Probes (before the design is final)
+### Probes (before the design is final)
 
-Each probe is a small program in `apps/probe` or a script in the scratchpad, with a written
-pass criterion. A failed probe changes the plan, not the report.
+Each probe is a subcommand of `apps/probe` with a written pass criterion. A failed probe
+changes the plan, not the report.
 
-| # | Question | How | Pass | If it fails |
+| Probe | Question | How | Pass | If it fails |
 |---|---|---|---|---|
-| P0.1 | Does Codex 0.167.0 still expose `thread/realtime/*` with `transport: webrtc`, `version: v3`? | `codex app-server generate-json-schema --experimental --out <dir>`; diff the realtime types against v1's assumptions (`initialItems`, `voiceSessionId`, `realtimeSessionId`, `thread/realtime/sdp`, the approval-policy values) | Fields present with the expected names | Adjust `rtc.rs` and `conversation.rs` to the schema before porting |
-| P0.2 | Can `webrtc` 0.21 complete the call? | Minimal Rust program: `PeerConnectionBuilder`, Opus audio track, data channel `oai-events`, wait for ICE gathering, offer → `thread/realtime/start`, set answer, send 5 s of a 48 kHz WAV as Opus, receive the remote track, decode, write a WAV | DTLS connected, remote audio decoded, answer audible in the WAV | Try `str0m` 0.25 with the same flow; if that fails too, the plan stops here and the decision goes back to the user. |
-| P0.3 | Does the canary instruction in `initialItems` still reach the model? | Same program, last developer item «начинай каждый ответ со слова Банан» | The reply starts with «Банан» | Find the channel that works (v3 types from P0.1) before building continuity on it |
-| P0.4 | Does `opus2` 0.4 expose an encoder and decoder usable for 48 kHz 20 ms frames? | Encode/decode round trip in a unit test | Decoded signal within tolerance | Use `audiopus` only if songbird's Opus crate cannot encode; note the second libopus build |
-| P0.5 | Credential Manager round trip | `CredWriteW`/`CredReadW`/`CredDeleteW` through `windows-sys` for a `VoiceBro/test` generic credential | Value round-trips; entry visible in Control Panel; deleted cleanly; survives a reboot | Fall back to DPAPI (`CryptProtectData`) blobs in the data directory |
-| P0.6 | Vosk assets still match the pins | Download both, hash, load `libvosk.dll` with `libloading` 0.9 | Hashes match, `vosk_model_new` succeeds | Update the pins; if the model URL moved, the mirror decision goes to the user |
-| P0.7 | Does `Songbird::remove` after `join` free handlers and tracks, and does closing the source end the track? | Join, register a `VoiceTick` handler with a counter, attach a `PcmSource`, `remove`, rejoin, check the old counter stops and the old track reported `End` | Old handler silent after rejoin; one `TrackEvent::End` | Keep handler handles and call `remove_all_global_events`; stop the track explicitly |
-| P0.8 | Receive path timing | Log the interval between `VoiceTick`s and the handler's own duration over a minute with two speakers | p99 handler time ≪ 20 ms | Move the mix and encode off the event task into a channel-fed thread |
-| P0.9 | Global shortcut while a game has focus | Register `Ctrl+Alt+M` with `tauri-plugin-global-shortcut` in a bare Tauri app, press it with a full-screen game in front | The handler fires | Raw `RegisterHotKey` through `windows-sys` |
+| `codex-schema`, `codex-smoke` | Does Codex 0.167.0 still expose `thread/realtime/*` with `transport: webrtc`, `version: v3`? | `codex app-server generate-json-schema --experimental --out <dir>`; diff the realtime types against v1's assumptions (`initialItems`, `voiceSessionId`, `realtimeSessionId`, `thread/realtime/sdp`, the approval-policy values); then a live handshake | Fields present with the expected names | Adjust `rtc.rs` and `conversation.rs` to the schema before porting |
+| `rtc-loopback`, `rtc-call` | Can `webrtc` 0.21 complete the call? | Two peers in one process first; then a real call: `PeerConnectionBuilder`, Opus audio track, data channel `oai-events`, wait for ICE gathering, offer → `thread/realtime/start`, set answer, send a 48 kHz WAV as Opus, receive the remote track, decode, write a WAV | DTLS connected, remote audio decoded, answer audible in the WAV | Try `str0m` 0.25 with the same flow; if that fails too, the plan stops here and the decision goes back to the user. |
+| canary (inside `rtc-call`) | Does the canary instruction in `initialItems` still reach the model? | Last developer item: "start every reply with the English word Banana" | The reply starts with the canary word | Find the channel that works before building continuity on it |
+| `opus-roundtrip` | Does `opus2` 0.4 expose an encoder and decoder usable for 48 kHz 20 ms frames? | Encode/decode round trip | Decoded signal within tolerance | Use `audiopus` only if songbird's Opus crate cannot encode; note the second libopus build |
+| `credential` | Credential Manager round trip | `CredWriteW`/`CredReadW`/`CredDeleteW` through `windows-sys` for a `VoiceBro/test` generic credential | Value round-trips; entry visible in Control Panel; deleted cleanly; survives a reboot | Fall back to DPAPI (`CryptProtectData`) blobs in the data directory |
+| `vosk-assets` | Vosk assets still match the pins | Download both, hash, load `libvosk.dll` with `libloading` 0.9 | Hashes match, `vosk_model_new` succeeds | Update the pins; if the model URL moved, the mirror decision goes to the user |
+| `discord-lifecycle` | Does `Songbird::remove` after `join` free handlers and tracks, and does closing the source end the track? | Join, register a `VoiceTick` handler with a counter, attach a silent source, close it, `remove`, rejoin, check the old counter stops and the track reported `End` | Old handler silent after rejoin; one `TrackEvent::End` | Keep handler handles and call `remove_all_global_events`; stop the track explicitly |
+| `receive-timing` | Receive path timing | Log the interval between `VoiceTick`s and the handler's own duration over a minute with two speakers | p99 handler time ≪ 20 ms | Move the mix and encode off the event task into a channel-fed thread |
+| `hotkey` | Global shortcut while a game has focus | Register `Ctrl+Alt+M` with `tauri-plugin-global-shortcut` in a bare Tauri app, press it with a full-screen game in front | The handler fires | Raw `RegisterHotKey` through `windows-sys` |
 
-#### P0 results
+#### Probe results
 
 Filled in as the probes run. Each entry: date, verdict, what was measured, what was not
 tested.
 
-- **P0.1** (2026-11-09) **PASS.** Codex CLI 0.167.0, `codex app-server generate-json-schema
-  --experimental` dumps 423 v2 types. Confirmed as used by v1: `thread/realtime/start`
-  `{threadId, outputModality (required: "audio"), transport {type: "webrtc", sdp},
-  version: "v3", voice, prompt, initialItems [{role, text}], voiceSessionId,
-  realtimeSessionId, includeStartupContext}`; the answer arrives in the notification
-  `thread/realtime/sdp {threadId, sdp}` (the response body is empty);
+- **Codex schema and smoke** (2026-11-09) **PASS.** Codex CLI 0.167.0,
+  `codex app-server generate-json-schema --experimental` dumps 423 v2 types. Confirmed as
+  used by v1: `thread/realtime/start` `{threadId, outputModality (required: "audio"),
+  transport {type: "webrtc", sdp}, version: "v3", voice, prompt, initialItems [{role, text}],
+  voiceSessionId, realtimeSessionId, includeStartupContext}`; the answer arrives in the
+  notification `thread/realtime/sdp {threadId, sdp}` (the response body is empty);
   `thread/realtime/started {threadId, realtimeSessionId, version}`;
   `thread/realtime/transcript/done {threadId, role, text}` and `transcript/delta`;
   `thread/realtime/closed {reason}`, `thread/realtime/error {message}`;
@@ -202,56 +206,72 @@ tested.
   ember, vale, breeze, arbor, sol, cove, `defaultV1` = cove, 25 v3 voices;
   `thread/start` with `approvalPolicy: never`, `sandbox: read-only` accepted. The native
   `codex.exe` is found in the npm vendor folder, so `kill_on_drop` kills the real process.
-  Not tested: a realtime call; that is P0.2/P0.3.
-- **P0.4** (2026-11-09) **PASS.** `opus2` 0.4 (libopus built by CMake from the VS Build Tools
-  copy): 100 mono 20 ms frames at 48 kHz, VOIP mode, complexity 5, in-band FEC on; 49 kbit/s;
-  decoded tone correlates 0.999 with the input at a 21-sample lag (encoder lookahead 312
-  samples). One libopus build shared with songbird. Not tested: stereo, DTX, packet loss.
-- **P0.2** (2026-11-09) **PASS, crate decided: `webrtc` 0.21.1.** `probe rtc-loopback`: two
-  peer connections in one process, host candidates only, connected in 210 ms, the Opus tone
-  arrives with correlation 1.000, the `oai-events` data channel opens and carries a message.
-  `probe rtc-call`: offer 1200 bytes (2 host candidates, no STUN); Codex answered
-  `thread/realtime/start` through `thread/realtime/sdp` after 2.3 s with 4 UDP and 2 TCP
-  candidates; DTLS/ICE connected 750 ms after the answer; 461 packets, 9.2 s of the
-  assistant's voice decoded with 0 errors, written to a WAV; `thread/realtime/stop` closed
-  the session with `reason: requested`. API notes for `rtc.rs`: `on_track` fires with the
-  first RTP packet, not at negotiation; the Opus codec is registered by hand
-  (`MIME_TYPE_OPUS`, 48 kHz, 2 channels, `minptime=10;useinbandfec=1`, payload type 111) and
-  the negotiated payload type is read from the sender's parameters; samples go through
-  `TrackLocalStaticSample::sample_writer`; the data channel is created before the offer.
-  `str0m` was not tried. Not tested: TCP/TURN fallback, reconnection, more than one call per
-  process, a stereo send track.
-- **P0.3** (2026-11-09) **PASS.** The last `initialItems` entry (role `developer`,
-  «…Начинай каждый ответ со слова Банан») is followed: transcript `assistant: Банан,
-  привет!`. Also observed: the model answered «Привет» before the question had finished
-  (the barge-in from v1, section 7 of REWRITE-SPEC, is reproduced); the `oai-events`
+- **Opus round trip** (2026-11-09) **PASS.** `opus2` 0.4 (libopus built by CMake from the VS
+  Build Tools copy): 100 mono 20 ms frames at 48 kHz, VOIP mode, complexity 5, in-band FEC
+  on; 49 kbit/s; decoded tone correlates 0.999 with the input at a 21-sample lag (encoder
+  lookahead 312 samples). One libopus build shared with songbird. Not tested: stereo, DTX,
+  packet loss.
+- **WebRTC loopback and call** (2026-11-09) **PASS, crate decided: `webrtc` 0.21.1.**
+  `probe rtc-loopback`: two peer connections in one process, host candidates only, connected
+  in 210 ms, the Opus tone arrives with correlation 1.000, the `oai-events` data channel
+  opens and carries a message. `probe rtc-call`: offer 1200 bytes (2 host candidates, no
+  STUN); Codex answered `thread/realtime/start` through `thread/realtime/sdp` after 2.3 s
+  with 4 UDP and 2 TCP candidates; DTLS/ICE connected 750 ms after the answer; 461 packets,
+  9.2 s of the assistant's voice decoded with 0 errors, written to a WAV;
+  `thread/realtime/stop` closed the session with `reason: requested`. API notes for
+  `rtc.rs`: `on_track` fires with the first RTP packet, not at negotiation; the Opus codec
+  is registered by hand (`MIME_TYPE_OPUS`, 48 kHz, 2 channels, `minptime=10;useinbandfec=1`,
+  payload type 111) and the negotiated payload type is read from the sender's parameters;
+  samples go through `TrackLocalStaticSample::sample_writer`; the data channel is created
+  before the offer. `str0m` was not tried. Not tested: TCP/TURN fallback, reconnection, more
+  than one call per process, a stereo send track.
+- **Canary** (2026-11-09) **PASS.** The last `initialItems` entry (role `developer`, the
+  instruction to start every reply with the canary word) is followed: the assistant
+  transcript starts with the canary word. Also observed: the model answered the greeting
+  before the question had finished (the barge-in from v1, section 7 of REWRITE-SPEC, is
+  reproduced); the `oai-events`
   channel delivers JSON events with millisecond timing, among them `session.started`,
   `input_transcript.added`, `turn.created`, `output_transcript.added` (33 events in one
   call), which the assistant implementation can use for speech and transcript timing
   instead of guessing. Not tested: `prompt` alone, `realtimeStartInstructions`,
   continuity across two calls (that is the `codex-assistant` change).
-- **P0.5** (2026-11-09) **PASS.** `CredWriteW`/`CredReadW`/`CredDeleteW` through
+- **Credential Manager** (2026-11-09) **PASS.** `CredWriteW`/`CredReadW`/`CredDeleteW` through
   `windows-sys` 0.61: generic credential `VoiceBro/test`, `CRED_PERSIST_LOCAL_MACHINE`,
   UTF-16 blob of 178 bytes round-trips and is deleted. `ERROR_NOT_FOUND` (1168) maps to
   "no secret". Not tested yet: survival across a reboot (`probe credential --keep`, reboot,
   `probe credential --read-only`) and the Control Panel view; both are the user's step.
-- **P0.6** (2026-11-09) **PASS.** Both pins still hold: `vosk-win64-0.3.45.zip` 14.9 MB
-  `f1dcc9cc…`, `vosk-model-small-ru-0.22.zip` 46.2 MB `961d5ff9…`. Downloaded with the
-  system `curl.exe`, extracted with `tar.exe`, `libvosk.dll` loads with
-  `LOAD_WITH_ALTERED_SEARCH_PATH` in 138 ms, `vosk_model_new` in 367 ms. Vocabulary: «джи»,
-  «пи», «ти», «луна», «отбой», «братан» known; «джипити», «гпт» unknown, as in v1. Not
-  tested: recognition itself (that is the `wake-word-engine` corpus).
-- **P0.7, P0.8** — code complete (`probe discord-lifecycle`, `probe receive-timing`), **not
-  run yet**: they need the Discord bot token, a test guild and a voice channel with two
-  people, which only the user can provide. Commands are in `AGENTS.md`.
-- **P0.9** — `apps/probe-hotkey` builds, **not run yet**: needs a full-screen game in front
-  and a hand on the keyboard.
-- **P0.5 reboot check** — not run yet (`probe credential --keep`, reboot, `--read-only`).
+- **Vosk assets** (2026-11-09) **PASS.** Both pins still hold (hashes above). Downloaded with
+  the system `curl.exe`, extracted with `tar.exe`, `libvosk.dll` loads with
+  `LOAD_WITH_ALTERED_SEARCH_PATH` in 138 ms, `vosk_model_new` in 367 ms. The probe looks up
+  words passed on its command line in the model's vocabulary; the v1 wake words were known,
+  transliterations of "GPT" were not. Not tested: recognition itself (that is the
+  `wake-word-engine` corpus).
+- **Discord lifecycle** (2026-11-09) **PASS.** songbird 0.6.1 against the test guild: join
+  in 2.7 s; a `VoiceTick` handler registered before `join` ticks every 20 ms (249 in 5 s);
+  a silent `RawAdapter` source is read by the mixer (265 reads in 5 s) and closing it
+  (`read` returns 0) ends the track: exactly one `TrackEvent::End` within 1.5 s;
+  `Songbird::remove` stops the first handler for good (its count does not move after a
+  rejoin) while a handler registered on the new `Call` ticks. Two facts for the Discord
+  adapter: `DecodeMode::Decode` takes a `DecodeConfig` in 0.6.1 (`Channels::Stereo`,
+  `SampleRate::Hz48000`), and decoding `RawAdapter` audio needs the application to enable
+  symphonia's `pcm` feature, otherwise the track fails with "no compatible track found".
+  The `davey` crate prints `[DAVE Binary] …` lines to stdout on join. Not tested: a track
+  with real audio, several guilds.
+- **Receive timing** (2026-11-09) **PASS with a gap.** 20 s in the channel with nobody
+  speaking: 1000 ticks, tick interval p50 15.7 ms, p99 32.1 ms, max 37.4 ms (the Windows
+  timer jitter of tokio-driven ticks, as expected); the handler's own work (mix into `i32`,
+  clamp) p50 20 µs, p99 43 µs, max 132 µs, far under the 2 ms criterion. Not tested: ticks
+  with one or two speakers decoding; that needs people in the channel.
+- **Hotkey** (2026-11-09) **registration PASS, game test pending.** `probe-hotkey` registers
+  `Ctrl+Alt+M` through `tauri-plugin-global-shortcut` and logs two synthetic presses sent
+  with `SendKeys`. Not tested: a press while a full-screen game has focus; that is the user's
+  step.
+- **Credential reboot check** — not run yet (`probe credential --keep`, reboot, `--read-only`).
 
-### P1. Skeleton
+### Skeleton
 
 Deliverable: `cargo tauri dev` opens a window that shows the build stamp; `cargo test` runs
-in the core; the log file appears in `%LOCALAPPDATA%\VoiceBro\logs`.
+in the core; the log file appears in `logs\` next to the executable.
 
 1. Workspace `Cargo.toml` with `crates/voicebro-core`, `apps/desktop`, `apps/probe`; the
    release profile from section 3; `.gitattributes` (`* text=auto eol=lf`,
@@ -274,7 +294,7 @@ in the core; the log file appears in `%LOCALAPPDATA%\VoiceBro\logs`.
 Tests: settings round trip, validation (overlapping phrases, timeout range, shortcut
 syntax), migration from an older `version`, secret store in-memory implementation.
 
-### P2. Discord adapter
+### Discord adapter
 
 Deliverable: the bot joins and leaves on command, names speakers, posts the member panel,
 and a loopback test shows per-speaker PCM arriving at a stub gate and a WAV playing into the
@@ -282,7 +302,8 @@ channel.
 
 1. `discord/bot.rs`: `DiscordRuntime` with `start(token)`, `stop()`, `status()`. serenity
    client with `GUILDS | GUILD_VOICE_STATES`, songbird registered with
-   `DecodeMode::Decode`. A token change stops and restarts the client.
+   `DecodeMode::Decode(DecodeConfig::new(Channels::Stereo, SampleRate::Hz48000))`. A token
+   change stops and restarts the client.
 2. `discord/commands.rs`: global application commands `/join`, `/leave`, `/status`,
    registered on `ready`. `/join` resolves the caller's voice channel from the cache.
 3. `discord/speakers.rs`: `SpeakerDirectory` per guild (SSRC → name, outlives the call),
@@ -310,9 +331,10 @@ Tests: name cleaning, SSRC directory behaviour, custom-id parsing, mixing (two s
 30 000 give 32 767 after clamp, not 16 383), a loopback run gated by `VOICEBRO_DISCORD_TOKEN`
 and `VOICEBRO_TEST_GUILD` that joins a channel, plays a WAV and records what it receives.
 
-### P3. Audio core
+### Audio core
 
-Deliverable: `audio/` with tests; `PcmSource` proven against songbird's reader in P2.
+Deliverable: `audio/` with tests; `PcmSource` proven against songbird's reader in the Discord
+adapter.
 
 1. `audio/frame.rs`: `Frame` (1920 `i16`), `FRAME_SAMPLES`, `peak`, `is_silent`.
 2. `audio/dsp.rs`: v1 `dsp.rs` unchanged.
@@ -330,7 +352,7 @@ Tests: jitter growth and relaxation, flush drops queued audio, mute passes earco
 drop-oldest counters, `PcmSource` returns exactly one packet per read, an empty queue gives
 silence and not EOF, `close` gives EOF.
 
-### P4. Wake engine
+### Wake engine
 
 Deliverable: the Vosk engine behind the traits, assets downloaded on first use, the v1 test
 corpus runs again.
@@ -338,8 +360,8 @@ corpus runs again.
 1. `wake/mod.rs`: traits `WakeEngine`, `LoadedModel`, `SpeechRecognizer`, `Recognition`,
    `Word`, `PhraseEvent`, `WakeStatus`, `WakeError`.
 2. `wake/catalog.rs`: `ModelEntry` and the one entry (`vosk-model-small-ru-0.22`, Russian,
-   Apache-2.0, default activation phrases «джи пи ти, джи пити, джи пети, луна», default
-   deactivation «отбой»), plus the library asset for the `vosk` engine.
+   Apache-2.0), plus the library asset for the `vosk` engine. The catalog carries no phrases;
+   the user's phrases live in the settings file and start empty.
 3. `wake/assets.rs`: download to `<name>.part`, hash, extract with `tar.exe`
    (`CREATE_NO_WINDOW`), marker file, cleanup of `.part` at start, progress events every 20 %.
 4. `wake/vosk/ffi.rs`, `wake/vosk/mod.rs`: v1 `VoskApi`, `Model`, `Recognizer` wrappers
@@ -358,7 +380,7 @@ Tests: the v1 corpus tests gated by `VOICEBRO_VOSK_DIR`, `VOICEBRO_WAKE_WAV`,
 `VOICEBRO_WAKE_EXPECT`, `VOICEBRO_WAKE_SEQUENCES`, `VOICEBRO_WAKE_NOISE`; spotter unit tests
 for whole-word matching, streak counting, once-per-utterance, deactivation-then-activation.
 
-### P5. Session gate
+### Session gate
 
 Deliverable: `gate.rs` ported, wired between the Discord adapter, the wake engine and a stub
 assistant; the stub proves the replay timing.
@@ -375,10 +397,11 @@ assistant; the stub proves the replay timing.
    skips silence, caps at 300 frames, idle timeout counts assistant audio, mute silences
    input and flushes output.
 
-### P6. Codex assistant
+### Codex assistant
 
 Deliverable: a wake phrase opens a real call, the question after the phrase is answered in
-the channel, «отбой» cuts the answer at once, the next activation continues the conversation.
+the channel, the deactivation phrase cuts the answer at once, the next activation continues
+the conversation.
 
 1. `assistant/codex/app_server.rs`: port `AppServer` (`find_codex`, spawn with
    `--disable shell_tool`, `kill_on_drop`, line-delimited JSON-RPC, 30 s request timeout,
@@ -391,21 +414,21 @@ the channel, «отбой» cuts the answer at once, the next activation continu
    ember, vale, breeze, arbor, sol, cove; default `juniper`; `cedar` is not available).
 3. `assistant/codex/thread.rs`: port `ThreadSettings`, `thread_start_params`, `open_thread`,
    `ensure_thread` with remap on model or effort change. `cwd` is the empty
-   `codex-workspace` directory. Confirm the approval-policy value against the P0.1 schema
-   (v1 code used `untrusted` and declined everything; the spec said `never`).
+   `codex-workspace` directory. `approvalPolicy` is `never` (confirmed by the schema and
+   smoke probes).
 4. `assistant/codex/conversation.rs`: port `Conversation`, `CallContext`,
    `call_instructions`, `call_names_note`, `speaker_note`, the `initialItems` builder with the
    hint, history cap, and the instructions as the last developer item; retry without history.
-5. `assistant/codex/rtc.rs` (new, from P0.2): `RtcCall::open(sdp_exchange) -> RtcCall` with
-   `send(frame)` (downmix to mono, Opus encode at 48 kHz, 20 ms, write RTP) and an output task
-   (depacketize, Opus decode, `OutputHandle::push`). States `Connecting`, `Live`, `Closed`
-   surfaced in `AssistantStatus`. The data channel is opened and its messages logged at
-   Debug; nothing is sent on it.
+5. `assistant/codex/rtc.rs` (new, from the call probe): `RtcCall::open(sdp_exchange) -> RtcCall`
+   with `send(frame)` (downmix to mono, Opus encode at 48 kHz, 20 ms, write RTP) and an output
+   task (depacketize, Opus decode, `OutputHandle::push`). States `Connecting`, `Live`,
+   `Closed` surfaced in `AssistantStatus`. The data channel is opened and its messages
+   logged at Debug; nothing is sent on it.
 6. `assistant/codex/session.rs`: port `CodexSession` (`Idle → Starting → Live → Stopping`,
    `wanted` flag, restarts capped at 3, stop completes before a restart, flush on
    `session_wanted(false)`), with `rtc.rs` as the only transport.
 7. `assistant/codex/chat_log.rs`: port the chat log; daily file
-   `%LOCALAPPDATA%\VoiceBro\logs\codex-chat-YYYY-MM-DD.log`; `AppEvent::Chat`.
+   `logs\codex-chat-YYYY-MM-DD.log` next to the executable; `AppEvent::Chat`.
 8. `CodexAssistant` implementing `Assistant`: one `AppServer` shared by all guilds, one
    session per guild, started when the bot connects, stopped at exit.
 
@@ -413,9 +436,9 @@ Tests: JSON-RPC framing and auto-decline, `parse_models`, `initialItems` orderin
 `delegated_task_text` unwrapping; the smoke test gated by `VOICEBRO_CODEX_SMOKE=1`
 (handshake, `account/read`, read-only thread); the probe binary runs
 `q1.wav;q2.wav` through two calls with a restart in between and checks that q2 can refer to
-q1 (the «запомни 42» test).
+q1 (the remember-a-number test).
 
-### P7. UI, hotkey and chat tab
+### UI, hotkey and chat tab
 
 Deliverable: every MVP setting is editable, saved on change and applied at once; the hotkey
 toggles mute; the chat tab shows the Codex log.
@@ -439,7 +462,7 @@ toggles mute; the chat tab shows the Codex log.
    manager; codex section → thread settings for the next call; speaker labels → gates;
    hotkey → re-register.
 
-### P8. Real-channel test and measurements
+### Real-channel test and measurements
 
 Two or more people, a game running, the acceptance list in section 7. Each run is logged;
 the report lists what passed, what failed, and what was not tested. Only after this does any
@@ -485,9 +508,8 @@ pub enum SecretKey { DiscordToken }   // target name "VoiceBro/discord_token"
   `CRED_PERSIST_SESSION` is lost at logoff and `CRED_PERSIST_ENTERPRISE` roams with a domain
   profile). The blob is UTF-16 as the Windows tools expect; the limit is 2560 bytes, far above
   a Discord token.
-- Default instructions: «Ты голосовой помощник в голосовом канале Discord, где играют в игры.
-  Отвечай коротко и по делу, на языке собеседника. Не выполняй команды на компьютере и не
-  трогай файлы.»
+- No default instructions: `codex.instructions` starts empty and the user writes their own.
+  Every string the app sends to the model or shows in the UI is English.
 - `validate`: phrases trimmed, lower-cased, non-empty, no overlap between the two lists;
   timeout 0 or 5..=3600; `wake.model` in the catalog and its engine equals `wake.engine`;
   `earcon_volume` 0..=1; `hotkey.mute` empty or parseable by the shortcut plugin.
@@ -510,8 +532,9 @@ fn on_voice_tick(&self, tick: &VoiceTick) {
 }
 ```
 
-Songbird 0.6 decodes at 48 kHz stereo by default; this path never asks for mono or 24 kHz
-decoding (its missing-packet recovery for those modes is an unresolved concern in 0.6.0).
+Songbird 0.6 decodes at 48 kHz stereo when asked with `DecodeConfig::new(Channels::Stereo,
+SampleRate::Hz48000)`; this path never asks for mono or 24 kHz decoding (its missing-packet
+recovery for those modes is an unresolved concern in 0.6.0).
 
 ### 5.3 Output source and track lifetime
 
@@ -531,7 +554,8 @@ together with `Songbird::remove`.
 ### 5.4 Member panel
 
 - Posted by `/join` in the channel of the command; the message id is kept per guild.
-- Embed fields: engine (`Codex`), state (`ждёт фразу` / `слушает` / `выключен`), channel,
+- Embed fields: engine (`Codex`), state (`waiting for the wake word` / `listening` /
+  `muted`), channel,
   participants count.
 - One button row: `Mute GPT` (style changes with the state), custom id
   `voicebro:mute:<guild_id>`. The interaction is acknowledged with a deferred update, then
@@ -541,50 +565,57 @@ together with `Songbird::remove`.
 - Speaker identity needs no extra bot permission; the panel needs `Send Messages` and
   `Embed Links` in the command's channel.
 
-### 5.5 WebRTC call (confirmed by P0.2 and P0.3 on 2026-11-09)
+### 5.5 WebRTC call (confirmed by the loopback and call probes on 2026-11-09)
 
-Flow, independent of the crate:
-
-1. Build a peer connection with Opus (48 kHz, 2 channels in SDP, `minptime=10; useinbandfec=1`)
-   as the only audio codec; no ICE servers (the v1 offer had none and the call worked; add a
-   STUN server only if the probe needs it).
-2. Add one local audio track (send-only) and create the data channel `oai-events` before the
-   offer, so the SDP carries both m-lines.
+1. Build a peer connection with Opus (48 kHz, 2 channels in SDP, `minptime=10;useinbandfec=1`,
+   payload type 111) as the only audio codec; no ICE servers (the offer had none and the call
+   worked; a STUN server is optional through configuration).
+2. Add one local audio track and create the data channel `oai-events` before the offer, so
+   the SDP carries both m-lines.
 3. `create_offer`, `set_local_description`, wait for ICE gathering complete or 2 s.
-4. `thread/realtime/start` `{ threadId, transport: { type: "webrtc", sdp }, version: "v3",
-   voice, prompt, initialItems, voiceSessionId?, realtimeSessionId? }`; read the answer SDP
-   from the `thread/realtime/sdp` notification (or the result, per the P0.1 schema).
-5. `set_remote_description(answer)`. The answer's candidates were UDP 3478 and TCP 443 in v1;
-   UDP must work for the crate's ICE agent.
+4. `thread/realtime/start` `{ threadId, outputModality: "audio", transport: { type: "webrtc",
+   sdp }, version: "v3", voice, prompt, initialItems, voiceSessionId?, realtimeSessionId?,
+   includeStartupContext: false }`; read the answer SDP from the `thread/realtime/sdp`
+   notification (the response body is empty).
+5. `set_remote_description(answer)`. The answer carries UDP 3478 and TCP 443 candidates;
+   UDP is what the crate's ICE agent uses.
 6. Send: each gated `Frame` → downmix to mono `i16` → Opus encode (application VOIP, 20 ms,
-   complexity 5 or lower, measured) → RTP packet, 960 timestamp units per packet.
-7. Receive: `on_track` → read RTP → Opus decode to 48 kHz → duplicate to stereo →
-   `OutputHandle::push`. Decoder PLC for lost packets.
+   complexity 5, in-band FEC) → `TrackLocalStaticSample::sample_writer(ssrc,
+   payload_type).write_sample` with a 20 ms duration; the payload type comes from the
+   sender's negotiated parameters.
+7. Receive: `on_track` (fires with the first RTP packet) → `poll` → `OnRtpPacket` → Opus
+   decode to 48 kHz → duplicate to stereo → `OutputHandle::push`. Decoder PLC for lost
+   packets.
 8. Stop: `thread/realtime/stop`, close the peer connection, wait for the stop to complete
    before any restart.
-9. The `oai-events` channel is opened; incoming messages are logged at Debug for later use
-   (transcripts, speech events). Nothing is sent on it in the MVP.
+9. The `oai-events` channel delivers the realtime server's JSON events (`session.started`,
+   `input_transcript.added`, `turn.created`, `output_transcript.added`, with millisecond
+   timing); they are logged at Debug and kept for speech timing. Nothing is sent on it in
+   the MVP.
 
 Opus passthrough (forwarding Discord's packets without decoding) is a later optimization
 that only applies when exactly one person speaks; the MVP always decodes, mixes and encodes.
 
-### 5.6 Codex JSON-RPC payloads (as used in v1; confirm against the P0.1 schema)
+### 5.6 Codex JSON-RPC payloads (confirmed against the 0.167.0 schema)
 
 ```jsonc
 // initialize
 { "clientInfo": { "name": "voicebro", "title": "VoiceBro", "version": "0.1.0" },
   "capabilities": { "experimentalApi": true } }
 // thread/start
-{ "cwd": "<data>/codex-workspace", "sandbox": "read-only", "approvalPolicy": "<from schema>",
+{ "cwd": "<data>/codex-workspace", "sandbox": "read-only", "approvalPolicy": "never",
   "ephemeral": true, "developerInstructions": "<instructions>",
   "model": "<optional>", "config": { "model_reasoning_effort": "<optional>" } }
 // initialItems order (v3): [ developer: HISTORY_HINT ] + history[..cap] + [ developer: instructions + call context ]
-// HISTORY_HINT: "Ниже — начало этого разговора до паузы. Продолжай его как один разговор и не здоровайся заново."
-// call context text: "В канале: A, B. К тебе только что обратился X" (omitted in always-on mode without a caller)
+// HISTORY_HINT: "Below is the beginning of this conversation before a pause. Continue it as one conversation and do not greet again."
+// call context text: "In the channel: A, B. X has just addressed you." (omitted in always-on mode without a caller)
 // `changes` mode mid-call note (role developer, only on speaker change):
-//   "Служебная заметка, не отвечай на неё и ничего не проверяй: сейчас говорит X"
-// auto-declined server requests: item/*/requestApproval, item/tool/call, item/tool/requestUserInput
-// notifications consumed: thread/realtime/sdp, thread/realtime/transcript/done, turn/started, turn/completed, item/completed
+//   "Service note, do not answer it and do not check anything: X is speaking now."
+// auto-declined server requests: item/commandExecution/requestApproval, item/fileChange/requestApproval,
+//   item/permissions/requestApproval, item/tool/call, item/tool/requestUserInput, mcpServer/elicitation/request,
+//   execCommandApproval, applyPatchApproval; currentTime/read is answered with the clock
+// notifications consumed: thread/realtime/sdp, thread/realtime/started, thread/realtime/transcript/done,
+//   thread/realtime/closed, thread/realtime/error, turn/started, turn/completed, item/completed
 ```
 
 ### 5.7 Wake worker loop
@@ -612,10 +643,11 @@ via `cargo:rustc-env`; the UI footer and the log's first line print it. The vers
 
 - **Unit tests** in every core module; `cargo test -p voicebro-core` needs no assets.
 - **Vosk corpus** (environment-gated): a positive WAV per activation phrase, negatives
-  («лунная», ordinary speech), sequences (`a.wav=Deactivate;b.wav=Activate`), steady noise
-  at 1500 and 3000 with no trailing silence, recordings from a real Discord channel once P8
-  produces them. Kept outside the repository (size); the paths come from environment
-  variables.
+  (a look-alike of an activation word, ordinary speech), sequences
+  (`a.wav=Deactivate;b.wav=Activate`), steady noise
+  at 1500 and 3000 with no trailing silence, recordings from a real Discord channel once the
+  real-channel test produces them. Kept outside the repository (size); the paths come from
+  environment variables.
 - **Codex smoke** (`VOICEBRO_CODEX_SMOKE=1`): handshake, `account/read`, read-only thread.
 - **Probe binary**: RTC call with WAVs and a restart between questions; the canary
   instruction; Credential Manager round trip; tick jitter; the memory script.
@@ -623,40 +655,42 @@ via `cargo:rustc-env`; the UI footer and the log's first line print it. The vers
 - **Regression A/B**: keep the previous build's installer; when a user reports a regression,
   run the same corpus on both before answering.
 
-## 7. Acceptance (P8)
+## 7. Acceptance (real-channel test)
 
 Mute: mute mid-answer then unmute, nothing of the old answer plays; the hotkey works while a
 game has focus; the panel button, the app button and the hotkey toggle the same state and
 the panel, the app and `/status` all show it.
 
 Wake word, on recordings with steady noise and no trailing silence: each activation phrase
-fires and «лунная» does not; «всё, давай, пока, отбой» deactivates within about 0.5 s; «всё,
-братан, отбой» deactivates; «Отбой, братан» does not restart; an activation phrase during a
+fires and a look-alike word does not; a sentence that ends with the deactivation phrase
+deactivates within about 0.5 s of the phrase; a wake word followed by the deactivation
+phrase in the same sentence deactivates; the deactivation phrase followed by a wake word does
+not restart; an activation phrase during a
 session does nothing; the idle timeout ends the session and a long answer is not cut by it;
 the question after the phrase reaches the assistant and the phrase does not.
 
-Codex: the canary instruction is followed; «Как меня зовут?» returns the caller's nickname;
-«Запомни 42», end the call, start a new one, «Какое число?» → 42; changing the model between
+Codex: the canary instruction is followed; "What is my name?" returns the caller's nickname;
+"Remember 42", end the call, start a new one, "Which number?" → 42; changing the model between
 calls keeps the conversation.
 
 App: closing the window exits the app and `codex.exe`; `/leave` ends the output track and
 rejoin starts a fresh one with no old handlers; the release build writes the log and the log
 shows what Vosk heard; the settings file contains no token; the token survives a restart;
-the measurements in P8 are recorded; a real Discord test with two or more people and a game
-running passes.
+the measurements of the real-channel phase are recorded; a real Discord test with two or more
+people and a game running passes.
 
 ## 8. Risks
 
 | Risk | Effect | Mitigation |
 |---|---|---|
-| ~~`webrtc` 0.21's new API or ICE behaviour does not complete the call~~ | Closed by P0.2: the call completes | The probe stays in `apps/probe` as the regression check for the transport |
-| Codex realtime protocol changed since 0.167.0 (experimental API) | Port breaks | P0.1 schema diff; pin the tested CLI version in `AGENTS.md`; auto-detect version and warn |
-| The canary in `initialItems` stops working | Instructions and names never reach the model | P0.3; keep the test in the probe binary and run it before each hand-over |
-| Opus encode plus mix on the songbird event task is too slow with many speakers | Drops, late frames | P0.8 measurement; move to a channel-fed thread if needed |
+| ~~`webrtc` 0.21's new API or ICE behaviour does not complete the call~~ | Closed by the call probe: the call completes | The probe stays in `apps/probe` as the regression check for the transport |
+| Codex realtime protocol changed since 0.167.0 (experimental API) | Port breaks | The schema probe; pin the tested CLI version in `AGENTS.md`; auto-detect version and warn |
+| The canary in `initialItems` stops working | Instructions and names never reach the model | Keep the canary test in the probe binary and run it before each hand-over |
+| Opus encode plus mix on the songbird event task is too slow with many speakers | Drops, late frames | The receive-timing probe; move to a channel-fed thread if needed |
 | Vosk small-ru fails in heavy noise (known at amplitude ≥ 1500 for activation) | False negatives in games | Known limitation, reported as such; engine trait allows sherpa-onnx later |
-| Global shortcut swallowed by a full-screen game or anti-cheat | Hotkey useless in the main use case | P0.9; raw `RegisterHotKey` fallback |
+| Global shortcut swallowed by a full-screen game or anti-cheat | Hotkey useless in the main use case | The hotkey probe; raw `RegisterHotKey` fallback |
 | Panel edits hit Discord rate limits | Stale panel | Coalesce to one edit per second; the state is also in `/status` |
-| Credential Manager entry limits or roaming surprises | Token lost | P0.5; DPAPI blob fallback behind the same trait |
+| Credential Manager entry limits or roaming surprises | Token lost | The credential probe; DPAPI blob fallback behind the same trait |
 | Terms: one personal ChatGPT account used by a whole channel | Legal gray area | Unchanged from v1; the user decides before publishing |
 
 ## 9. Decisions taken on 2026-11-09
@@ -666,9 +700,9 @@ running passes.
 - Mute hotkey and the member panel are in the MVP.
 - Tray mode and the standalone Codex download are not.
 - `/join` joins the caller's channel; no configured auto-join.
-- Release builds optimize for speed, confirmed by one measurement in P8.
-
-Open: whether these two documents are tracked in git or stay local like `AGENTS.md`.
+- Release builds optimize for speed, confirmed by one measurement in the real-channel phase.
+- `webrtc` 0.21 is the WebRTC crate (live call completed on the first run).
+- `docs/` and `openspec/changes/` are tracked in git.
 
 ## 10. After the MVP
 

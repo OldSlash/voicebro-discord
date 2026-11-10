@@ -9,7 +9,8 @@ and is applied without a restart.
 
 ### Requirement: Settings live in one versioned document
 The app SHALL keep all settings in a single JSON document with a schema `version` field,
-stored at `%LOCALAPPDATA%\VoiceBro\settings.json`. The document SHALL contain no secrets.
+stored as `settings.json` in the folder the executable runs from. The document SHALL contain
+no secrets.
 
 #### Scenario: First start without a settings file
 - **WHEN** the app starts and no settings file exists

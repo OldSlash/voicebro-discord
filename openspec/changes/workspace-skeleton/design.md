@@ -55,13 +55,13 @@ and a log line per changed section are written now so later changes only add a b
 
 **D5. `SecretStore` trait with two implementations.** `CredentialManagerStore` through
 `windows-sys` (`CredWriteW`/`CredReadW`/`CredDeleteW`, generic type, local-machine
-persistence, UTF-16 blob) as confirmed by P0.5, and `MemoryStore` for tests. The UI gets
+persistence, UTF-16 blob) as confirmed by the credential probe, and `MemoryStore` for tests. The UI gets
 `set_secret(name, value)` and `clear_secret(name)`; `get_settings` returns `secrets: {
 discord_token: { is_set } }`. The token value is read once at start and on change by
 `Runtime`, which hands it to the Discord adapter later; nothing else sees it.
 
 **D6. Logging through `tauri-plugin-log` configured in `apps/desktop`, `log` facade in the
-core.** Targets: a file under `%LOCALAPPDATA%\VoiceBro\logs\voicebro.log` (not the plugin's
+core.** Targets: a file under `logs\voicebro.log` next to the executable (not the plugin's
 default app-identifier folder, so every artifact of the app is in one directory) and stdout
 in debug. Filters: Info for `voicebro*`, Warn for `serenity`, `songbird`, `tracing`, `hyper`,
 `h2`, `rustls`, `webrtc*`, `reqwest`. Rotation 4 MB, keep two. First line: the build stamp.
@@ -72,8 +72,8 @@ and falls back to `nogit` if unavailable. Exposed through the `app_info` command
 as the first log line.
 
 **D8. Data directory from one function.** `voicebro_core::paths::data_dir()` returns
-`%LOCALAPPDATA%\VoiceBro`, overridable by `VOICEBRO_DATA_DIR` for tests and self-tests (the
-v1 trick of redirecting `LOCALAPPDATA` becomes explicit).
+the executable's own folder (the app is portable; the installation folder holds everything),
+overridable by `VOICEBRO_DATA_DIR` for tests and self-tests.
 
 **D9. Capabilities file lists only `core:default` plus the log plugin's permissions.** The
 global-shortcut permissions are added in `session-gate-and-mute`, where the hotkey lands.

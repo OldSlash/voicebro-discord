@@ -1,4 +1,4 @@
-//! P0.2 and P0.3: the WebRTC call inside the Rust process.
+//! The WebRTC call inside the Rust process.
 //!
 //! `rtc-loopback` connects two peer connections in one process and streams an Opus tone
 //! from one to the other: it separates "we hold the crate wrong" from "the remote side
@@ -367,7 +367,7 @@ fn drain_log(log: &mut mpsc::UnboundedReceiver<String>, details: &mut Vec<String
 }
 
 // ---------------------------------------------------------------------------------------
-// P0.2 part 1: loopback
+// Loopback: two peers in one process
 // ---------------------------------------------------------------------------------------
 
 pub fn loopback(_args: &[String]) -> anyhow::Result<Outcome> {
@@ -517,11 +517,11 @@ pub fn loopback(_args: &[String]) -> anyhow::Result<Outcome> {
 }
 
 // ---------------------------------------------------------------------------------------
-// P0.2 part 2 and P0.3: the real call
+// The real call to Codex realtime, with the canary instruction
 // ---------------------------------------------------------------------------------------
 
-const CANARY_WORD: &str = "банан";
-const INSTRUCTIONS: &str = "Ты голосовой помощник в голосовом канале Discord. Отвечай коротко, одним-двумя предложениями, по-русски. Начинай каждый ответ со слова Банан.";
+const CANARY_WORD: &str = "banana";
+const INSTRUCTIONS: &str = "You are a voice assistant in a Discord voice channel. Answer briefly, in one or two sentences, in the speaker's language. Start every reply with the English word Banana.";
 
 fn read_wav_48k_mono(path: &str) -> anyhow::Result<Vec<i16>> {
     let mut reader = hound::WavReader::open(path).with_context(|| format!("opening {path}"))?;
@@ -846,7 +846,7 @@ pub fn call(args: &[String]) -> anyhow::Result<Outcome> {
             .map(|text| normalize(text).starts_with(CANARY_WORD))
             .unwrap_or(false);
         details.push(format!(
-            "canary «Банан» at the start of the assistant transcript: {canary}"
+            "canary word at the start of the assistant transcript: {canary}"
         ));
         let event_count = event_messages.lock().map(|m| m.len()).unwrap_or(0);
         details.push(format!("oai-events messages received: {event_count}"));

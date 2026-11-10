@@ -1,4 +1,4 @@
-//! P0.9: does `tauri-plugin-global-shortcut` deliver Ctrl+Alt+M while a full-screen game
+//! Hotkey probe: does `tauri-plugin-global-shortcut` deliver Ctrl+Alt+M while a full-screen game
 //! has focus? Every press is printed with a timestamp; the user judges the result.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "console")]

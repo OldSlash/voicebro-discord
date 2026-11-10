@@ -1,4 +1,4 @@
-//! P0.5: Windows Credential Manager round trip through `windows-sys`.
+//! Windows Credential Manager round trip through `windows-sys`.
 //!
 //! Pass criterion: a generic credential `VoiceBro/test` is written with local-machine
 //! persistence, read back byte for byte, and deleted. With `--keep` the entry stays so the

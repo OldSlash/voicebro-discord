@@ -1,4 +1,4 @@
-//! P0.9: global hotkey under a full-screen game.
+//! Global hotkey under a full-screen game.
 //!
 //! The window lives in `apps/probe-hotkey` (a minimal Tauri app, because the plugin needs
 //! a Tauri app handle). This subcommand runs it and relays its output. The verdict is the

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VoiceBro</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="tabs" role="tablist">
+      <button class="tab active" data-tab="status" role="tab">Status</button>
+      <button class="tab" data-tab="settings" role="tab">Settings</button>
+      <button class="tab" data-tab="chat" role="tab">Chat</button>
+    </header>
+
+    <main>
+      <section id="tab-status" class="panel active">
+        <h2>Status</h2>
+        <dl class="facts">
+          <dt>Assistant</dt>
+          <dd id="status-mute">not muted</dd>
+          <dt>Discord token</dt>
+          <dd id="status-token">unknown</dd>
+          <dt>Data directory</dt>
+          <dd id="status-data-dir">…</dd>
+        </dl>
+        <div class="row">
+          <button id="mute-toggle">Mute</button>
+        </div>
+        <h3>Connection errors</h3>
+        <ul id="status-errors" class="errors"><li class="muted-text">none</li></ul>
+      </section>
+
+      <section id="tab-settings" class="panel">
+        <h2>Settings</h2>
+
+        <h3>Discord</h3>
+        <div class="field">
+          <label for="token-input">Bot token</label>
+          <div class="row">
+            <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="paste the token; it is stored in the Windows Credential Manager">
+            <button id="token-set">Set</button>
+            <button id="token-clear" class="secondary">Clear</button>
+            <span id="token-badge" class="badge">unknown</span>
+          </div>
+          <p class="hint">The token never appears in the settings file, the log or this window again.</p>
+        </div>
+
+        <h3>Session</h3>
+        <div class="field">
+          <label for="idle-timeout">Idle timeout, seconds (0 disables; otherwise 5 to 3600)</label>
+          <div class="row">
+            <input id="idle-timeout" type="number" min="0" max="3600" step="1">
+            <button id="idle-save">Save</button>
+          </div>
+          <p id="settings-message" class="hint"></p>
+        </div>
+      </section>
+
+      <section id="tab-chat" class="panel">
+        <h2>Chat</h2>
+        <p class="muted-text">The assistant chat log arrives with the Codex assistant.</p>
+      </section>
+    </main>
+
+    <section class="log">
+      <div class="log-header">
+        <span>Log</span>
+        <button id="log-clear" class="secondary small">Clear</button>
+      </div>
+      <pre id="log"></pre>
+    </section>
+
+    <footer>
+      <span id="build-stamp">build …</span>
+    </footer>
+
+    <script src="main.js"></script>
+  </body>
+</html>

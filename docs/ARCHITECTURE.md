@@ -100,17 +100,22 @@ subscribes and forwards them to the webview as one Tauri event; the UI also pull
 
 ```rust
 pub enum AppEvent {
-    Log(String),                       // human-readable line for the UI log pane
+    Log { line: String },              // human-readable line for the UI log pane
+    MuteChanged { muted: bool },       // the app-wide mute, from any of its three sources
+    SettingsChanged,
+    SecretChanged { name: String, is_set: bool },   // never the value
+    ConnectionError { source: String, message: Option<String> }, // None = recovered
+    // Added by later changes:
     Discord(DiscordStatus),
     Gate { guild: GuildId, status: GateStatus },
     Wake(WakeStatus),
     Assistant(AssistantStatus),
     Chat(ChatEntry),                   // one assistant chat-log entry
     Assets(AssetProgress),             // downloads: label, percent, error
-    MuteChanged(bool),                 // the app-wide mute, from any of its three sources
-    SettingsChanged,
 }
 ```
+
+Serialized with a `kind` tag in `snake_case`, so the UI switches on one string.
 
 ## 4. Components
 
@@ -166,7 +171,9 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   0.6's packet-loss recovery for those modes is unproven), mixes it into reusable buffers,
   and calls `gate.process_tick(mixed, per_speaker)`. Participant identity is preserved up
   to the gate and the wake engine; the assistant hears the mix.
-- Output is one `Track` from `RawAdapter<PcmSource>`, attached with `play_only`.
+- Output is one `Track` from `RawAdapter<PcmSource>` (f32 PCM), attached with `play_only`.
+  The crate that owns the track enables symphonia's `pcm` feature; without it songbird
+  cannot decode the raw stream and the track fails with "no compatible track found".
 - Changing the token restarts the client; a running client never keeps stale credentials.
 
 ### 4.3 Session gate (`gate.rs`)
@@ -241,7 +248,10 @@ pub struct Recognition { pub text: String, pub is_final: bool, pub words: Vec<Wo
 - A recognizer exists only while its speaker is talking and is dropped after 30 s idle. The
   whole engine is loaded only in wake-word mode.
 - **Model catalog** (`catalog.rs`): vetted entries with engine, language, display name,
-  download URLs, SHA-256, license and default phrases. The settings refer to a catalog id.
+  download URLs, SHA-256 and license. The settings refer to a catalog id. The catalog
+  carries no phrases: the activation and deactivation phrases are the user's, live in the
+  settings file and start empty; the wake engine shows "no phrases configured" until the
+  user enters them.
   Today: `vosk-model-small-ru-0.22` plus the Vosk 0.3.45 Windows library.
 - **Asset store**: downloads to a temp name, verifies the hash, extracts with the system
   `tar.exe`, writes a marker file, cleans up partial files at start. Progress goes to the
@@ -293,7 +303,7 @@ frames into `input`, the assistant pushes decoded answer audio into `output` (th
   the guild's session; history carries over through `initialItems`. A rejected model falls
   back to the account defaults.
 - `rtc.rs`: the realtime call over WebRTC inside the process (`webrtc` 0.21 over its sans-io
-  core `rtc`, decided by probe P0.2): one Opus audio track (registered by hand: 48 kHz,
+  core `rtc`, decided by the live call probe on 2026-11-09): one Opus audio track (registered by hand: 48 kHz,
   2 channels in SDP, `minptime=10;useinbandfec=1`), one data channel named `oai-events`
   created before the offer, a non-trickle offer (ICE gathering waited for, at most 2 s),
   `thread/realtime/start` with `transport: {type: webrtc, sdp}` and `version: "v3"`, the
@@ -331,12 +341,17 @@ pub struct Settings {
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub wake: WakeSettings,                // engine id, model id (catalog), activation_phrases, deactivation_phrases
     pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off
-    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice, instructions
+    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice, instructions (no default)
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
+    pub extra: Map<String, Value>,         // flattened: unknown fields from a newer version, kept as they are
 }
 ```
 
-- Stored as JSON at `%LOCALAPPDATA%\VoiceBro\settings.json`. Written to a temp file and
+Every string in the project (UI, log, notes to the model, code, docs) is English. The wake
+phrases are user data in the settings file, in whatever language the user's model
+recognizes; the code ships none.
+
+- Stored as JSON at `settings.json` next to the executable. Written to a temp file and
   renamed over the old one. Unknown fields are kept; missing fields take defaults.
 - `Settings::validate()` is the only validator (phrase lists must not overlap, timeout
   range, catalog id exists, shortcut parses). `Runtime::apply(settings)` diffs against the
@@ -347,8 +362,10 @@ pub struct Settings {
   `VoiceBro/discord_token`). The UI writes a secret with one command and only ever reads back
   `is_set: bool`. Secrets never appear in `Settings`, in the status snapshot, in events or in
   the log. Codex's own ChatGPT sign-in is stored by Codex itself (`~/.codex`), not by the app.
-- Data directory `%LOCALAPPDATA%\VoiceBro\`: `settings.json`, `logs\`, `assets\` (Vosk library
-  and models), `codex-workspace\` (the empty, read-only cwd for Codex threads).
+- The app is portable: its data directory is the folder the executable runs from
+  (`VOICEBRO_DATA_DIR` overrides it for tests). It holds `settings.json`, `logs\`, `assets\`
+  (Vosk library and models) and `codex-workspace\` (the empty, read-only cwd for Codex
+  threads). Nothing is written under the user profile.
 
 ### 4.7 Composition root (`runtime.rs`)
 
@@ -484,7 +501,7 @@ Values that worked in the first version. Change them only with a measurement or 
 | To add | Touch |
 |---|---|
 | A wake engine (sherpa-onnx, a KWS) | `wake/<engine>/` implementing `WakeEngine`, `LoadedModel`, `SpeechRecognizer`; catalog entries; nothing in `PhraseSpotter` or the gate |
-| A model or language | A `ModelEntry` in the catalog (URL, SHA-256, license, default phrases) |
+| A model or language | A `ModelEntry` in the catalog (URL, SHA-256, license) |
 | An assistant or an auth path (API key, another provider) | `assistant/<engine>/` implementing `Assistant` and `AssistantSession` over `AudioPorts`; nothing in the gate or Discord |
 | A setting | One field in `Settings`, its validation, its `apply` branch, its UI control |
 | A UI | Anything that can call the commands and subscribe to the event; the core is unchanged |

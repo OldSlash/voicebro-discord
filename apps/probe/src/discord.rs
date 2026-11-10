@@ -1,4 +1,4 @@
-//! P0.7 and P0.8: songbird lifecycle and receive-path timing.
+//! songbird lifecycle and receive-path timing.
 //!
 //! Both probes join a real voice channel (token, guild and channel from the environment).
 //! `discord-lifecycle` registers a counting `VoiceTick` handler and a silent output track,
@@ -33,18 +33,36 @@ struct Env {
     channel: ChannelId,
 }
 
+/// Test inputs come from the environment, or from `probe.local.json` in the workspace root
+/// (gitignored): `{ "discord_token", "guild_id", "channel_id" }`.
 fn env() -> anyhow::Result<Env> {
-    let var = |name: &str| std::env::var(name).map_err(|_| anyhow!("{name} is not set"));
+    let local: serde_json::Value = std::fs::read_to_string("probe.local.json")
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let value = |env_name: &str, local_key: &str| -> anyhow::Result<String> {
+        if let Ok(value) = std::env::var(env_name) {
+            if !value.trim().is_empty() {
+                return Ok(value);
+            }
+        }
+        local
+            .get(local_key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("{env_name} is not set and probe.local.json has no {local_key}"))
+    };
     Ok(Env {
-        token: var("VOICEBRO_DISCORD_TOKEN")?,
+        token: value("VOICEBRO_DISCORD_TOKEN", "discord_token")?,
         guild: GuildId::new(
-            var("VOICEBRO_TEST_GUILD")?
+            value("VOICEBRO_TEST_GUILD", "guild_id")?
                 .trim()
                 .parse()
                 .context("guild id")?,
         ),
         channel: ChannelId::new(
-            var("VOICEBRO_TEST_CHANNEL")?
+            value("VOICEBRO_TEST_CHANNEL", "channel_id")?
                 .trim()
                 .parse()
                 .context("channel id")?,
