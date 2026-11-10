@@ -26,6 +26,8 @@
     codex: { executable: "", model: "", reasoning_effort: "", voice: "", instructions: "Answer briefly.", handoff_mode: "items" },
     hotkey: { mute: "Ctrl+Alt+M" },
     ui: { theme: "dark", font_size: 13 },
+    // Both off, as the app fills them for a file without the section.
+    diagnostics: { performance: false, memory: false },
   };
   let tokenSet = true;
   let muted = false;
@@ -116,6 +118,12 @@
     const modes = ["items", "commentary", "bem_tags", "thinking"];
     if (!modes.includes(doc.codex.handoff_mode)) {
       throw `codex.handoff_mode: «${doc.codex.handoff_mode}» is not an answer handoff mode; use one of ${modes.join(", ")}`;
+    }
+    // The app rejects a wrong type when it reads the patched document.
+    for (const field of ["performance", "memory"]) {
+      if (typeof doc.diagnostics[field] !== "boolean") {
+        throw `invalid type: expected a boolean at diagnostics.${field}`;
+      }
     }
   }
 
@@ -227,10 +235,13 @@
     codex_models: () => clone(capabilities.models),
     open_log_folder: () => "C:\\VoiceBro\\logs",
     app_info: () => ({ version: "0.2.0", build_stamp: "0.2.0+mock 2026-11-10", data_dir: "C:\\VoiceBro" }),
-    memory_status: () => ({
-      total_mb: 172.4, app_mb: 61.2, webview_mb: 111.2, webview_processes: 5, codex_mb: null,
-      metric: "private working set",
-    }),
+    // `null` while the switch is off, as the app answers when its reader is not running.
+    memory_status: () => (settings.diagnostics.memory
+      ? {
+          total_mb: 172.4, app_mb: 61.2, webview_mb: 111.2, webview_processes: 5, codex_mb: null,
+          metric: "private working set",
+        }
+      : null),
   };
 
   async function invoke(name, args = {}) {
@@ -251,10 +262,13 @@
     };
   }
 
-  // Status events every second, as a connected app sends them.
+  // Status events every second, as a connected app sends them; `quiet(true)` stops them
+  // so the page's own polling can be counted.
   let tick = 0;
+  let quietEvents = false;
   setInterval(() => {
     tick += 1;
+    if (quietEvents) return;
     emit("app-event", { event: tick % 2 ? "discord" : "gate" });
     emit("app-log", `[2026-11-10][12:00:${String(tick % 60).padStart(2, "0")}][INFO][mock] status tick ${tick}`);
   }, 1000);
@@ -265,6 +279,12 @@
     calls,
     settings: () => clone(settings),
     emit,
+    // How many times a command was called since the page loaded, or since `sinceIndex`
+    // (a previous `calls.length`), for checking how often the page polls.
+    callsOf: (name, sinceIndex = 0) => calls.slice(sinceIndex).filter((call) => call.name === name).length,
+    quiet(on) {
+      quietEvents = on;
+    },
     // The share of received packets the call conceals from now on (0.03 = 3 %).
     setLoss(rate) {
       lossRate = rate;
