@@ -24,7 +24,9 @@
 
 - [x] 4.1 Implement `probe credential`: write, read, delete a `VoiceBro/test` generic credential through `windows-sys` with `CRED_PERSIST_LOCAL_MACHINE`; verify `PASS` on a matching round trip and that the entry is visible in the Credential Manager control panel between write and delete; record the result (the reboot check is done by hand and written into the plan)
 - [x] 4.2 Implement `probe vosk-assets <dir>`: download both pinned archives to `<name>.part`, hash, rename, extract with `tar.exe`, load `libvosk.dll` with `libloading` 0.9 and call `vosk_model_new`; verify `PASS` on matching hashes and a non-null model; record the result and update the pins in the plan if they changed
-- [ ] 4.3 Implement `probe hotkey` as a minimal Tauri window registering `Ctrl+Alt+M` through `tauri-plugin-global-shortcut` and logging each press; verify by pressing it with a full-screen game in front and record the result (game name, outcome); if it fails, note the `RegisterHotKey` fallback as the decision
+- [x] 4.3 Implement `probe hotkey` as a minimal Tauri window registering `Ctrl+Alt+M` through `tauri-plugin-global-shortcut` and logging each press; verify by pressing it with a full-screen game in front and record the result (game name, outcome); if it fails, note the `RegisterHotKey` fallback as the decision
+
+  Closed by the user's decision of 2026-11-10 at the merge into `main` (every remaining check counts as done); the press with a full-screen game in front was not recorded here.
 
 ## 5. songbird lifecycle and receive timing
 
