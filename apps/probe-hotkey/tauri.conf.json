@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VoiceBro hotkey probe",
+  "version": "0.1.0",
+  "identifier": "com.voicebro.probe-hotkey",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "VoiceBro hotkey probe: press Ctrl+Alt+M with a game in front",
+        "width": 640,
+        "height": 320
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

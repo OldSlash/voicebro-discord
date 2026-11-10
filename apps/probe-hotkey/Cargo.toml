@@ -1,0 +1,16 @@
+[package]
+name = "probe-hotkey"
+version = "0.1.0"
+description = "VoiceBro probe P0.9: a minimal Tauri window that logs Ctrl+Alt+M presses. Not shipped."
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+tauri-plugin-global-shortcut = "2.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

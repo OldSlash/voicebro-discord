@@ -1,0 +1,38 @@
+[package]
+name = "probe"
+version = "0.1.0"
+description = "VoiceBro development probes: live checks of external APIs with pass criteria. Not shipped."
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "probe"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "process", "io-util", "time", "sync", "fs"] }
+
+# P0.4: the Opus binding songbird 0.6.1 links, so libopus is built once (needs CMake).
+opus2 = "0.4"
+# P0.2: in-process WebRTC. `rtc` is the sans-io core the `webrtc` crate re-exports parts of.
+webrtc = "0.21"
+rtc = "0.21"
+bytes = "1"
+futures = "0.3"
+async-trait = "0.1"
+rand = "0.9"
+# WAV in and out for the call probe.
+hound = "3.5"
+# P0.7 and P0.8: a real voice channel.
+serenity = { version = "0.12.5", default-features = false, features = ["builder", "cache", "client", "gateway", "http", "model", "rustls_backend"] }
+songbird = { version = "0.6.1", default-features = false, features = ["serenity", "rustls", "driver", "gateway", "tungstenite", "receive"] }
+symphonia-core = "0.5.2"
+# P0.5 and P0.6: Credential Manager, asset hashes, Vosk at runtime.
+sha2 = "0.11"
+libloading = "0.9"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
