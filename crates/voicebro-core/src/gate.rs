@@ -13,6 +13,7 @@
 use crate::assistant::AssistantSession;
 use crate::audio::{peak, AudioGains, Earcon, Frame, FrameSender, GainStage, OutputHandle};
 use crate::events::{AppEvent, EventBus};
+use crate::latency::{self, SharedLatency};
 use crate::settings::{SessionMode, Settings, SpeakerLabels};
 use crate::wake::{PhraseKind, PhraseSink, WakeFeed};
 use serde::Serialize;
@@ -199,6 +200,8 @@ pub struct RelayGate {
     input: FrameSender,
     /// Scales what is sent to the assistant; the wake feed and the pre-roll stay unscaled.
     input_gain: Arc<GainStage>,
+    /// The guild's turn latency, told about every frame with speech sent to the assistant.
+    latency: SharedLatency,
     output: OutputHandle,
     events: EventBus,
     errors: Option<Arc<dyn ErrorReporter>>,
@@ -241,6 +244,7 @@ impl RelayGate {
             guild,
             input,
             input_gain,
+            latency: SharedLatency::default(),
             output,
             events,
             errors,
@@ -256,6 +260,11 @@ impl RelayGate {
 
     pub fn output(&self) -> &OutputHandle {
         &self.output
+    }
+
+    /// The guild's turn latency tracker; the output reports playback to the same one.
+    pub fn latency(&self) -> SharedLatency {
+        Arc::clone(&self.latency)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, GateState> {
@@ -420,6 +429,13 @@ impl RelayGate {
             }
         }
         if let Some(mut frame) = frame {
+            // Speech as the gate counts it, before the gain.
+            if frame.peak() >= VOICE_PEAK_THRESHOLD {
+                let event = self.latency.lock().expect("latency lock").speech(now);
+                if let Some(event) = event {
+                    log::info!("{}", latency::log_line(self.guild, &event));
+                }
+            }
             // Live and replayed frames alike; the pre-roll and the wake feed keep the
             // channel's own level.
             self.input_gain.scale_frame(&mut frame);
@@ -673,6 +689,17 @@ impl RelayRegistry {
         self.all()
             .into_iter()
             .map(|gate| (gate.guild().to_string(), gate.status()))
+            .collect()
+    }
+
+    /// The last measured turns of every guild the bot is in.
+    pub fn latency_reports(&self) -> BTreeMap<String, Vec<latency::TurnReport>> {
+        self.all()
+            .into_iter()
+            .map(|gate| {
+                let turns = gate.latency.lock().expect("latency lock").recent();
+                (gate.guild().to_string(), turns)
+            })
             .collect()
     }
 }

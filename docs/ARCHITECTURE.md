@@ -567,8 +567,18 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     account, call, Codex thread, mute hotkey, token stored, build; then connection errors
     and the counters behind a details toggle. Events trigger a refresh; a 5 s timer backs
     it up. Buttons: Mute, Connect, Disconnect, Sign in to Codex, Check Codex, Refresh.
-  - Performance has the first version's toolbar, two chart cards and a tile grid; the
-    content comes with change `performance-statistics`.
+  - Performance, as in the first version: a window selector (30 s, 60 s, 5 min), Refresh,
+    a health dot and a quality label, two canvas charts drawn with the first version's
+    `drawChart` (no library), and stat cards. The window samples the status once a second
+    (the same poll refreshes the status values) and keeps five minutes. Quality: "idle"
+    without a connected call; "stable" when, over the chosen window, late plus concealed
+    packets stay under 1 % of those received and no input frame was dropped; otherwise
+    "degraded" naming the counter (dropped input frames, concealed packets, late packets).
+    "Audio timing" plots each measured answer (first speech to playback, last speech to
+    answer); "Media packets" plots packets per second sent to and received from the call.
+    The cards are numbers from the status: Discord ticks and frames, the call's counters,
+    frames the assistant missed, wake chunks dropped, both levels and clip counts, the
+    number of answers measured and the last answer's four durations.
   - System shows `system_status` (version, build stamp, process id, uptime, runtime,
     platform with the Windows build, architecture, CPU cores) and the files (data folder,
     `settings.json`, the Codex CLI path); the memory row is filled by change
@@ -720,8 +730,28 @@ Values that worked in the first version. Change them only with a measurement or 
   only in the log.
 - Counters: packets in/out, drops per queue, supplied silence, underruns, wake drops. They
   are part of the status snapshot.
-- The status snapshot holds measured values only. A quantity that is not measured (memory,
-  latency) is omitted, never replaced by a label.
+- **Turn latency** (`latency.rs`, ported from the first version's tracker with its
+  constants): one `LatencyTracker` per guild, owned by the gate. The gate reports every
+  frame with speech (peak ≥ 700, before the gain) it sends to the assistant; `PcmSource`
+  reports every played frame of the assistant's audio with a signal (peak ≥ 256), with the
+  network arrival of its packet from the jitter buffer (`FrameProvider::arrival`). A turn
+  starts after more than 350 ms without speech; the first answer audio within 15 s of its
+  last speech is its response; speech while the answer plays (its audio less than 1 s ago)
+  is reported once as an interruption; answer audio with no turn waiting is autonomous.
+  The log lines, as in the first version, prefixed with the guild:
+
+  ```text
+  [latency:<guild>] turn <n> (response|response after interruption): first Discord speech -> ChatGPT audio <ms> ms; last Discord speech -> ChatGPT audio <ms> ms; ChatGPT audio -> Discord relay handoff <ms> ms; first speech -> Discord relay handoff <ms> ms
+  [latency:<guild>] turn <n>: Discord speech interrupted ChatGPT output
+  [latency:<guild>] ChatGPT initiated autonomous speech
+  [latency:<guild>] autonomous ChatGPT speech: ChatGPT audio -> Discord relay handoff <ms> ms
+  ```
+
+  "ChatGPT audio -> Discord relay handoff" is the time the answer waited in the jitter
+  buffer. The last 50 measurements per guild, with their local time, are
+  `Status.latency`.
+- The status snapshot holds measured values only. A quantity that is not measured (memory)
+  is omitted, never replaced by a label.
 
 ## 8. Conventions
 

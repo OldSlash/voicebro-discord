@@ -718,11 +718,205 @@
   async function refresh() {
     if (!invoke) return;
     try {
-      renderStatus(await invoke("status"));
+      const status = await invoke("status");
+      renderStatus(status);
+      samplePerformance(status);
     } catch (error) {
       appendLog(`status failed: ${error}`);
     }
   }
+
+  // ---------- Performance: samples of the status, once a second, five minutes kept ----------
+  const SAMPLE_KEEP_MS = 5 * 60 * 1000;
+  let samples = [];
+  let lastSampleAt = 0;
+  // The connected call's counters, or null when no call is connected.
+  function callAudio(status) {
+    const call = (status.assistant?.calls || []).find((entry) => entry.connected && entry.audio);
+    return call ? call.audio : null;
+  }
+  function allTurns(status) {
+    return Object.values(status.latency || {}).flat();
+  }
+  function samplePerformance(status) {
+    const now = Date.now();
+    if (now - lastSampleAt < 900) return;
+    lastSampleAt = now;
+    samples.push({ t: now, status });
+    samples = samples.filter((sample) => now - sample.t <= SAMPLE_KEEP_MS);
+    if (document.querySelector('.tab-panel[data-panel="performance"]').classList.contains("active")) {
+      renderPerformance();
+    }
+  }
+  function windowSamples() {
+    const span = Number($("performance-window").value) * 1000;
+    const now = Date.now();
+    return samples.filter((sample) => now - sample.t <= span);
+  }
+  // A counter's growth over the window; a call that restarted begins again at zero.
+  function delta(first, last, field) {
+    const a = Number(first?.[field] || 0);
+    const b = Number(last?.[field] || 0);
+    return b >= a ? b - a : b;
+  }
+  function quality(inWindow) {
+    const last = inWindow[inWindow.length - 1];
+    const lastAudio = last ? callAudio(last.status) : null;
+    if (!lastAudio) return { kind: "idle", label: "Quality: idle" };
+    const first = inWindow.find((sample) => callAudio(sample.status)) || last;
+    const firstAudio = callAudio(first.status);
+    const received = delta(firstAudio, lastAudio, "packets_received");
+    const late = delta(firstAudio, lastAudio, "late");
+    const concealed = delta(firstAudio, lastAudio, "concealed");
+    const drops = delta(firstAudio, lastAudio, "input_drops");
+    if (drops > 0) return { kind: "degraded", label: "Quality: degraded (dropped input frames)" };
+    if (received > 0 && (late + concealed) / received >= 0.01) {
+      return {
+        kind: "degraded",
+        label: `Quality: degraded (${concealed >= late ? "concealed packets" : "late packets"})`,
+      };
+    }
+    return { kind: "stable", label: "Quality: stable" };
+  }
+  // A line chart on a canvas: the log background, four guide lines and one 2 px line per
+  // series, scaled to the largest value, which the caption under the chart names.
+  function drawChart(id, series, unit) {
+    const canvas = $(id);
+    if (!canvas) return;
+    const css = getComputedStyle(document.documentElement);
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth || 560;
+    const h = 190;
+    const pad = 6;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = css.getPropertyValue("--log-bg").trim();
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = css.getPropertyValue("--line").trim();
+    ctx.lineWidth = 1;
+    for (let step = 1; step <= 4; step++) {
+      const y = Math.round((h * step) / 5) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+    const finite = series.flatMap((line) => line.values.map(Number).filter(Number.isFinite));
+    const top = Math.max(1, ...finite);
+    const yOf = (value) => h - pad - (Number(value) / top) * (h - 2 * pad);
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    for (const line of series) {
+      const values = line.values.length ? line.values : [0];
+      const xOf = (i) => (values.length > 1 ? (i * w) / (values.length - 1) : w / 2);
+      ctx.strokeStyle = line.color;
+      ctx.beginPath();
+      values.forEach((value, i) => (i ? ctx.lineTo(xOf(i), yOf(value)) : ctx.moveTo(xOf(i), yOf(value))));
+      ctx.stroke();
+    }
+    $(`${id}-scale`).textContent = `Top of the chart: ${Math.round(top)} ${unit}.`;
+  }
+  const number = (value) => (Number.isFinite(Number(value)) ? Math.round(Number(value)) : 0);
+  function statCards(status) {
+    const discord = status.discord?.counters || {};
+    const audio = callAudio(status) || (status.assistant?.calls || []).map((call) => call.audio).find(Boolean) || {};
+    const gates = Object.values(status.gates || {});
+    const turns = allTurns(status);
+    const lastTurn = turns[turns.length - 1] || {};
+    const levels = status.audio || {};
+    return [
+      ["Discord ticks", number(discord.ticks)],
+      ["Speaker frames", number(discord.speaker_frames)],
+      ["Malformed frames", number(discord.malformed_frames)],
+      ["Frames sent to the call", number(audio.frames_sent)],
+      ["Input drops", number(audio.input_drops)],
+      ["Input underruns", number(audio.input_underruns)],
+      ["Packets received", number(audio.packets_received)],
+      ["Late packets", number(audio.late)],
+      ["Concealed packets", number(audio.concealed)],
+      ["Recovered by FEC", number(audio.concealed_fec)],
+      ["Playout underruns", number(audio.playout_underruns)],
+      ["Output drops", number(audio.output_drops)],
+      ["Decode errors", number(audio.decode_errors)],
+      ["Frames the assistant missed", number(gates.reduce((sum, gate) => sum + (gate.counters?.input_dropped || 0), 0))],
+      ["Wake chunks dropped", number(status.wake?.dropped_chunks)],
+      ["Input peak, %", number((levels.input?.peak || 0) * 100)],
+      ["Input clips", number(levels.input?.clips)],
+      ["Output peak, %", number((levels.output?.peak || 0) * 100)],
+      ["Output clips", number(levels.output?.clips)],
+      ["Answers measured", turns.length],
+      ["Last: first speech → answer, ms", number(lastTurn.first_speech_to_answer_ms)],
+      ["Last: last speech → answer, ms", number(lastTurn.last_speech_to_answer_ms)],
+      ["Last: answer → playback, ms", number(lastTurn.answer_to_playback_ms)],
+      ["Last: first speech → playback, ms", number(lastTurn.first_speech_to_playback_ms)],
+    ];
+  }
+  function renderPerformance() {
+    const inWindow = windowSamples();
+    const verdict = quality(inWindow);
+    $("performance-health").className = `health-dot ${verdict.kind}`;
+    $("performance-quality").textContent = verdict.label;
+
+    // Audio timing: each answer measured within the window, in order.
+    const span = Number($("performance-window").value) * 1000;
+    const latest = samples[samples.length - 1];
+    const turns = latest ? allTurns(latest.status) : [];
+    const seen = new Map();
+    for (const sample of samples) {
+      for (const turn of allTurns(sample.status)) {
+        const key = `${turn.at}|${turn.turn}|${turn.first_speech_to_playback_ms}|${turn.answer_to_playback_ms}`;
+        if (!seen.has(key)) seen.set(key, sample.t);
+      }
+    }
+    const recentTurns = turns.filter((turn) => {
+      const key = `${turn.at}|${turn.turn}|${turn.first_speech_to_playback_ms}|${turn.answer_to_playback_ms}`;
+      return Date.now() - (seen.get(key) || Date.now()) <= span;
+    });
+    drawChart("latency-chart", [
+      { values: recentTurns.map((turn) => Number(turn.first_speech_to_playback_ms ?? turn.answer_to_playback_ms ?? 0)), color: "#4c9be8" },
+      { values: recentTurns.map((turn) => Number(turn.last_speech_to_answer_ms ?? 0)), color: "#46c77a" },
+    ], "ms");
+
+    // Media packets: per second, each way, from consecutive samples.
+    const sent = [];
+    const received = [];
+    for (let i = 1; i < inWindow.length; i++) {
+      const seconds = Math.max(0.5, (inWindow[i].t - inWindow[i - 1].t) / 1000);
+      const before = callAudio(inWindow[i - 1].status);
+      const after = callAudio(inWindow[i].status);
+      sent.push(after ? delta(before, after, "frames_sent") / seconds : 0);
+      received.push(after ? delta(before, after, "packets_received") / seconds : 0);
+    }
+    drawChart("packets-chart", [
+      { values: sent, color: "#4c9be8" },
+      { values: received, color: "#46c77a" },
+    ], "packets per second");
+
+    const grid = $("performance-stats");
+    const cards = statCards(latest ? latest.status : {});
+    if (grid.childElementCount !== cards.length) {
+      grid.replaceChildren(...cards.map(() => {
+        const card = document.createElement("div");
+        card.className = "stat-card";
+        card.append(document.createElement("span"), document.createElement("strong"));
+        return card;
+      }));
+    }
+    cards.forEach(([label, value], index) => {
+      const card = grid.children[index];
+      card.firstChild.textContent = label;
+      card.lastChild.textContent = String(value);
+    });
+  }
+  $("performance-window").addEventListener("change", renderPerformance);
+  $("performance-refresh").addEventListener("click", async () => {
+    lastSampleAt = 0;
+    await refresh();
+    renderPerformance();
+  });
+  document.querySelector('.tab-button[data-tab="performance"]').addEventListener("click", renderPerformance);
 
   // ---------- System and uptime ----------
   let systemFacts = null;
@@ -854,7 +1048,8 @@
     fillForm();
     await refresh();
     await loadChat();
-    setInterval(refresh, 5000);
+    // Once a second: the status values and a Performance sample.
+    setInterval(refresh, 1000);
     setInterval(renderUptime, 1000);
   }
 

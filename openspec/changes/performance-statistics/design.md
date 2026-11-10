@@ -28,6 +28,14 @@ with the first version's wording, with "ChatGPT audio" kept as the answer's name
 answer's "received" time is when the first frame with signal leaves the jitter buffer; the
 "played" time is when `PcmSource` hands it to songbird.
 
+*Changed while implementing (2026-11-10):* both of those moments fall in the same
+`PcmSource` read, so "ChatGPT audio -> Discord relay handoff" would always read 0 ms. The
+"received" time is instead the network arrival of the packet the first frame with signal
+was decoded from (the jitter buffer keeps each packet's arrival and exposes it through
+`FrameProvider::arrival`), so that duration is the time the answer waited in the jitter
+buffer; the first live call measured 34 and 65 ms. Pushed frames (the stub assistant) have
+no arrival time and use the playback time.
+
 **D2. Status, not a new channel.** The last 50 turns go into the status snapshot; the window
 samples the status once a second while open and keeps up to 5 minutes of samples in memory
 for the charts. *Alternative:* push an event per turn. Rejected: the snapshot is already the

@@ -107,6 +107,7 @@ impl VoiceHost for GateHost {
             Some(Arc::new(self.wake.clone())),
             Some(Arc::clone(&self.errors) as Arc<dyn ErrorReporter>),
         );
+        output.use_latency(gate.latency(), guild);
         self.registry.register(Arc::clone(&gate));
         match self.assistant.attach(
             guild,
@@ -534,6 +535,7 @@ impl Runtime {
             wake: self.wake.status(),
             gates: self.host.registry.statuses(),
             audio: self.host.registry.gains().levels(),
+            latency: self.host.registry.latency_reports(),
             assistant: self.assistant.status(),
             settings: self.settings(),
         }
@@ -740,6 +742,38 @@ mod tests {
             "the next frame played used the new output gain: {first}"
         );
         assert_eq!(runtime.status().audio.output.clips, 0);
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn a_turn_is_measured_from_the_speech_sent_to_the_answer_played() {
+        use crate::audio::FRAME_SAMPLES;
+        use std::io::Read;
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({ "session": { "mode": "always", "earcons": false } }))
+            .unwrap();
+        let (output, mut source) = output_pair();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.on_join(42, output.clone());
+        let speech = Frame::from_slice(&[5_000; FRAME_SAMPLES]);
+        for _ in 0..10 {
+            host.on_tick(42, &speech, &[(7, speech.as_slice())]);
+        }
+        std::thread::sleep(Duration::from_millis(30));
+        for _ in 0..3 {
+            output.push(Frame::from_slice(&[3_000; FRAME_SAMPLES]));
+        }
+        let mut bytes = vec![0u8; FRAME_SAMPLES * 4];
+        source.read_exact(&mut bytes).unwrap();
+        let turns = runtime.status().latency["42"].clone();
+        assert_eq!(turns.len(), 1, "{turns:?}");
+        assert_eq!(turns[0].turn, Some(1));
+        assert_eq!(turns[0].kind, "response");
+        assert!(turns[0].first_speech_to_playback_ms.unwrap() >= 30);
         runtime.shutdown();
     }
 

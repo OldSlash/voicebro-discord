@@ -237,6 +237,12 @@ output { float: right; color: var(--accent); font-weight: 600; }
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); margin-bottom: var(--gap); }
 .chart-card canvas { display: block; width: 100%; height: 190px; border-radius: 4px; }
 .health-dot { color: var(--ink-dim); }
+.health-dot.stable { color: var(--ok); }
+.health-dot.degraded { color: var(--warn); }
+.chart-legend { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-dim); font-size: 0.85em; }
+.chart-legend i { display: inline-block; width: 9px; height: 9px; margin-left: 6px; border-radius: 2px; }
+.chart-legend .series-a { background: #4c9be8; }
+.chart-legend .series-b { background: #46c77a; }
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
 .stat-card { padding: 9px 11px; border: 1px solid var(--line); border-radius: calc(var(--radius) + 2px); background: var(--panel); min-width: 0; }
 .stat-card span { display: block; color: var(--ink-dim); font-size: 0.85em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -294,6 +300,7 @@ textarea.prompt-input { min-height: 80px; line-height: 1.45; }
   font-size: 0.88em;
 }
 .status-bar-left, .status-bar-right { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
+.status-bar, .status-bar-left, .status-bar-right { flex-wrap: wrap; }
 .status-bar strong { color: var(--ink); font-weight: 600; }
 .separator { width: 1px; height: 13px; background: var(--line); }
 .connection-state { font-weight: 600; color: var(--bad); }

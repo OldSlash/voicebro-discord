@@ -9,6 +9,7 @@ pub mod audio;
 pub mod discord;
 pub mod events;
 pub mod gate;
+pub mod latency;
 pub mod paths;
 pub mod runtime;
 pub mod secrets;
