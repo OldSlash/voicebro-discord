@@ -15,9 +15,10 @@ the Discord panel's button SHALL all toggle that same state, and every view SHAL
 - **THEN** the app window, the Discord panel and `/status` all show muted within a second
 
 ### Requirement: What mute silences
-While muted the assistant SHALL receive silence instead of the channel (the stream is not
-cut), nothing the assistant says SHALL reach the channel, queued answer audio SHALL be
-discarded, and wake phrases SHALL be ignored.
+Mute SHALL end the current session and its call, as in the first version: from the moment
+of muting nothing of the channel reaches the assistant, nothing the assistant says reaches
+the channel, queued answer audio is discarded, no voice call stays open, and wake phrases
+are ignored.
 
 #### Scenario: Mute during an answer then unmute
 - **WHEN** mute is turned on during an answer and off a few seconds later
@@ -26,6 +27,10 @@ discarded, and wake phrases SHALL be ignored.
 #### Scenario: Wake phrase while muted
 - **WHEN** someone says the activation phrase while muted
 - **THEN** no session starts
+
+#### Scenario: No call while muted
+- **WHEN** mute is on for a minute in always mode
+- **THEN** no voice call is open during that minute, and unmute opens a new call
 
 ### Requirement: Global hotkey
 The hotkey from `hotkey.mute` SHALL be registered system-wide at start-up and again when
@@ -43,3 +48,16 @@ nothing. The status SHALL show the shortcut, whether it is registered, and the e
 #### Scenario: Game in front
 - **WHEN** a full-screen game has focus and the user presses the hotkey
 - **THEN** mute toggles (verified by the user; the agent cannot do this)
+
+### Requirement: Mute and unmute tones
+Turning mute on SHALL play the first version's mute tone and turning it off the unmute tone,
+in every voice channel the bot is in, at the earcon volume, when earcons are on; the tones
+SHALL play even though the assistant's output is muted.
+
+#### Scenario: Mute from the hotkey
+- **WHEN** the user presses the mute hotkey with earcons on
+- **THEN** the mute tone is heard in the channel
+
+#### Scenario: Earcons off
+- **WHEN** earcons are off and mute is toggled
+- **THEN** no tone plays

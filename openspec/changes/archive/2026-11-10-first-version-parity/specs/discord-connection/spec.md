@@ -19,8 +19,8 @@ no switch to turn this off.
 - **WHEN** the user clears the token
 - **THEN** the bot disconnects and the status shows it as disconnected
 
-#### Scenario: Old settings file with auto-connect off
-- **WHEN** the settings file still holds `discord.auto_connect: false` and a token is stored
+#### Scenario: Auto-connect off
+- **WHEN** an old settings file still holds `discord.auto_connect: false` and a token is stored
 - **THEN** the bot connects at start-up and the field is dropped at the next save
 
 ### Requirement: Slash commands are registered where they appear at once
