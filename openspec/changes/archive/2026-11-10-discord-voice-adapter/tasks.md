@@ -32,7 +32,9 @@
 
 ## 5. Close-out
 
-- [ ] 5.1 Live check in the test guild: connect, `/join`, speak, `/status`, mute from the panel, `/leave`, `/join` again; verify the log shows the sequence with no error and the old handler silent after rejoin
+- [x] 5.1 Live check in the test guild: connect, `/join`, speak, `/status`, mute from the panel, `/leave`, `/join` again; verify the log shows the sequence with no error and the old handler silent after rejoin
+
+  Closed by the user's decision of 2026-11-10 at the merge into `main` (every remaining check counts as done); not verified separately as a task.
 - [x] 5.2 Update `docs/ARCHITECTURE.md` 4.1 and 4.2 where the code differs, `AGENTS.md` commands and facts, and `LOCAL-TESTING.md` for the live checks; verify no stale statement remains
 - [x] 5.3 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`; verify all pass
 
