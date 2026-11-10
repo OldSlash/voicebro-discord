@@ -739,7 +739,7 @@ people and a game running passes.
 
 | Item | Result | How |
 |---|---|---|
-| Mute mid-answer then unmute plays nothing old | pass (unit) | `gate::tests::mute_sends_silence_discards_output_and_ignores_phrases`: the output queue is flushed on mute and frames pushed while muted are dropped |
+| Mute mid-answer then unmute plays nothing old | pass (unit) | `gate::tests::mute_ends_the_session_sends_nothing_and_unmute_restarts_it_in_always_mode` (named `mute_sends_silence_discards_output_and_ignores_phrases` before change `first-version-parity`): the output queue is flushed on mute and frames pushed while muted are dropped |
 | Hotkey works while a game has focus | not tested | needs the user with a game in front; synthetic `keybd_event` presses toggled mute live |
 | Panel, app button and hotkey toggle one state; all views show it | pass (unit + hotkey live) | one `RelayRegistry` flag; `/status` and the panel read it; the panel and app buttons in a live channel are the user's |
 | Each activation phrase fires, a look-alike does not | pass (corpus) | `vosk_corpus_when_assets_are_provided` on the TTS WAVs: positive fires, negative holds, with and without noise 300 |
@@ -759,6 +759,19 @@ people and a game running passes.
 | Settings file contains no token; the token survives a restart | pass (live) | the token lives in the Credential Manager; the app connected at start from it |
 | Measurements recorded | pass (idle states) | table above; during a call is the user's |
 | Real Discord test, two or more people, a game running | not tested | the user's step |
+
+### Results of change `first-version-parity` (2026-11-10)
+
+| Item | Result | How |
+|---|---|---|
+| Nothing of Codex runs before `/join` | pass (unit + live) | `nothing_of_codex_runs_after_start`; the release build idled 60 s connected to Discord with no `codex.exe` |
+| `/join` starts Codex, a refused preparation keeps the bot out | pass (unit + live) | fake app-server tests; `real_codex_starts_at_join_and_stops_after_the_last_leave_when_enabled`: prepared in 720 ms, stopped 552 ms after the leave; a signed-out `/join` in the channel is the user's |
+| Mute ends the session, tones on mute changes | pass (unit) | gate tests; hearing the tones in the channel is the user's |
+| Two people at once are averaged | pass (unit) | `mix_into` tests; two real people talking is the user's |
+| The window shows the app log | pass (live) | release build with a scratch data dir: the window's log pane and `logs\voicebro.log` hold the same "wake word ready" line; `log_history` returned the 8 lines written before the window loaded (read through the WebView2 debugging port) |
+| Commands in the guild and globally | pass (live) | the log shows "registered 3 global slash commands" and "registered 3 slash commands in guild 1091401169441656933" |
+| Old settings file with `auto_connect: false` | pass (live) | the user's file copied to a scratch data dir: the bot connected at start |
+| Small Discord cache | no measurable change | private working set of `voicebro.exe`, release, bot connected, nobody in the channel, three samples each: 169.2 MB before, 169.5 to 169.7 MB after; the bot is in one guild, so its cache was small already. Names resolving in `/status` with people in the channel is the user's |
 
 ## 8. Risks
 

@@ -51,24 +51,22 @@ impl Handler {
         if command.defer(&ctx.http).await.is_err() {
             return;
         }
-        let outcome = session::join_voice(&self.shared, guild, channel).await;
+        let outcome = session::prepare_and_join(&self.shared, guild, channel).await;
+        let text = outcome.reply_text();
         let response = match outcome {
-            JoinOutcome::Joined { channel_name } => {
-                match session::panel_message(&self.shared, guild) {
-                    Some((embed, components)) => EditInteractionResponse::new()
-                        .content(format!("Joined {channel_name}."))
-                        .embed(embed)
-                        .components(components),
-                    None => {
-                        EditInteractionResponse::new().content(format!("Joined {channel_name}."))
-                    }
-                }
-            }
-            JoinOutcome::NotReady => EditInteractionResponse::new()
-                .content("Voice is not ready yet; try again in a moment."),
+            JoinOutcome::Joined { .. } => match session::panel_message(&self.shared, guild) {
+                Some((embed, components)) => EditInteractionResponse::new()
+                    .content(text)
+                    .embed(embed)
+                    .components(components),
+                None => EditInteractionResponse::new().content(text),
+            },
             JoinOutcome::Failed(error) => {
                 self.shared.log(format!("join failed: {error}"));
-                EditInteractionResponse::new().content(format!("Could not join: {error}"))
+                EditInteractionResponse::new().content(text)
+            }
+            JoinOutcome::NotReady | JoinOutcome::Refused(_) => {
+                EditInteractionResponse::new().content(text)
             }
         };
         match command.edit_response(&ctx.http, response).await {
@@ -190,10 +188,20 @@ impl EventHandler for Handler {
         self.shared
             .log(format!("Discord: connected as {}", ready.user.name));
 
+        // Globally, so every server has them, and in the configured server too, where they
+        // appear at once (as the first version did).
+        match Command::set_global_commands(&ctx.http, command_definitions()).await {
+            Ok(list) => self.shared.log(format!(
+                "registered {} global slash commands (Discord may take up to an hour to show new ones)",
+                list.len()
+            )),
+            Err(error) => self
+                .shared
+                .log(format!("could not register global slash commands: {error}")),
+        }
         let guild_id = *self.shared.guild_id.lock().expect("guild id lock");
-        let commands = command_definitions();
-        match guild_id {
-            Some(guild) => match guild.set_commands(&ctx.http, commands).await {
+        if let Some(guild) = guild_id {
+            match guild.set_commands(&ctx.http, command_definitions()).await {
                 Ok(list) => self.shared.log(format!(
                     "registered {} slash commands in guild {}",
                     list.len(),
@@ -202,16 +210,7 @@ impl EventHandler for Handler {
                 Err(error) => self
                     .shared
                     .log(format!("could not register guild slash commands: {error}")),
-            },
-            None => match Command::set_global_commands(&ctx.http, commands).await {
-                Ok(list) => self.shared.log(format!(
-                    "registered {} global slash commands (Discord may take up to an hour to show them)",
-                    list.len()
-                )),
-                Err(error) => self
-                    .shared
-                    .log(format!("could not register global slash commands: {error}")),
-            },
+            }
         }
         tokio::spawn(panel::refresher(Arc::clone(&self.shared)));
     }

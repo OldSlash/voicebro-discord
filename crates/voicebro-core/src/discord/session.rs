@@ -56,11 +56,41 @@ impl VoiceEventHandler for TrackLogger {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum JoinOutcome {
-    Joined { channel_name: String },
+    Joined {
+        channel_name: String,
+    },
     NotReady,
+    /// The host's preparation failed (Codex missing or signed out); the bot did not join.
+    Refused(String),
     Failed(String),
+}
+
+impl JoinOutcome {
+    /// The reply for every outcome but a successful join (that one carries the panel).
+    pub(crate) fn reply_text(&self) -> String {
+        match self {
+            JoinOutcome::Joined { channel_name } => format!("Joined {channel_name}."),
+            JoinOutcome::NotReady => "Voice is not ready yet; try again in a moment.".to_owned(),
+            JoinOutcome::Refused(reason) => format!("Not joined: {reason}"),
+            JoinOutcome::Failed(error) => format!("Could not join: {error}"),
+        }
+    }
+}
+
+/// The `/join` flow: the host prepares first (the assistant starts its process and checks
+/// the sign-in), then the bot joins. A refused preparation leaves the bot out of the channel
+/// and the reason goes back to the caller.
+pub(crate) async fn prepare_and_join(
+    shared: &Arc<Shared>,
+    guild: GuildId,
+    channel: ChannelId,
+) -> JoinOutcome {
+    if let Err(reason) = shared.host.prepare_join(guild.get()).await {
+        return JoinOutcome::Refused(reason);
+    }
+    join_voice(shared, guild, channel).await
 }
 
 /// Joins `channel` for `guild` with the fixed order: get or create the call, register the
@@ -285,4 +315,79 @@ pub(crate) fn session_channel_name(shared: &Shared, guild: GuildId) -> Option<St
         .expect("sessions lock")
         .get(&guild.get())
         .map(|session| session.channel_name.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::Frame;
+    use crate::discord::{AssistantState, DiscordRuntime, JoinPreparation, VoiceHost};
+    use crate::events::EventBus;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A host whose preparation fails or passes, counting the joins it is told about.
+    struct PreparingHost {
+        refuse: Option<String>,
+        joins: AtomicUsize,
+    }
+
+    impl VoiceHost for PreparingHost {
+        fn prepare_join(&self, _: u64) -> JoinPreparation<'_> {
+            let result = match &self.refuse {
+                Some(reason) => Err(reason.clone()),
+                None => Ok(()),
+            };
+            Box::pin(async move { result })
+        }
+        fn on_tick(&self, _: u64, _: &Frame, _: &[(u32, &[i16])]) {}
+        fn set_speaker_name(&self, _: u64, _: u32, _: &str) {}
+        fn set_participants(&self, _: u64, _: &[String]) {}
+        fn on_join(&self, _: u64, _: OutputHandle) {
+            self.joins.fetch_add(1, Ordering::Relaxed);
+        }
+        fn on_leave(&self, _: u64) {}
+        fn assistant_state(&self, _: u64) -> AssistantState {
+            AssistantState::Off
+        }
+        fn toggle_mute(&self) -> bool {
+            false
+        }
+        fn is_muted(&self) -> bool {
+            false
+        }
+    }
+
+    fn join_with(refuse: Option<&str>) -> (JoinOutcome, Arc<PreparingHost>, usize) {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let host = Arc::new(PreparingHost {
+            refuse: refuse.map(str::to_owned),
+            joins: AtomicUsize::new(0),
+        });
+        let discord = DiscordRuntime::new(
+            EventBus::new(16),
+            host.clone() as Arc<dyn VoiceHost>,
+            tokio_rt.handle().clone(),
+        );
+        let outcome = tokio_rt.block_on(prepare_and_join(
+            &discord.shared,
+            GuildId::new(1),
+            ChannelId::new(2),
+        ));
+        let sessions = discord.shared.sessions.lock().unwrap().len();
+        (outcome, host, sessions)
+    }
+
+    #[test]
+    fn a_refused_preparation_keeps_the_bot_out_and_tells_the_caller_why() {
+        let reason = "Codex is not signed in: use Sign in on the VoiceBro Status tab";
+        let (outcome, host, sessions) = join_with(Some(reason));
+        assert_eq!(outcome, JoinOutcome::Refused(reason.to_owned()));
+        assert!(outcome.reply_text().contains(reason));
+        assert_eq!(host.joins.load(Ordering::Relaxed), 0, "no join happened");
+        assert_eq!(sessions, 0);
+
+        // A passing preparation goes on to the join (here voice is not connected yet).
+        let (outcome, _, _) = join_with(None);
+        assert_eq!(outcome, JoinOutcome::NotReady);
+    }
 }

@@ -102,7 +102,7 @@ subscribes and forwards them to the webview as one Tauri event; the UI also pull
 
 ```rust
 pub enum AppEvent {
-    Log { line: String },              // human-readable line for the UI log pane
+    Log { line: String },              // human-readable line; also written to the log, which reaches the window
     MuteChanged { muted: bool },       // the app-wide mute, from any of its three sources
     SettingsChanged,
     SecretChanged { name: String, is_set: bool },   // never the value
@@ -130,8 +130,9 @@ Owns the formats, queues and conversions shared by everything else.
   payload.
 - **`Frame`**: a fixed-size 48 kHz stereo packet. Everything between Discord and the gate and
   between the gate and the assistant is a `Frame`.
-- **Mixing** several speakers: sum into `i32`, then clamp to `i16`. Never saturate before
-  averaging.
+- **Mixing** several speakers: the average, as in the first version. Sum into `i32`, divide
+  by the number of speakers in the tick, then clamp to `i16` once; one speaker passes
+  unchanged. Never saturate before averaging.
 - **Resamplers** (`dsp.rs`): fixed-ratio windowed-sinc FIR, 48 k stereo → 16 k mono, and the
   24 k paths from the first version (kept and tested, unused by the MVP). Deterministic, no
   external resampler.
@@ -148,8 +149,10 @@ Owns the formats, queues and conversions shared by everything else.
   say) produces silence, so a temporary underrun never ends the track. Only leaving the
   channel closes the source: `OutputHandle::close()` makes the next `read` return end of
   stream, and the track ends with it. Nothing else may end it.
-- **Earcons**: short tones generated in Rust (rising on activation, falling on session end),
-  mixed into the output even while muted, at volume 0.18.
+- **Earcons**: the first version's four tones generated in Rust, mixed into the output even
+  while muted, at volume 0.18 by default: session start 523.25, 659.25 and 783.99 Hz (70, 70,
+  110 ms), session end 659.25 then 392 Hz (80, 130 ms), mute 660 then 440 Hz (90, 110 ms),
+  unmute 440 then 660 Hz (90, 110 ms), each note with a 6 ms fade at both ends.
 - **Gains** (`gain.rs`): `audio.input_gain` and `audio.output_gain`, 0.0 to 4.0, default
   1.0, as in the first version. `AudioGains` holds one `GainStage` per direction (the gain
   in an atomic, a clip counter, the peak of the last second), owned by the
@@ -169,7 +172,14 @@ Owns the formats, queues and conversions shared by everything else.
 serenity 0.12 (gateway, HTTP, cache limited to guilds, voice states and members) and
 songbird 0.6 with `receive`. DAVE is handled by songbird.
 
-- Slash commands `/join`, `/leave`, `/status`. `/join` joins the caller's voice channel.
+- **Start**: the client starts whenever a token is stored, at launch and after a token is
+  saved; Connect and Disconnect stay as manual controls. There is no auto-connect setting.
+- Slash commands `/join`, `/leave`, `/status`, registered globally on `ready` and, when
+  `discord.guild_id` is set, also in that server (where they appear at once); each
+  registration's result is logged.
+- `/join` first awaits `VoiceHost::prepare_join(guild)`: the assistant starts its process
+  and checks its sign-in. An error is the reply ("Not joined: …") and the bot stays out of
+  the channel; only then does the join below run.
 - **Member panel** (`panel.rs`): an embed in the channel the command came from, with the
   engine, the assistant's state (waiting for the wake word / listening / muted) and a
   "Mute GPT" button. The button toggles the app-wide mute through `Runtime`; the panel is
@@ -181,8 +191,11 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   gone, and closes the output source. Rejoin builds a new gate. Join and leave are
   serialized per guild across the whole awaited operation.
 - **Speaker directory** per guild maps SSRC → display name (nickname, then display name,
-  then username; printable, trimmed, at most 32 chars). It outlives the call. If a speaking
-  SSRC is unknown and the channel has exactly one non-bot member, that member is the speaker.
+  then username; printable, trimmed, at most 32 chars). It outlives the call. The first
+  time a source with no name is heard, and only then, the receive handler checks the
+  channel's participants: when exactly one non-bot member is there, that member is taken as
+  the speaker and logged "assigned as the only person in the channel"; a real mapping from a
+  later speaking event replaces it.
 - **Participants** are kept current from `voice_state_update` and pushed to the gate.
 - The receive handler decodes per-speaker PCM at 48 kHz stereo (never mono or 24 kHz: songbird
   0.6's packet-loss recovery for those modes is unproven), mixes it into reusable buffers,
@@ -212,10 +225,12 @@ state machine. A `RelayRegistry` holds all gates and the single app-wide mute fl
 - **Modes**: `always` (session is always wanted while connected) and `wake_word`.
 - **Mute** is one app-wide state with three sources: the app button, the global hotkey and
   the Discord panel button. All three end in `Runtime::toggle_mute`, which goes through
-  `RelayRegistry::set_muted` into every gate. Mute is two gates: input becomes silence (the
-  stream is never cut and the session stays wanted, so the call is not renegotiated by a
-  mute) and output is discarded with a flush. Mute overrides phrases. In wake-word mode a
-  muted session still ends on its idle timeout, since silence is no input.
+  `RelayRegistry::set_muted` into every gate. Mute ends the session, as in the first
+  version: the session is no longer wanted (the call closes, nothing is spent while muted),
+  nothing is sent to the assistant, the output is flushed and discarded, and phrases are
+  ignored. Unmute in always mode wants a new session at once; in wake-word mode the next
+  session needs the activation phrase. The mute and unmute tones play on every change when
+  earcons are on (`wants_session = !muted && (always || active)`).
 - **Pre-roll** of about 5 s of frames. On activation the replay starts at the end of the
   phrase (recognizer timing, or a 1 s lookback plus 80 ms margin), holds while the
   assistant is not `ready()`, and catches up by skipping silent frames. Replay is capped at
@@ -426,10 +441,22 @@ assistant is given, so the app never panics on an unknown engine setting.
   the stop. Barge-in is left to the realtime server (it stops its own output when the user
   speaks); the first version's client-side flush is not ported.
 - `CodexAssistant` (`codex/mod.rs`) owns the process, the account, the voices and models,
-  the conversations per guild and the chat log. The process is started at runtime start
-  (not on Discord connect) so the Status tab shows the account before the first `/join`;
-  `attach` while it is still starting fails with "Codex is starting" and the gate logs it.
-  `stop` kills the child at app exit after stopping every call.
+  the conversations per guild and the chat log. **Nothing of Codex runs before `/join`.**
+  `prepare(guild)` (`Assistant::prepare`, awaited by the `/join` handler through
+  `VoiceHost::prepare_join`) starts the app-server if it is not running, reads the account
+  and opens or reuses the guild's thread, so the first activation only places the call. Its
+  typed errors (`PrepareError`: not installed, did not start, not signed in, no thread)
+  are the join's refusal reply. The app-server stops 0.5 s after the last guild detaches
+  (the conversations stay in memory: the next join opens a new thread and the history
+  carries over through `initialItems`), one minute after an on-demand Sign in or Check
+  while the bot is in no channel (re-armed while a sign-in waits for
+  `account/login/completed`, at most ten minutes), and at app exit (`stop` kills the child
+  after stopping every call). A preparation or a newer stop cancels a pending stop.
+- Tests: `testdata/fake-codex` is a Node stand-in for the app-server (handshake, account,
+  voices, models, `thread/start`; `fake_codex_signed_out.cmd` reports no account). The
+  tests that use it check nothing where Node is not installed.
+  `VOICEBRO_CODEX_SMOKE=1 cargo test -p voicebro-core real_codex_starts` runs the real
+  start at a preparation and the stop after the last leave.
 - Live check: `VOICEBRO_CODEX_CALL_WAV=<q1.wav> [VOICEBRO_CODEX_EXPECT1="a|b"
   VOICEBRO_CODEX_CALL_WAV2=<q2.wav> VOICEBRO_CODEX_EXPECT2="a|b"
   VOICEBRO_CODEX_CALL_WAV3=<q3.wav>] cargo test -p voicebro-core live_call_when_enabled --
@@ -453,7 +480,7 @@ One schema, one place to validate, one place to apply.
 #[derive(Serialize, Deserialize, Default)]
 pub struct Settings {
     pub version: u32,                      // schema version, migrated on load
-    pub discord: DiscordSettings,          // auto_connect
+    pub discord: DiscordSettings,          // guild_id (an older auto_connect is ignored and dropped at the next save)
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog), activation_phrases, deactivation_phrases
@@ -488,9 +515,9 @@ recognizes; the code ships none.
 
 `Runtime` owns the registry of gates, the Discord adapter, the wake engine, the assistant,
 the settings store and the event bus. It is the only place that knows every subsystem.
-Start-up: load settings, read secrets, start Discord if a token is set and auto-connect is
-on, load the wake engine if the mode is wake-word, start the assistant's process when the
-bot connects. Shutdown: stop the assistant (and its child process), leave every call, stop
+Start-up: load settings, read secrets, start Discord whenever a token is set, load the wake
+engine if the mode is wake-word. The assistant's process is not started: it starts at the
+first `/join` (`GateHost::prepare_join` calls `Assistant::prepare`). Shutdown: stop the assistant (and its child process), leave every call, stop
 the wake worker. `Runtime::toggle_mute` is the single entry for all three mute sources.
 
 ### 4.8 Desktop shell (`apps/desktop`)
@@ -502,8 +529,13 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
   when a saved settings document changes `hotkey.mute`, the previous shortcut unregistered
   first; an empty value registers nothing; toggle only, on the key-down edge; the outcome
   goes to `Runtime::set_hotkey_status` and the status shows `{shortcut, registered, error}`.
-- `tauri-plugin-log` in every build: Info level, chatty crates at Warn, local time, 4 MB per
-  file, two old files kept, under the data directory.
+- `tauri-plugin-log` in every build: Info level, chatty crates at Warn, songbird's receive
+  task at Error, local time, 4 MB per file, two old files kept, under the data directory.
+  A second target (`TargetKind::Dispatch`, `log_ring.rs`) gets the same records with the
+  same filters and format, keeps the last 500 lines and emits each as `app-log`; the
+  `log_history` command returns the ring, so the window's log pane shows the whole app log
+  (what the recognizer heard, every phrase decision) including what was logged before the
+  window loaded. The pane no longer lists `AppEvent::Log` separately.
 - `build.rs` embeds the Common-Controls v6 manifest into every linked target and stamps the
   build (version plus short git hash plus date) for the UI.
 - UI: static HTML, CSS and JS with `withGlobalTauri: true`, no framework or bundler. Tabs:
@@ -569,13 +601,17 @@ stub assistant, tests ─► OutputHandle.push(Frame) ─► OutputQueue (jitter
 ### Control
 
 ```text
+/join ─► VoiceHost::prepare_join ─► Codex: start app-server, account/read, open thread
+   ─► refused: reply with the reason, no join │ ready: songbird join, gate, attach
 phrase hit ─► gate: Waiting→Starting ─► assistant.call_context, session_wanted(true)
    ─► Codex: ensure thread, build initialItems, open RTC call ─► ready() = true
    ─► gate replays pre-roll from the end of the phrase, then live frames
 deactivation / idle timeout ─► gate: output muted + flushed, session_wanted(false)
    ─► Codex: thread/realtime/stop, keep thread and history for the next call
 mute (app button | hotkey | Discord panel) ─► Runtime::toggle_mute ─► RelayRegistry
-   ─► every gate: input silence, output flush ─► AppEvent::MuteChanged ─► UI, panel
+   ─► every gate: session ends (session_wanted(false)), nothing sent, output flushed,
+      mute tone ─► AppEvent::MuteChanged ─► UI, panel
+last /leave ─► Codex: app-server stops 0.5 s later; conversations kept
 ```
 
 ### Settings

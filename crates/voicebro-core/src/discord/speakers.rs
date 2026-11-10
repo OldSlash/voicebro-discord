@@ -39,6 +39,16 @@ impl SpeakerDirectory {
     }
 }
 
+/// The name to assume for an audio source Discord did not name: the only person in the
+/// channel, when there is exactly one (the first version's fallback). `participants` are
+/// the non-bot members in the bot's channel.
+pub fn sole_person(participants: &[String]) -> Option<&str> {
+    match participants {
+        [only] => Some(only.as_str()),
+        _ => None,
+    }
+}
+
 /// A display name safe to put in a label: printable, trimmed, at most 32 characters.
 pub fn clean_display_name(name: &str) -> Option<String> {
     let cleaned: String = name
@@ -122,6 +132,20 @@ mod tests {
             clean_display_name(&"x".repeat(50)).map(|name| name.len()),
             Some(32)
         );
+    }
+
+    #[test]
+    fn an_unnamed_source_is_the_only_person_and_a_real_name_wins_later() {
+        assert_eq!(sole_person(&["Alex".to_owned()]), Some("Alex"));
+        assert_eq!(sole_person(&["Alex".to_owned(), "Sam".to_owned()]), None);
+        assert_eq!(sole_person(&[]), None);
+        let directory = SpeakerDirectory::default();
+        assert!(directory.remember(5, sole_person(&["Alex".to_owned()]).unwrap().to_owned()));
+        assert!(
+            directory.remember(5, "Sam".to_owned()),
+            "the real mapping replaces it"
+        );
+        assert_eq!(directory.name(5).as_deref(), Some("Sam"));
     }
 
     #[test]

@@ -67,6 +67,14 @@ callback, or `TargetKind::Webview`); a webview-only target is not enough because
 history. The recognizer's lines already go through `log`; nothing in the wake worker
 changes. The window stops listing `AppEvent::Log` separately, so lines are not doubled.
 
+*Checked on 2026-11-10 (`tauri-plugin-log` 2.10.1, `src/lib.rs`):* `TargetKind::Dispatch`
+takes a `fern::Dispatch` (the plugin re-exports `fern`), chained under the plugin's root
+dispatch, so it gets the same level table and the same formatted line as the file. The
+target is a `fern::Output::call` that pushes each line into `LogRing` (`apps/desktop/src/
+log_ring.rs`), which emits it as `app-log` once the window exists; `TargetKind::Webview` was
+not used because it keeps no history. A thread-local flag stops a record logged by the emit
+itself from being emitted again.
+
 **D7. Unknown speaker.** In the receive handler, a speaking source without a directory entry
 is tried once: a task reads the bot's voice channel from the cache and, when exactly one
 non-bot member is in it, records that member's name for the source and logs "assigned as the

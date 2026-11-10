@@ -1,41 +1,47 @@
-//! Short tones that tell the channel a session started or ended. Generated here, mixed into
-//! the output even while muted.
+//! Short tones that tell the channel what changed: a session started or ended, the
+//! assistant was muted or unmuted. Generated here, mixed into the output even while muted.
+//! The notes and durations are the first version's (`earcon_samples` in its `audio.rs`).
 
 use super::frame::SAMPLE_RATE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Earcon {
-    /// Two rising notes: a session started.
+    /// Three rising notes: a session started.
     Activate,
     /// Two falling notes: a session ended.
     Deactivate,
+    /// Two falling notes, shorter: the assistant was muted.
+    Mute,
+    /// Two rising notes, shorter: the assistant was unmuted.
+    Unmute,
 }
 
-const NOTE_MS: usize = 110;
-const GAP_MS: usize = 30;
-const LOW_HZ: f32 = 523.25; // C5
-const HIGH_HZ: f32 = 783.99; // G5
+/// Fade in and out at each note's edges so the tone does not click.
+const FADE_MS: f32 = 6.0;
+
+/// Each note as (frequency in Hz, duration in ms).
+pub fn notes(kind: Earcon) -> &'static [(f32, u32)] {
+    match kind {
+        Earcon::Mute => &[(660.0, 90), (440.0, 110)],
+        Earcon::Unmute => &[(440.0, 90), (660.0, 110)],
+        Earcon::Activate => &[(523.25, 70), (659.25, 70), (783.99, 110)],
+        Earcon::Deactivate => &[(659.25, 80), (392.0, 130)],
+    }
+}
 
 /// Mono 48 kHz samples in -1.0..1.0 scaled by `volume`.
 pub fn samples(kind: Earcon, volume: f32) -> Vec<f32> {
-    let (first, second) = match kind {
-        Earcon::Activate => (LOW_HZ, HIGH_HZ),
-        Earcon::Deactivate => (HIGH_HZ, LOW_HZ),
-    };
-    let note = SAMPLE_RATE as usize * NOTE_MS / 1000;
-    let gap = SAMPLE_RATE as usize * GAP_MS / 1000;
     let volume = volume.clamp(0.0, 1.0);
-    let mut out = Vec::with_capacity(note * 2 + gap);
-    for (index, frequency) in [first, second].into_iter().enumerate() {
-        if index == 1 {
-            out.extend(std::iter::repeat_n(0.0, gap));
-        }
-        for n in 0..note {
-            let t = n as f32 / SAMPLE_RATE as f32;
-            // Short linear fade in and out so the tone does not click.
-            let fade_len = (note / 10) as f32;
-            let fade = (n as f32 / fade_len).min(1.0) * ((note - n) as f32 / fade_len).min(1.0);
-            out.push((std::f32::consts::TAU * frequency * t).sin() * volume * fade);
+    let rate = SAMPLE_RATE as f32;
+    let fade = ((rate * FADE_MS / 1_000.0) as usize).max(1);
+    let mut out = Vec::new();
+    for (frequency, milliseconds) in notes(kind) {
+        let count = (rate * *milliseconds as f32 / 1_000.0) as usize;
+        for n in 0..count {
+            let envelope = (n.min(count - 1 - n) as f32 / fade as f32).min(1.0);
+            out.push(
+                (std::f32::consts::TAU * frequency * n as f32 / rate).sin() * volume * envelope,
+            );
         }
     }
     out
@@ -45,23 +51,40 @@ pub fn samples(kind: Earcon, volume: f32) -> Vec<f32> {
 mod tests {
     use super::*;
 
+    /// The dominant frequency of a block, by counting rising zero crossings.
+    fn frequency(block: &[f32]) -> f32 {
+        let crossings = block
+            .windows(2)
+            .filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0)
+            .count();
+        crossings as f32 * SAMPLE_RATE as f32 / block.len() as f32
+    }
+
     #[test]
-    fn earcons_have_two_notes_and_respect_volume() {
-        let activate = samples(Earcon::Activate, 0.18);
-        let deactivate = samples(Earcon::Deactivate, 0.18);
-        assert_eq!(activate.len(), deactivate.len());
-        assert_eq!(
-            activate.len(),
-            SAMPLE_RATE as usize * (2 * NOTE_MS + GAP_MS) / 1000
-        );
-        let peak = activate.iter().fold(0f32, |m, s| m.max(s.abs()));
+    fn the_four_tones_have_the_first_versions_lengths_and_first_notes() {
+        let ms = |n: usize| n * SAMPLE_RATE as usize / 1_000;
+        for (kind, total_ms, first_hz) in [
+            (Earcon::Mute, 200, 660.0),
+            (Earcon::Unmute, 200, 440.0),
+            (Earcon::Activate, 250, 523.25),
+            (Earcon::Deactivate, 210, 659.25),
+        ] {
+            let tone = samples(kind, 0.18);
+            assert_eq!(tone.len(), ms(total_ms), "{kind:?}");
+            let first_note = &tone[..ms(notes(kind)[0].1 as usize)];
+            let measured = frequency(first_note);
+            assert!(
+                (measured - first_hz).abs() < first_hz * 0.05,
+                "{kind:?}: {measured} Hz"
+            );
+        }
+    }
+
+    #[test]
+    fn volume_scales_the_tone() {
+        let tone = samples(Earcon::Activate, 0.18);
+        let peak = tone.iter().fold(0f32, |m, s| m.max(s.abs()));
         assert!(peak <= 0.18 + 1e-6 && peak > 0.15, "peak {peak}");
-        assert_eq!(
-            samples(Earcon::Activate, 0.0)
-                .iter()
-                .filter(|s| **s != 0.0)
-                .count(),
-            0
-        );
+        assert!(samples(Earcon::Mute, 0.0).iter().all(|s| *s == 0.0));
     }
 }

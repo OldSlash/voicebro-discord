@@ -74,8 +74,9 @@ pub fn is_silent(samples: &[i16], threshold: i32) -> bool {
     peak(samples) < threshold
 }
 
-/// Sums every speaker's block into `scratch` and clamps into `out`. Never saturates before
-/// the final clamp, so two loud speakers do not cancel or halve each other.
+/// Mixes every speaker's block into `out`: the average of the speakers (one speaker passes
+/// unchanged), as the first version did. Sums in `i32` and divides before the single clamp,
+/// so nothing saturates before averaging.
 pub fn mix_into(speakers: &[&[i16]], scratch: &mut Vec<i32>, out: &mut Frame) {
     scratch.clear();
     scratch.resize(FRAME_SAMPLES, 0);
@@ -84,8 +85,9 @@ pub fn mix_into(speakers: &[&[i16]], scratch: &mut Vec<i32>, out: &mut Frame) {
             *sum += *sample as i32;
         }
     }
+    let count = speakers.len().max(1) as i32;
     for (sample, sum) in out.as_mut_slice().iter_mut().zip(scratch.iter()) {
-        *sample = (*sum).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        *sample = (*sum / count).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
     }
 }
 
@@ -101,16 +103,52 @@ mod tests {
     }
 
     #[test]
-    fn two_loud_speakers_clamp_instead_of_halving() {
+    fn overlapping_speakers_are_averaged_and_one_passes_unchanged() {
         let a = vec![30_000i16; FRAME_SAMPLES];
         let b = vec![30_000i16; FRAME_SAMPLES];
         let mut scratch = Vec::new();
         let mut out = Frame::silence();
         mix_into(&[&a, &b], &mut scratch, &mut out);
-        assert_eq!(out.as_slice()[0], 32_767);
+        assert_eq!(out.as_slice()[0], 30_000, "two loud speakers do not clip");
         let c = vec![-30_000i16; FRAME_SAMPLES];
         mix_into(&[&a, &c], &mut scratch, &mut out);
         assert_eq!(out.as_slice()[0], 0, "opposite signals cancel exactly");
+        let single = vec![-1_234i16; FRAME_SAMPLES];
+        mix_into(&[&single], &mut scratch, &mut out);
+        assert_eq!(out.as_slice()[0], -1_234);
+        let three = [
+            vec![300i16; FRAME_SAMPLES],
+            vec![600; FRAME_SAMPLES],
+            vec![900; FRAME_SAMPLES],
+        ];
+        mix_into(&[&three[0], &three[1], &three[2]], &mut scratch, &mut out);
+        assert_eq!(out.as_slice()[0], 600);
+        mix_into(&[], &mut scratch, &mut out);
+        assert_eq!(out.peak(), 0, "nobody speaking is silence");
+    }
+
+    #[test]
+    fn two_people_talking_still_cross_the_speech_threshold() {
+        // Two voices at a quiet speaking level (peak 4 000), different pitches, one of them
+        // starting half a frame later: the average still reads as speech to the gate.
+        let voice = |hz: f32, offset: usize| -> Vec<i16> {
+            (0..FRAME_SAMPLES / 2)
+                .flat_map(|n| {
+                    let value = if n < offset {
+                        0
+                    } else {
+                        let t = n as f32 / SAMPLE_RATE as f32;
+                        ((std::f32::consts::TAU * hz * t).sin() * 4_000.0) as i16
+                    };
+                    [value, value]
+                })
+                .collect()
+        };
+        let (a, b) = (voice(180.0, 0), voice(240.0, 480));
+        let mut scratch = Vec::new();
+        let mut out = Frame::silence();
+        mix_into(&[&a, &b], &mut scratch, &mut out);
+        assert!(out.peak() >= 700, "peak {}", out.peak());
     }
 
     #[test]

@@ -9,9 +9,14 @@ pub mod codex;
 use crate::audio::AudioPorts;
 use crate::settings::Settings;
 use serde::Serialize;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// What [`Assistant::prepare`] returns: the join waits for it.
+pub type PrepareFuture<'a> = Pin<Box<dyn Future<Output = Result<(), AssistantError>> + Send + 'a>>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AssistantError {
@@ -80,7 +85,14 @@ pub struct AssistantStatus {
 /// An assistant engine. One per app.
 pub trait Assistant: Send + Sync {
     fn id(&self) -> &'static str;
-    /// Prepares a session for a guild: the gate owns the ports' sending side.
+    /// Runs before the bot joins a voice channel of `guild`: starts the engine's process if
+    /// it has one and checks it can serve the guild. An error refuses the join with its
+    /// message.
+    fn prepare(&self, _guild: u64) -> PrepareFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+    /// Creates a session for a guild after a successful [`Assistant::prepare`]: the gate
+    /// owns the ports' sending side.
     fn attach(
         &self,
         guild: u64,
@@ -91,8 +103,6 @@ pub trait Assistant: Send + Sync {
     fn status(&self) -> AssistantStatus;
     /// The settings changed; the engine applies what concerns it at the next call.
     fn configure(&self, _settings: &Settings) {}
-    /// Starts the engine's process, if it has one. Called at runtime start.
-    fn start(&self) {}
     /// Stops every call and the engine's process. Called at app exit.
     fn stop(&self) {}
 }

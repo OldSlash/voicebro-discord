@@ -109,9 +109,18 @@ pub enum DiscordError {
     NoToken,
 }
 
-/// Everything the adapter needs from the rest of the app. The session gate implements it;
-/// a minimal implementation lives in the runtime until the gate exists.
+/// What [`VoiceHost::prepare_join`] returns: an error is the reason the join is refused.
+pub type JoinPreparation<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
+/// Everything the adapter needs from the rest of the app. The runtime implements it with
+/// the session gates and the assistant.
 pub trait VoiceHost: Send + Sync {
+    /// Runs before the bot joins a channel of `guild` (the assistant starts its process and
+    /// checks its sign-in); an error refuses the join and is shown to the caller.
+    fn prepare_join(&self, _guild: u64) -> JoinPreparation<'_> {
+        Box::pin(async { Ok(()) })
+    }
     /// Every 20 ms while the bot is in a channel: the mix and each speaker's own frame.
     fn on_tick(&self, guild: u64, mixed: &Frame, speakers: &[(u32, &[i16])]);
     fn set_speaker_name(&self, guild: u64, ssrc: u32, name: &str);
@@ -188,6 +197,19 @@ impl Shared {
     pub(crate) fn log(&self, line: impl Into<String>) {
         self.events.log(line);
     }
+}
+
+/// Only what names and voice channels need: guilds with their channels, voice states and
+/// members stay (they live inside each cached guild); no message cache, no global channel
+/// map (`cache.channel(id)` is never used) and no global user map (names come from guild
+/// members, then HTTP). Field names checked in the serenity 0.12.5 source.
+fn cache_settings() -> serenity::cache::Settings {
+    let mut settings = serenity::cache::Settings::default();
+    settings.max_messages = 0;
+    settings.cache_guilds = true;
+    settings.cache_channels = false;
+    settings.cache_users = false;
+    settings
 }
 
 /// Owns the serenity client task.
@@ -273,6 +295,7 @@ impl DiscordRuntime {
                 DecodeConfig::new(Channels::Stereo, SampleRate::Hz48000),
             ));
             let client = serenity::Client::builder(token.trim(), intents)
+                .cache_settings(cache_settings())
                 .event_handler(handler::Handler {
                     shared: Arc::clone(&shared),
                 })
