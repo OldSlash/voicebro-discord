@@ -1,11 +1,13 @@
-//! songbird lifecycle and receive-path timing.
+//! songbird lifecycle, receive-path timing, and what Discord reports about our stream.
 //!
-//! Both probes join a real voice channel (token, guild and channel from the environment).
+//! All probes join a real voice channel (token, guild and channel from the environment).
 //! `discord-lifecycle` registers a counting `VoiceTick` handler and a silent output track,
 //! closes the track's source, removes the call, rejoins with a second handler, and checks
 //! that the first handler is silent and the track reported its end. `receive-timing` sits in
 //! the channel for a minute, does the real handler's work (mix every speaker into `i32`,
-//! clamp) and reports tick-interval and handler-duration percentiles.
+//! clamp) and reports tick-interval and handler-duration percentiles. `discord-delivery`
+//! plays a tone and records the voice server, our SSRC and every RTCP packet Discord sends,
+//! with the report blocks it carries (change `discord-voice-delivery`, task 2.1).
 
 use crate::Outcome;
 use anyhow::{anyhow, Context as _};
@@ -17,13 +19,16 @@ use serenity::prelude::GatewayIntents;
 use songbird::events::{Event, EventContext, EventHandler as VoiceEventHandler, TrackEvent};
 use songbird::input::RawAdapter;
 use songbird::{CoreEvent, SerenityInit};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use symphonia_core::io::MediaSource;
 use tokio::sync::oneshot;
+use voicebro_core::audio::opus_out::{self, DeliveryShared, LossSource};
+use voicebro_core::audio::{output_pair, Frame, OutputHandle};
+use voicebro_core::discord::for_each_report_block;
 
 const FRAME_SAMPLES: usize = 1920; // 20 ms, 48 kHz stereo
 
@@ -99,6 +104,155 @@ impl MediaSource for SilenceSource {
         false
     }
     fn byte_len(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// A 440 Hz tone at 48 kHz stereo f32 that ends when `closed` is set.
+struct ToneSource {
+    closed: Arc<AtomicBool>,
+    phase: f32,
+}
+
+impl Read for ToneSource {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.closed.load(Ordering::Acquire) {
+            return Ok(0);
+        }
+        let frames = (buf.len() / 8).min(FRAME_SAMPLES / 2);
+        for frame in buf.as_chunks_mut::<8>().0.iter_mut().take(frames) {
+            let value = (self.phase * std::f32::consts::TAU).sin() * 0.2;
+            self.phase = (self.phase + 440.0 / 48_000.0).fract();
+            frame[..4].copy_from_slice(&value.to_le_bytes());
+            frame[4..].copy_from_slice(&value.to_le_bytes());
+        }
+        Ok(frames * 8)
+    }
+}
+
+impl Seek for ToneSource {
+    fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+        Err(std::io::Error::other("tone source is not seekable"))
+    }
+}
+
+impl MediaSource for ToneSource {
+    fn is_seekable(&self) -> bool {
+        false
+    }
+    fn byte_len(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// What a report block said about one SSRC.
+#[derive(Default)]
+struct BlockSummary {
+    reports: u32,
+    last_fraction_lost: u8,
+    max_fraction_lost: u8,
+    last_jitter: u32,
+}
+
+/// The voice server, our SSRC, and Discord's RTCP: packets by type, senders, report blocks.
+#[derive(Default)]
+struct DeliveryLog {
+    server: Option<String>,
+    ssrc: Option<u32>,
+    packets_by_type: BTreeMap<u8, u32>,
+    senders: BTreeMap<u32, u32>,
+    blocks: BTreeMap<u32, BlockSummary>,
+    first_report_at: Option<Duration>,
+    started: Option<Instant>,
+    /// The Opus output's expected loss after each RTCP packet.
+    expected: Vec<(u8, LossSource)>,
+}
+
+impl DeliveryLog {
+    /// Walks a compound RTCP packet: each part's type, its sender, and the report blocks of
+    /// sender (200) and receiver (201) reports (RFC 3550 6.4).
+    fn note_rtcp(&mut self, bytes: &[u8]) {
+        let mut at = 0;
+        while let Some(header) = bytes.get(at..at + 4) {
+            let count = usize::from(header[0] & 0x1f);
+            let kind = header[1];
+            // Version 2 and an RTCP type (192-223); anything else is past the payload.
+            if header[0] >> 6 != 2 || !(192..=223).contains(&kind) {
+                break;
+            }
+            let words = usize::from(u16::from_be_bytes([header[2], header[3]]));
+            let end = (at + (words + 1) * 4).min(bytes.len());
+            *self.packets_by_type.entry(kind).or_default() += 1;
+            if let Some(sender) = bytes.get(at + 4..at + 8) {
+                let sender = u32::from_be_bytes([sender[0], sender[1], sender[2], sender[3]]);
+                *self.senders.entry(sender).or_default() += 1;
+            }
+            let blocks_at = match kind {
+                200 => Some(at + 28),
+                201 => Some(at + 8),
+                _ => None,
+            };
+            if let Some(first) = blocks_at {
+                for index in 0..count {
+                    let Some(block) = bytes.get(first + index * 24..first + index * 24 + 24) else {
+                        break;
+                    };
+                    if block.len() > 24 || first + index * 24 + 24 > end {
+                        break;
+                    }
+                    let ssrc = u32::from_be_bytes([block[0], block[1], block[2], block[3]]);
+                    let jitter = u32::from_be_bytes([block[12], block[13], block[14], block[15]]);
+                    let summary = self.blocks.entry(ssrc).or_default();
+                    summary.reports += 1;
+                    summary.last_fraction_lost = block[4];
+                    summary.max_fraction_lost = summary.max_fraction_lost.max(block[4]);
+                    summary.last_jitter = jitter;
+                    if Some(ssrc) == self.ssrc && self.first_report_at.is_none() {
+                        self.first_report_at = self.started.map(|s| s.elapsed());
+                    }
+                }
+            }
+            at = end.max(at + 4);
+        }
+    }
+}
+
+/// Records the connection and every RTCP packet into a [`DeliveryLog`], and feeds report
+/// blocks about our stream to the Opus output's expected loss, as the app does.
+struct DeliveryHandler {
+    log: Arc<Mutex<DeliveryLog>>,
+    shared: Arc<DeliveryShared>,
+}
+
+#[async_trait]
+impl VoiceEventHandler for DeliveryHandler {
+    async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
+        let Ok(mut log) = self.log.lock() else {
+            return None;
+        };
+        match ctx {
+            EventContext::DriverConnect(data) | EventContext::DriverReconnect(data) => {
+                // The server's domain and our SSRC only: never the session id.
+                log.server = Some(data.server.split(':').next().unwrap_or("").to_owned());
+                log.ssrc = Some(data.ssrc);
+            }
+            EventContext::RtcpPacket(data) => {
+                // The decrypted packet without the trailing pad songbird reports.
+                let end = data.packet.len().saturating_sub(data.payload_end_pad);
+                let bytes = data.packet.get(..end).unwrap_or(&[]);
+                log.note_rtcp(bytes);
+                if let Some(ours) = log.ssrc {
+                    for_each_report_block(bytes, |block| {
+                        if block.ssrc == ours {
+                            self.shared.on_report(block.fraction_lost, block.jitter);
+                        }
+                    });
+                    let (loss, source) = self.shared.expected_loss_now();
+                    log.expected.push((loss, source));
+                }
+            }
+            _ => {}
+        }
         None
     }
 }
@@ -236,7 +390,15 @@ fn percentile(sorted: &[Duration], p: f64) -> Duration {
 
 enum Scenario {
     Lifecycle,
-    Timing { seconds: u64 },
+    Timing {
+        seconds: u64,
+    },
+    /// `opus`: the tone goes through the app's output and its own Opus encoder (songbird
+    /// passes the packets through) instead of songbird's PCM path.
+    Delivery {
+        seconds: u64,
+        opus: bool,
+    },
 }
 
 struct Handler {
@@ -477,6 +639,167 @@ impl Handler {
     }
 }
 
+impl Handler {
+    async fn run_delivery(
+        &self,
+        ctx: &Context,
+        seconds: u64,
+        opus: bool,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut details = Vec::new();
+        let manager = songbird::get(ctx)
+            .await
+            .ok_or_else(|| anyhow!("songbird is not registered"))?;
+        let log = Arc::new(Mutex::new(DeliveryLog::default()));
+        let delivery = Arc::new(DeliveryShared::default());
+        {
+            let call = manager.get_or_insert(self.env_guild);
+            let mut call = call.lock().await;
+            for event in [
+                CoreEvent::DriverConnect,
+                CoreEvent::DriverReconnect,
+                CoreEvent::RtcpPacket,
+            ] {
+                call.add_global_event(
+                    event.into(),
+                    DeliveryHandler {
+                        log: Arc::clone(&log),
+                        shared: Arc::clone(&delivery),
+                    },
+                );
+            }
+        }
+        let call = manager
+            .join(self.env_guild, self.env_channel)
+            .await
+            .map_err(|error| anyhow!("join: {error}"))?;
+        let closed = Arc::new(AtomicBool::new(false));
+        let mut pusher = None;
+        let mut output_handle = None;
+        {
+            let mut call = call.lock().await;
+            if let Some(connection) = call.current_connection() {
+                // The endpoint only (host and port); the token and session id stay out.
+                details.push(format!("voice endpoint: {}", connection.endpoint));
+            }
+            let input: songbird::input::Input = if opus {
+                let (output, source) = output_pair();
+                let input = opus_out::live_input(source, Arc::clone(&delivery))
+                    .map_err(|_| anyhow!("the Opus output could not be built"))?;
+                pusher = Some(push_tone(output.clone(), Arc::clone(&closed)));
+                output_handle = Some(output);
+                input
+            } else {
+                let source = ToneSource {
+                    closed: Arc::clone(&closed),
+                    phase: 0.0,
+                };
+                RawAdapter::new(source, 48_000, 2).into()
+            };
+            call.play_only_input(input);
+        }
+        if let Ok(mut log) = log.lock() {
+            log.started = Some(Instant::now());
+        }
+        details.push(format!(
+            "joined; playing a tone for {seconds} s through {}",
+            if opus {
+                "the app's output and Opus encoder"
+            } else {
+                "songbird's PCM path"
+            }
+        ));
+        tokio::time::sleep(Duration::from_secs(seconds)).await;
+        closed.store(true, Ordering::Release);
+        if let Some(output) = output_handle {
+            output.close();
+        }
+        if let Some(pusher) = pusher {
+            let _ = pusher.join();
+        }
+        manager
+            .remove(self.env_guild)
+            .await
+            .map_err(|error| anyhow!("remove: {error}"))?;
+        if opus {
+            let encoded = delivery.packets_encoded.load(Ordering::Relaxed);
+            let decodes = delivery.songbird_decodes.load(Ordering::Relaxed);
+            details.push(format!(
+                "Opus output: {encoded} packets encoded, {} passed through, {decodes} decoded by songbird, {} encode errors",
+                delivery.passed_through(),
+                delivery.encode_errors.load(Ordering::Relaxed)
+            ));
+            if encoded == 0 || decodes > 0 {
+                details.push("passthrough: FAIL".to_owned());
+            }
+            if let Ok(log) = log.lock() {
+                let trace: Vec<String> = log
+                    .expected
+                    .iter()
+                    .map(|(loss, source)| {
+                        format!(
+                            "{loss}{}",
+                            if *source == LossSource::Measured {
+                                ""
+                            } else {
+                                "d"
+                            }
+                        )
+                    })
+                    .collect();
+                details.push(format!(
+                    "expected loss after each RTCP packet, % (d = default): {}",
+                    trace.join(" ")
+                ));
+            }
+        }
+
+        let log = log.lock().map_err(|_| anyhow!("delivery log poisoned"))?;
+        details.push(format!(
+            "voice server: {}; our SSRC: {}",
+            log.server.as_deref().unwrap_or("?"),
+            log.ssrc.map_or("?".to_owned(), |s| s.to_string())
+        ));
+        details.push(format!(
+            "RTCP packets by type: {:?} (200 sender report, 201 receiver report, 202 SDES, 203 BYE, 205/206 feedback)",
+            log.packets_by_type
+        ));
+        details.push(format!("RTCP senders (SSRC: packets): {:?}", log.senders));
+        for (ssrc, block) in &log.blocks {
+            let ours = Some(*ssrc) == log.ssrc;
+            details.push(format!(
+                "report blocks about SSRC {ssrc}{}: {} reports, fraction lost last {:.1} % max {:.1} %, jitter last {:.1} ms",
+                if ours { " (ours)" } else { "" },
+                block.reports,
+                f64::from(block.last_fraction_lost) / 2.56,
+                f64::from(block.max_fraction_lost) / 2.56,
+                f64::from(block.last_jitter) / 48.0
+            ));
+        }
+        let about_us = log
+            .ssrc
+            .and_then(|ssrc| log.blocks.get(&ssrc))
+            .map_or(0, |block| block.reports);
+        details.push(format!(
+            "Discord reports on our stream: {} ({about_us} report blocks in {seconds} s{})",
+            if about_us > 0 { "yes" } else { "no" },
+            log.first_report_at
+                .map(|at| format!(", the first after {at:.1?}"))
+                .unwrap_or_default()
+        ));
+        let passthrough_ok = !details.iter().any(|line| line == "passthrough: FAIL");
+        details.push(format!(
+            "VERDICT {}",
+            if log.ssrc.is_some() && passthrough_ok {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+        ));
+        Ok(details)
+    }
+}
+
 /// Lets one `Arc` handler be registered for several event kinds.
 struct ArcHandler(Arc<TimingHandler>);
 
@@ -497,6 +820,7 @@ impl EventHandler for Handler {
         let outcome = match self.scenario {
             Scenario::Lifecycle => self.run_lifecycle(&ctx).await,
             Scenario::Timing { seconds } => self.run_timing(&ctx, seconds).await,
+            Scenario::Delivery { seconds, opus } => self.run_delivery(&ctx, seconds, opus).await,
         };
         let result = outcome.map(|lines| {
             details.extend(lines);
@@ -565,6 +889,42 @@ fn run(scenario: Scenario, limit: Duration) -> anyhow::Result<Outcome> {
 
 pub fn lifecycle(_args: &[String]) -> anyhow::Result<Outcome> {
     run(Scenario::Lifecycle, Duration::from_secs(60))
+}
+
+/// `discord-delivery [seconds] [--opus]`: a tone into the test channel, and what Discord
+/// reports. `--opus` plays it through the app's output and Opus encoder.
+pub fn delivery(args: &[String]) -> anyhow::Result<Outcome> {
+    let seconds = args.iter().find_map(|s| s.parse().ok()).unwrap_or(30);
+    let opus = args.iter().any(|a| a == "--opus");
+    run(
+        Scenario::Delivery { seconds, opus },
+        Duration::from_secs(seconds + 40),
+    )
+}
+
+/// Pushes a 440 Hz tone into `output` one 20 ms frame at a time, on an absolute schedule
+/// (a dedicated thread with `std::thread::sleep`, as the app's pacing loops), until
+/// `closed` is set.
+fn push_tone(output: OutputHandle, closed: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut phase = 0.0f32;
+        let mut samples = vec![0i16; FRAME_SAMPLES];
+        let start = Instant::now();
+        let mut next = Duration::ZERO;
+        while !closed.load(Ordering::Acquire) {
+            for pair in samples.as_chunks_mut::<2>().0 {
+                let value = ((phase * std::f32::consts::TAU).sin() * 0.2 * 32_767.0) as i16;
+                phase = (phase + 440.0 / 48_000.0).fract();
+                pair[0] = value;
+                pair[1] = value;
+            }
+            output.push(Frame::from_slice(&samples));
+            next += Duration::from_millis(20);
+            if let Some(wait) = next.checked_sub(start.elapsed()) {
+                std::thread::sleep(wait);
+            }
+        }
+    })
 }
 
 pub fn receive_timing(args: &[String]) -> anyhow::Result<Outcome> {

@@ -117,6 +117,12 @@ const PROBES: &[Probe] = &[
         needs: "VOICEBRO_DISCORD_TOKEN, VOICEBRO_TEST_GUILD, VOICEBRO_TEST_CHANNEL, two speakers",
         run: discord::receive_timing,
     },
+    Probe {
+        name: "discord-delivery",
+        summary: "plays a tone; logs the voice server, our SSRC and Discord's RTCP reports; args: [seconds] [--opus] (--opus: through the app's Opus encoder, counts passthrough)",
+        needs: "VOICEBRO_DISCORD_TOKEN, VOICEBRO_TEST_GUILD, VOICEBRO_TEST_CHANNEL (or probe.local.json)",
+        run: discord::delivery,
+    },
 ];
 
 fn list() {

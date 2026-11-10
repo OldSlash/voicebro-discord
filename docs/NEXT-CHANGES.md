@@ -397,6 +397,55 @@ the change named.
 - The real-channel test (the user's step).
 
 
+## 9. The voice toward a far Discord voice server (follow-up, not ordered yet)
+
+Found after `discord-voice-delivery` (2026-11-10). The user accepted that change on the near
+server; this part is for a later OpenSpec change of its own.
+
+### Evidence
+
+The probe `discord-delivery 30 --opus` plays a tone made locally (no OpenAI leg at all)
+through the app's Opus output with FEC. The user listened in the channel to two runs:
+
+| Voice server | User's ping | Heard | Discord's reports on our stream |
+|---|---|---|---|
+| `finland14057` | about 300–380 ms | broken up all the time | up to 18.8 % lost in a second; 62 feedback packets (RTCP 205, likely NACKs) |
+| `c-sin19-5f0d7996` (Singapore) | about 30 ms | clean | 0.0 % in every report; no feedback packets |
+
+Both runs passed through all 1502 packets, and our send jitter was 0.6–1.2 ms.
+
+### What this means
+
+- The packets are lost after they leave the bot, on the way to Discord's server. Discord
+  reports the loss itself.
+- A buffer on our side cannot bring back a packet lost after it was sent. The buffer that
+  could wait for late packets is in the listener's Discord client, which we do not control.
+  Our voice buffer only absorbs what comes before it: the OpenAI server's stalls.
+- Opus in-band FEC rebuilds one lost packet from the next one. It does not cover losses in
+  a row, and at almost a fifth of packets per second they come in rows.
+
+### Measure first, then pick (each one is a probe before code)
+
+1. **Does the loss depend on our bitrate?** We send 128 kbit/s stereo (songbird's rate),
+   while the Codex voice is about 50 kbit/s mono. Run the far server with the tone at
+   128 kbit/s, 64 kbit/s and a mono-coded stream at the Codex voice's rate, and compare
+   Discord's reported loss. If it falls with the rate, set the rate from the measured loss
+   too.
+2. **Can we answer Discord's NACKs?** songbird ignores RTCP 205. Find out whether Discord's
+   server takes a resent packet, and whether a resend arrives in time at a round trip of
+   300 ms or more.
+3. **Redundancy deeper than one packet**, if 1 and 2 do not help: what songbird's send path
+   allows without bypassing its DAVE encryption.
+4. **Without code:** the channel's region override in Discord. It is the user's setting, and
+   it already gives a clean voice at a near server.
+
+### Verification
+
+The same probe on the far server, with the user listening: Discord's reported loss and how
+the tone sounds, before and after, for each step taken.
+
+---
+
 ## Order
 
 Each section is one OpenSpec change on its own branch. The branches are chained (each
@@ -433,6 +482,9 @@ work so that those are built once, in the new layout.
 - 2026-11-09, the user: each section is its own OpenSpec change and branch; the branches are
   chained and merged into `main` one by one once the app works end to end. Disputed points
   are decided by the agent and reported afterwards.
+- 2026-11-10, the user: `discord-voice-delivery` is accepted on the near voice server (ping
+  about 30 ms). The breakups on a far server (ping about 300–380 ms) are a later task,
+  section 9.
 
 ### Decided by the agent (2026-11-09, to report to the user)
 
