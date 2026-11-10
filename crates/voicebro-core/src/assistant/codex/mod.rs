@@ -6,6 +6,7 @@ pub mod app_server;
 pub mod conversation;
 pub mod jitter;
 pub mod pacing;
+pub mod playout;
 pub mod rtc;
 pub mod session;
 pub mod thread;
@@ -94,6 +95,9 @@ struct Inner {
     sessions: Mutex<HashMap<u64, Arc<CodexSession>>>,
     /// Survives leaving and rejoining voice; lives as long as the app runs.
     conversations: Mutex<HashMap<u64, Arc<Mutex<Conversation>>>>,
+    /// What each guild's calls learnt about the server's lateness; the next call starts from
+    /// it. Lives as long as the app runs.
+    learned_depths: Mutex<HashMap<u64, Arc<Mutex<Option<playout::DepthEstimator>>>>>,
     account: Arc<Mutex<Option<AccountInfo>>>,
     voices: Arc<Mutex<Option<Voices>>>,
     models: Mutex<Vec<ModelInfo>>,
@@ -134,6 +138,7 @@ impl CodexAssistant {
                 server: AsyncMutex::new(None),
                 sessions: Mutex::new(HashMap::new()),
                 conversations: Mutex::new(HashMap::new()),
+                learned_depths: Mutex::new(HashMap::new()),
                 account: Arc::new(Mutex::new(None)),
                 voices: Arc::new(Mutex::new(None)),
                 models: Mutex::new(Vec::new()),
@@ -489,6 +494,17 @@ impl CodexAssistant {
         )
     }
 
+    fn learned_depth(&self, guild: u64) -> Arc<Mutex<Option<playout::DepthEstimator>>> {
+        Arc::clone(
+            self.inner
+                .learned_depths
+                .lock()
+                .expect("learned depths lock")
+                .entry(guild)
+                .or_default(),
+        )
+    }
+
     /// Stops every call and the process; waits briefly so the child is gone at exit.
     pub fn stop_blocking(&self) {
         let sessions = self
@@ -551,6 +567,7 @@ impl Assistant for CodexAssistant {
             account: Arc::clone(&self.inner.account),
             voices: Arc::clone(&self.inner.voices),
             conversation: self.conversation(guild),
+            learned_depth: self.learned_depth(guild),
             workspace: self.inner.workspace.clone(),
             ports,
             chat: Arc::clone(&self.inner.chat),
@@ -1001,6 +1018,11 @@ mod tests {
             Some("Alex".to_owned()),
             &["Alex".to_owned(), "Bob".to_owned()],
         );
+        // Every packet of the assistant's voice, for the replay stand.
+        let record = std::env::var("VOICEBRO_CODEX_RECORD").ok();
+        if let Some(path) = &record {
+            jitter::recording::start(path).expect("recording file");
+        }
         let started = Instant::now();
         session.session_wanted(true);
         while !session.ready() {
@@ -1058,6 +1080,28 @@ mod tests {
             session.session_wanted(false);
             std::thread::sleep(Duration::from_secs(2));
             assert!(!session.ready());
+            // The playout depth the first call learnt is kept for the guild. To see the next
+            // call start from what is kept, put a depth there that the prior cannot give.
+            let kept = assistant.learned_depth(1);
+            let learnt = kept
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(playout::DepthEstimator::depth_ms);
+            eprintln!("the first call learnt a voice buffer of {learnt:?} ms");
+            assert!(learnt.is_some(), "the first call left what it learnt");
+            let mut planted = playout::DepthEstimator::new();
+            let origin = Instant::now();
+            for i in 0..500usize {
+                let stall = (i / 100) as u64 * 300;
+                planted.on_packet(
+                    origin + Duration::from_millis(i as u64 * 20 + stall),
+                    (i * 960) as u32,
+                );
+            }
+            let planted_depth = planted.depth_ms();
+            assert_ne!(planted_depth, 200, "distinct from the prior");
+            *kept.lock().unwrap() = Some(planted.learned());
             let before = chat.entries().len();
             let started = Instant::now();
             session.session_wanted(true);
@@ -1069,6 +1113,15 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
             }
             eprintln!("second call ready after {:?}", started.elapsed());
+            let starting = assistant.status().calls[0]
+                .audio
+                .unwrap_or_default()
+                .depth_ms;
+            eprintln!("the second call opened with {starting} ms; {planted_depth} ms was kept");
+            assert_eq!(
+                starting, planted_depth as u64,
+                "the second call starts from what was kept"
+            );
             let answer = speak_and_wait(
                 &sender,
                 &output,
@@ -1150,6 +1203,16 @@ mod tests {
         std::thread::sleep(Duration::from_millis(500));
         stop.store(true, std::sync::atomic::Ordering::Release);
         let _ = reader.join();
+        // The whole call's audio counters (the line above was taken after the first answer).
+        let last_audio = assistant.status().calls[0].audio.unwrap_or_default();
+        eprintln!("{}", last_audio.log_line(1));
+        if let Some(path) = &record {
+            let lines = jitter::recording::finish();
+            eprintln!(
+                "recorded {lines} packets to {path}; the call received {}",
+                last_audio.packets_received
+            );
+        }
         for entry in chat.entries() {
             eprintln!(
                 "chat {} {} {:?}: {}",

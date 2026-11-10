@@ -90,7 +90,7 @@ The realtime call (WebRTC) lives inside the Rust process.
 | Wake worker: recognizers, trailing silence, phrase detectors | One dedicated OS thread per engine, 20 ms tick | Fed through a bounded channel; a full queue drops and counts. |
 | WebRTC call: ICE/DTLS/SRTP, RTP in and out | The webrtc crate's runtime tasks | Incoming RTP packets are only inserted into the call's jitter buffer; nothing is decoded here. |
 | WebRTC send: pacing and Opus encode | One dedicated OS thread per call (`voicebro-rtc-send`), 20 ms tick | Sends exactly one packet per tick: the oldest waiting frame or silence. |
-| WebRTC receive: Opus decode, FEC, concealment | Songbird's mixer thread, through `PcmSource::read` | One decode per 20 ms read, pulled from the jitter buffer. |
+| WebRTC receive: Opus decode, FEC, concealment, adaptive playout | Songbird's mixer thread, through `PcmSource::read` | Decodes up to 100 ms ahead and plays one 20 ms frame per read, stretched or shrunk by the playout; buffers allocated when the call opens. |
 | JSON-RPC to `codex app-server` | tokio task reading stdout line by line | Requests have timeouts; server-initiated requests are answered automatically. |
 | Global hotkey | The desktop app's main thread (Tauri plugin) | Only toggles the app-wide mute through `Runtime`. |
 
@@ -418,16 +418,50 @@ assistant is given, so the app never panics on an unknown engine setting.
   frames (40 ms) before sending speech again (`pacing.rs`, a pure function with its own
   tests), so a late songbird tick does not starve the next send tick.
   *Receive:* the remote track (its `on_track` fires with the first RTP packet) only inserts
-  packets into the call's jitter buffer (`jitter.rs`), keyed by extended sequence number.
-  The buffer is attached to the output as its `FrameProvider` and is pulled by songbird's
-  mixer thread: it starts playing at its target depth (3 frames, growing by one up to 8
-  after a late packet or a playout underrun, relaxing after 750 stable frames), decodes the
-  next packet, slices 10 or 40 ms packets into 20 ms frames, decodes a missing packet from
-  the next one's FEC or conceals it (at most 5 frames in a row), and plays silence without
-  concealment for a pause with contiguous sequence numbers. Late packets are dropped.
+  packets into the call's jitter buffer (`jitter.rs`, at most 50), keyed by extended
+  sequence number.
+  - **Packets** (`jitter.rs`): the buffer is attached to the output as its `FrameProvider`
+    and is pulled by songbird's mixer thread. It does the following:
+    - decodes contiguous packets up to 100 ms ahead;
+    - decodes a missing packet from the next one's FEC, or conceals it, only when its turn
+      has come (at most 5 frames in a row);
+    - drops late packets;
+    - tells a pause (the timestamps jump) from a late stream.
+  - **Playout** (`playout.rs`, change `codex-adaptive-playout`): the server sends the voice
+    unevenly and a few percent slower than real time, so the decoded samples go through an
+    adaptive playout.
+    - *Depth.* It follows the measured lateness: each packet's arrival against its RTP clock,
+      relative to the earliest of the last 2 s, in a histogram of 20 ms buckets that forgets
+      over about 15 s. The depth is the 95th percentile + 20 ms, clamped to 60–500 ms. No
+      server rate is assumed.
+    - *The start of a call.* A call starts from what the guild's previous call learnt
+      (`CallReport::learned`; the assistant keeps one per guild for the app's run, across
+      leaving and rejoining voice). The first call starts from a prior of 200 ms that fades
+      like anything learnt: back to 60 ms after about 21 s of a steady server. The call's
+      first log line, `[rtc] call opens with a voice buffer of N ms (initial | learnt in the
+      previous call)`, names the start.
+    - *Waiting for the depth.* Playback starts when that much audio is held, and again after
+      a dry spell outside speech.
+    - *Below depth − 20 ms.* A pause is lengthened by 20 ms (at most 500 ms without a new
+      packet). Voiced speech is lengthened by one pitch period only when the level is under
+      half the depth and no pause has come for 200 ms.
+    - *Above depth + 60 ms.* A pause with at least 100 ms of it ahead is shortened by 20 ms,
+      so at least 60 ms of it remain. Speech is shortened by one period only above twice the
+      depth.
+    - *Pitch.* The period comes from normalized correlation on a 4 kHz decimation (2.5–15
+      ms), refined at 48 kHz, taking the shortest lag within 0.05 of the best correlation.
+      Below a correlation of 0.5 there is no splice. Splices cross-fade over one period (5 ms
+      for pauses), at most one voiced splice per 60 ms.
+    - *Dry in speech.* Up to 3 frames are bridged with Opus concealment without consuming
+      the sequence, so the late packet plays when it arrives. Silence follows, counted as a
+      speech gap once the stream goes on.
+    - *Memory and safety.* Every buffer is allocated when the call opens. The playout code
+      has no `unwrap` and no unchecked indexing.
   *Counters* (`CallAudioCounters`): frames sent, input drops, input underruns, packets
-  received, late, concealed, concealed by FEC, playout underruns, output drops, decode
-  errors. They are part of `CallStatus.audio` while a call runs (the last call's after it)
+  received, late, concealed (lost packets only), concealed by FEC, playout underruns, output
+  drops, decode errors, pauses stretched, speech stretched, removed (ms), bridged frames,
+  speech gaps, voice buffer depth now and at its highest (ms). They are also Performance tab
+  stat cards. They are part of `CallStatus.audio` while a call runs (the last call's after it)
   and are logged in one `[rtc] call audio for guild …` line when the call closes. The
   `oai-events` channel carries the realtime server's JSON events (`session.started`,
   `input_transcript.added`, `turn.created`, `output_transcript.added`, with millisecond
@@ -717,7 +751,8 @@ Values that worked in the first version. Change them only with a measurement or 
 | Wake input | 16 kHz mono, 320 samples per 20 ms |
 | Queue toward assistant | 5 frames (~100 ms) FIFO, drop oldest; the Codex send thread prefills 2 frames |
 | Opus toward the call | mono VOIP, complexity 10, 32 kbit/s, in-band FEC, 5 % expected loss |
-| Call receive jitter buffer | target 3..8 frames, relaxes after 750 stable frames; at most 25 packets; concealment at most 5 frames in a row |
+| Call receive jitter buffer | at most 50 packets; decodes up to 100 ms ahead; concealment at most 5 frames in a row |
+| Call playout (`playout.rs`) | depth 60..500 ms from the 95th percentile of the relative arrival delay (2 s window, 20 ms buckets, forgetting 0.9983 per packet) + 20 ms; a call starts from the guild's last learnt depth, the first from a 200 ms prior (30 % of the mass at 160–180 ms); pauses first (±20 ms, at most 25 stretches without a new packet, at least 60 ms of a pause kept); speech by one pitch period below half or above twice the depth, at most once per 60 ms, correlation ≥ 0.5; bridging at most 3 frames |
 | Queue toward Discord | 8 frames (~160 ms), drop oldest; jitter target 3..8 frames (stub and tests; the call uses its own jitter buffer) |
 | Gains | input and output 0.0..4.0, default 1.0; input applied at the gate's send, output in `PcmSource` before earcons |
 | Speech threshold | peak ≥ 700 (measured on the unscaled channel audio) |
