@@ -25,7 +25,9 @@
 
 ## 5. Close-out
 
-- [ ] 5.1 Full live run in the test guild: connect, `/join`, activation phrase, question, answer, deactivation phrase, a second question in a new session referring to the first; verify the log and chat tab show the sequence and the canary instruction is followed (the user's step; the same sequence without Discord passed in the gated live call test)
+- [x] 5.1 Full live run in the test guild: connect, `/join`, activation phrase, question, answer, deactivation phrase, a second question in a new session referring to the first; verify the log and chat tab show the sequence and the canary instruction is followed (the user's step; the same sequence without Discord passed in the gated live call test)
+
+  Closed by the user's decision of 2026-11-10 at the merge into `main` (every remaining check counts as done); not verified separately as a task.
 - [x] 5.2 Update `docs/ARCHITECTURE.md` 4.5, `AGENTS.md`, `LOCAL-TESTING.md`; verify no stale statement remains
 - [x] 5.3 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`; verify all pass
 
