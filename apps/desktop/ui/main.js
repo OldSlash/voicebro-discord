@@ -17,31 +17,61 @@
     node.title = text;
   };
 
-  // ---------- Console: the app log as the file has it, forwarded as `app-log` ----------
-  const logPane = $("log");
-  const MAX_LOG_LINES = 500;
+  // ---------- Console: the app log, forwarded line by line as `app-log` ----------
+  // The lines kept from before the window opened, then every new record, in a read-only
+  // text area. The search box narrows the view to the lines that contain its text.
+  const consoleOutput = $("console-output");
+  const CONSOLE_LIMIT = 2000;
+  let consoleLines = [];
+  let consolePending = false;
+  const consoleQuery = () => $("console-search").value.trim().toLowerCase();
+  function visibleConsoleLines() {
+    const query = consoleQuery();
+    if (!query) return consoleLines;
+    return consoleLines.filter((line) => line.toLowerCase().includes(query));
+  }
+  function renderConsole() {
+    consolePending = false;
+    const visible = visibleConsoleLines();
+    const top = consoleOutput.scrollTop;
+    consoleOutput.value = visible.join("\n");
+    const found = consoleQuery() ? visible.length : 0;
+    $("console-match-count").textContent = found === 1 ? "1 match" : `${found} matches`;
+    // With auto-scroll the view follows new lines; without it, it stays where it was.
+    consoleOutput.scrollTop = $("console-autoscroll").checked ? consoleOutput.scrollHeight : top;
+  }
   function appendLogLine(line) {
-    logPane.textContent += `${line}\n`;
-    const lines = logPane.textContent.split("\n");
-    if (lines.length > MAX_LOG_LINES + 1) {
-      logPane.textContent = lines.slice(lines.length - MAX_LOG_LINES - 1).join("\n");
+    consoleLines.push(line);
+    const excess = consoleLines.length - CONSOLE_LIMIT;
+    if (excess > 0) consoleLines = consoleLines.slice(excess);
+    if (!consolePending) {
+      consolePending = true;
+      requestAnimationFrame(renderConsole);
     }
-    if ($("console-autoscroll").checked) logPane.scrollTop = logPane.scrollHeight;
   }
   // The few messages the window itself produces.
   function appendLog(line) {
     appendLogLine(`[window][${new Date().toLocaleTimeString()}] ${line}`);
   }
-  $("console-clear").addEventListener("click", () => {
-    logPane.textContent = "";
-  });
-  $("console-copy").addEventListener("click", async () => {
+  async function copyText(text, what) {
     try {
-      await navigator.clipboard.writeText(logPane.textContent);
-      appendLog("console copied to the clipboard");
+      await navigator.clipboard.writeText(text);
+      appendLog(`${what} copied to the clipboard`);
     } catch (error) {
       appendLog(`copy failed: ${error}`);
     }
+  }
+  $("console-search").addEventListener("input", renderConsole);
+  $("console-autoscroll").addEventListener("change", renderConsole);
+  // Clear empties this view only; the log file keeps every line.
+  $("console-clear").addEventListener("click", () => {
+    consoleLines = [];
+    renderConsole();
+  });
+  $("console-copy").addEventListener("click", () => copyText(visibleConsoleLines().join("\n"), "console"));
+  $("console-copy-selection").addEventListener("click", () => {
+    const { selectionStart: from, selectionEnd: to, value } = consoleOutput;
+    if (to > from) copyText(value.slice(from, to), "selection");
   });
 
   // ---------- Tabs: one view at a time; each remembers how far it was scrolled ----------
@@ -450,69 +480,81 @@
     await refresh();
   });
 
-  // ---------- Codex chat ----------
-  const chatPane = $("chat");
-  let chatEntries = [];
-  const CHAT_GROUPS = {
-    context: ["context"],
-    agent: ["task", "agent", "reasoning", "tool"],
-    system: ["system"],
+  // ---------- Codex chat (ported from the first version's chat view) ----------
+  const chatLog = $("chat-log");
+  const CHAT_LIMIT = 600;
+  const CHAT_KIND_LABELS = {
+    assistant: "GPT",
+    context: "Context → GPT",
+    task: "Task → Codex",
+    agent: "Codex",
+    reasoning: "Codex thinking",
+    tool: "Codex tool",
+    system: "Call",
+    error: "Error",
   };
+  let chatEntries = [];
   function chatVisible(entry) {
-    for (const [group, kinds] of Object.entries(CHAT_GROUPS)) {
-      if (kinds.includes(entry.kind) && !$(`chat-filter-${group}`).checked) return false;
-    }
+    if (entry.kind === "context") return $("chat-filter-context").checked;
+    if (["task", "agent", "reasoning", "tool"].includes(entry.kind)) return $("chat-filter-agent").checked;
+    if (entry.kind === "system") return $("chat-filter-system").checked;
     return true;
   }
   function chatWho(entry) {
-    return entry.who || (entry.kind === "user" ? "user" : entry.kind);
+    if (entry.kind === "user") return entry.who || "Voice channel";
+    return CHAT_KIND_LABELS[entry.kind] || entry.kind;
   }
-  function chatLineText(entry) {
-    return `${entry.at} [${entry.guild_id}] ${chatWho(entry)}: ${entry.text}`;
+  function chatElement(entry) {
+    const row = document.createElement("div");
+    row.className = `chat-entry kind-${entry.kind}`;
+    const time = document.createElement("span");
+    time.className = "chat-time";
+    time.textContent = entry.at;
+    const who = document.createElement("span");
+    who.className = "chat-who";
+    who.textContent = chatWho(entry);
+    who.title = who.textContent;
+    const body = document.createElement("div");
+    body.className = "chat-text";
+    body.textContent = entry.text;
+    row.append(time, who, body);
+    return row;
+  }
+  function scrollChatToEnd(force) {
+    if (force || $("chat-autoscroll").checked) chatLog.scrollTop = chatLog.scrollHeight;
   }
   function renderChat() {
-    chatPane.innerHTML = "";
-    for (const entry of chatEntries) {
-      if (!chatVisible(entry)) continue;
-      const line = document.createElement("div");
-      line.className = `chat-entry kind-${entry.kind}`;
-      const at = document.createElement("span");
-      at.className = "chat-time";
-      at.textContent = entry.at;
-      const who = document.createElement("span");
-      who.className = "chat-who";
-      who.textContent = chatWho(entry);
-      const text = document.createElement("span");
-      text.className = "chat-text";
-      text.textContent = entry.text;
-      line.append(at, who, text);
-      chatPane.appendChild(line);
-    }
-    if (chatPane.childElementCount === 0) {
+    const visible = chatEntries.filter(chatVisible);
+    if (!visible.length) {
       const empty = document.createElement("div");
       empty.className = "empty-state";
-      empty.textContent = "The conversation appears here once a session starts.";
-      chatPane.appendChild(empty);
+      empty.textContent = "Nothing yet. Everything heard and said in voice calls appears here, together with what Codex does for handed-off tasks.";
+      chatLog.replaceChildren(empty);
+      return;
     }
-    if ($("chat-autoscroll").checked) chatPane.scrollTop = chatPane.scrollHeight;
+    chatLog.replaceChildren(...visible.map(chatElement));
+    scrollChatToEnd(true);
   }
   function addChatEntry(entry) {
+    if (!entry || chatEntries.some((existing) => existing.id === entry.id)) return;
     chatEntries.push(entry);
-    if (chatEntries.length > 600) chatEntries = chatEntries.slice(chatEntries.length - 600);
-    renderChat();
+    if (chatEntries.length > CHAT_LIMIT) chatEntries.splice(0, chatEntries.length - CHAT_LIMIT);
+    if (!chatVisible(entry)) return;
+    chatLog.querySelector(".empty-state")?.remove();
+    chatLog.append(chatElement(entry));
+    while (chatLog.childElementCount > CHAT_LIMIT) chatLog.firstElementChild?.remove();
+    scrollChatToEnd(false);
+  }
+  function chatAsText() {
+    return chatEntries
+      .filter(chatVisible)
+      .map((entry) => `[${entry.at}] ${chatWho(entry)}: ${entry.text}`)
+      .join("\n");
   }
   ["chat-filter-context", "chat-filter-agent", "chat-filter-system"].forEach((id) => {
     $(id).addEventListener("change", renderChat);
   });
-  $("chat-copy").addEventListener("click", async () => {
-    const text = chatEntries.filter(chatVisible).map(chatLineText).join("\n");
-    try {
-      await navigator.clipboard.writeText(text);
-      appendLog("chat copied to the clipboard");
-    } catch (error) {
-      appendLog(`copy failed: ${error}`);
-    }
-  });
+  $("chat-copy").addEventListener("click", () => copyText(chatAsText(), "chat"));
   $("chat-open-folder").addEventListener("click", async () => {
     try {
       appendLog(`opened ${await invoke("open_log_folder")}`);
@@ -771,13 +813,16 @@
       await listen("app-log", ({ payload }) => appendLogLine(payload));
       try {
         const history = await invoke("log_history");
-        logPane.textContent = history.length ? `${history.join("\n")}\n` : "";
-        logPane.scrollTop = logPane.scrollHeight;
+        // Lines that arrived while the history was on its way are kept after it.
+        const kept = new Set(history);
+        consoleLines = history.concat(consoleLines.filter((line) => !kept.has(line)));
+        renderConsole();
       } catch (error) {
         appendLog(`log history failed: ${error}`);
       }
+      // `event` names the event; a chat entry's own `kind` is the entry's kind.
       await listen("app-event", ({ payload }) => {
-        switch (payload.kind) {
+        switch (payload.event) {
           // Log lines arrive through `app-log` with everything else the log file gets.
           case "log":
             break;

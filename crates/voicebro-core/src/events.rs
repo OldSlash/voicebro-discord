@@ -6,10 +6,11 @@
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-/// Something the UI may want to show. Later changes add variants (Discord, gate, wake,
-/// assistant, chat, asset downloads) next to these.
+/// Something the UI may want to show. Serialized with the variant name in `event`, a key no
+/// payload uses (a chat entry has its own `kind`, which an `event`-less tag would collide
+/// with and overwrite in the window).
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "event", rename_all = "snake_case")]
 pub enum AppEvent {
     /// A human-readable line for the UI log pane.
     Log { line: String },
@@ -83,14 +84,88 @@ mod tests {
     use super::*;
 
     #[test]
-    fn events_reach_subscribers_and_serialize_with_a_kind_tag() {
+    fn events_reach_subscribers_and_serialize_with_an_event_tag() {
         let bus = EventBus::new(8);
         let mut receiver = bus.subscribe();
         bus.publish(AppEvent::MuteChanged { muted: true });
         let event = receiver.try_recv().expect("event delivered");
         let json = serde_json::to_value(&event).expect("serializes");
-        assert_eq!(json["kind"], "mute_changed");
+        assert_eq!(json["event"], "mute_changed");
         assert_eq!(json["muted"], true);
+    }
+
+    /// Every variant carries `event` exactly once, holding its name; no payload uses the
+    /// key. A chat entry keeps its own `kind`.
+    #[test]
+    fn no_payload_collides_with_the_event_tag() {
+        use crate::assistant::chat_log::ChatEntry;
+        let chat = ChatEntry {
+            id: 1,
+            guild_id: "42".to_owned(),
+            at: "12:00:00".to_owned(),
+            kind: "agent",
+            who: None,
+            text: "Searching the web".to_owned(),
+        };
+        let gate = crate::gate::GateStatus {
+            guild_id: "42".to_owned(),
+            mode: crate::settings::SessionMode::WakeWord,
+            muted: false,
+            active: false,
+            listening_for_wake_word: true,
+            session_wanted: false,
+            assistant_ready: false,
+            last_wake_phrase: None,
+            replay_held: 0,
+            counters: Default::default(),
+        };
+        let all = [
+            (
+                "log",
+                AppEvent::Log {
+                    line: "x".to_owned(),
+                },
+            ),
+            ("mute_changed", AppEvent::MuteChanged { muted: true }),
+            ("settings_changed", AppEvent::SettingsChanged),
+            (
+                "secret_changed",
+                AppEvent::SecretChanged {
+                    name: "discord_token".to_owned(),
+                    is_set: true,
+                },
+            ),
+            (
+                "connection_error",
+                AppEvent::ConnectionError {
+                    source: "codex".to_owned(),
+                    message: Some("x".to_owned()),
+                },
+            ),
+            ("discord", AppEvent::Discord(Box::default())),
+            ("wake", AppEvent::Wake(Box::default())),
+            ("gate", AppEvent::Gate(Box::new(gate))),
+            ("hotkey", AppEvent::Hotkey(Box::default())),
+            ("chat", AppEvent::Chat(Box::new(chat))),
+            ("assistant", AppEvent::Assistant(Box::default())),
+            (
+                "assets",
+                AppEvent::Assets {
+                    label: "Vosk model".to_owned(),
+                    percent: 40,
+                    error: None,
+                },
+            ),
+        ];
+        for (name, event) in all {
+            let text = serde_json::to_string(&event).unwrap();
+            assert_eq!(text.matches("\"event\":").count(), 1, "{name}: {text}");
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(json["event"], name, "{text}");
+            if name == "chat" {
+                assert_eq!(json["kind"], "agent", "the entry keeps its kind");
+            }
+        }
     }
 
     #[test]

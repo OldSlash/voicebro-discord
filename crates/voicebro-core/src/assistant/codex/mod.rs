@@ -946,7 +946,10 @@ mod tests {
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let events = EventBus::new(1024);
+        let events = EventBus::new(4096);
+        // What the window would receive: every chat event, serialized as the bridge does,
+        // with the time it arrived.
+        let mut window = events.subscribe();
         let errors = Arc::new(ConnectionErrors::new(events.clone()));
         let mut settings = Settings::default();
         settings.codex.instructions = "You are a voice assistant in a Discord voice channel. Answer briefly, in one or two sentences, in the speaker's language. Start every reply with the English word Banana.".to_owned();
@@ -1104,6 +1107,34 @@ mod tests {
                 entry.at, entry.kind, entry.who, entry.text
             );
         }
+        // Every chat entry reached the event bus as a `chat` event that keeps its kind.
+        let mut sent = Vec::new();
+        while let Ok(event) = window.try_recv() {
+            if let AppEvent::Chat(_) = &event {
+                let json = serde_json::to_value(&event).unwrap();
+                assert_eq!(json["event"], "chat", "{json}");
+                sent.push((
+                    json["kind"].as_str().unwrap_or("").to_owned(),
+                    json["id"].clone(),
+                ));
+            }
+        }
+        let recorded: Vec<(String, Value)> = chat
+            .entries()
+            .iter()
+            .map(|entry| (entry.kind.to_owned(), json!(entry.id)))
+            .collect();
+        eprintln!(
+            "chat events sent: {}, kinds {:?}",
+            sent.len(),
+            sent.iter()
+                .map(|(kind, _)| kind.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            sent, recorded,
+            "each recorded entry was sent once, with its kind"
+        );
         assistant.stop_blocking();
     }
 }
