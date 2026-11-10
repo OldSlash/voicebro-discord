@@ -82,6 +82,23 @@ fn capabilities(state: State<'_, AppState>) -> Capabilities {
     state.runtime.assistant().capabilities()
 }
 
+/// The wake-model catalog for the Settings tab.
+#[tauri::command]
+fn wake_models() -> Vec<Value> {
+    voicebro_core::wake::catalog::entries()
+        .iter()
+        .map(|entry| {
+            json!({
+                "id": entry.id,
+                "engine": entry.engine,
+                "language": entry.language,
+                "display_name": entry.display_name,
+                "license": entry.license,
+            })
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn chat_log(state: State<'_, AppState>) -> Vec<ChatEntry> {
     state
@@ -339,6 +356,7 @@ fn main() {
             codex_check,
             codex_models,
             capabilities,
+            wake_models,
             chat_log,
             open_log_folder
         ])

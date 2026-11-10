@@ -460,10 +460,29 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
   file, two old files kept, under the data directory.
 - `build.rs` embeds the Common-Controls v6 manifest into every linked target and stamps the
   build (version plus short git hash plus date) for the UI.
-- UI: static HTML, CSS and JS with `withGlobalTauri: true`. Tabs: Status, Settings, Chat. The
-  status shows the engine, the assistant state (waiting / listening / muted), the wake
-  engine state and missing vocabulary, the Codex account, the hotkey, the build stamp, and
-  buttons Mute GPT, Sign in to Codex, Check Codex.
+- UI: static HTML, CSS and JS with `withGlobalTauri: true`, no framework or bundler. Tabs:
+  Status, Settings, Chat, plus the log pane and the build stamp.
+  - Status renders from one `status` snapshot (`renderStatus`): Discord state and bot user,
+    voice channels with participants, mute, the gates (session state, assistant ready, last
+    phrase, held frames), the hotkey, the Codex account, process and calls, the token, the
+    wake engine state with download progress and unknown words, the data directory,
+    connection errors, and the counters behind a details toggle. Events trigger a refresh;
+    a 5 s timer backs it up. Buttons: Connect, Disconnect, Mute, Sign in to Codex, Check.
+  - Settings has one control per field with its JSON path (`data-path`) and kind (string,
+    number, bool, list). Each Save sends one `save_settings` patch; a rejected value shows
+    the validation message at the field and the stored value stays. Lists: the wake engine
+    and model come from `wake_models` (the catalog); the Codex model, reasoning effort and
+    voice are selects filled from `capabilities` when the engine has them and text inputs
+    with a datalist otherwise; the effort list follows the chosen model. Phrases are one
+    per line or comma-separated and are shown trimmed and lower-cased after save; the words
+    the model does not know are listed under the field.
+  - Chat lists the chat log entries (pulled at start, then one event per entry) with
+    filters (names and notes, agent work, call events), auto-scroll, Copy and Open log
+    folder.
+  - Commands: `get_settings`, `save_settings`, `set_secret`, `clear_secret`, `status`,
+    `app_info`, `set_muted`, `toggle_mute`, `discord_connect`, `discord_disconnect`,
+    `codex_sign_in`, `codex_check`, `codex_models`, `capabilities`, `wake_models`,
+    `chat_log`, `open_log_folder`.
 - Window lifecycle: destroying the main window exits the app, which stops `codex.exe`.
 
 ### 4.9 Probe binary (`apps/probe`)

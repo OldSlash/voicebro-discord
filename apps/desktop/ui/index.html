@@ -98,6 +98,114 @@
           </div>
           <p class="hint field-message" data-for="idle-timeout"></p>
         </div>
+        <div class="field">
+          <label class="row"><input id="earcons" type="checkbox" data-path="session.earcons" data-kind="bool"> Play a short tone when a session starts and ends</label>
+          <p class="hint field-message" data-for="earcons"></p>
+        </div>
+        <div class="field">
+          <label for="earcon-volume">Tone volume (0 to 1)</label>
+          <div class="row">
+            <input id="earcon-volume" type="number" min="0" max="1" step="0.01" data-path="session.earcon_volume" data-kind="number">
+            <button class="save" data-for="earcon-volume">Save</button>
+          </div>
+          <p class="hint field-message" data-for="earcon-volume"></p>
+        </div>
+
+        <h3>Wake word</h3>
+        <div class="field">
+          <label for="wake-engine">Engine</label>
+          <div class="row">
+            <select id="wake-engine" data-path="wake.engine" data-kind="string"></select>
+            <button class="save" data-for="wake-engine">Save</button>
+          </div>
+          <p class="hint field-message" data-for="wake-engine"></p>
+        </div>
+        <div class="field">
+          <label for="wake-model">Model (downloaded on first use)</label>
+          <div class="row">
+            <select id="wake-model" data-path="wake.model" data-kind="string"></select>
+            <button class="save" data-for="wake-model">Save</button>
+          </div>
+          <p class="hint field-message" data-for="wake-model"></p>
+        </div>
+        <div class="field">
+          <label for="activation-phrases">Activation phrases (one per line or comma-separated; words the model knows)</label>
+          <div class="row">
+            <textarea id="activation-phrases" rows="3" spellcheck="false" data-path="wake.activation_phrases" data-kind="list"></textarea>
+            <button class="save" data-for="activation-phrases">Save</button>
+          </div>
+          <p class="hint field-message" data-for="activation-phrases"></p>
+          <p class="hint" id="unknown-words"></p>
+        </div>
+        <div class="field">
+          <label for="deactivation-phrases">Deactivation phrases (empty: sessions end on the idle timeout only)</label>
+          <div class="row">
+            <textarea id="deactivation-phrases" rows="2" spellcheck="false" data-path="wake.deactivation_phrases" data-kind="list"></textarea>
+            <button class="save" data-for="deactivation-phrases">Save</button>
+          </div>
+          <p class="hint field-message" data-for="deactivation-phrases"></p>
+        </div>
+
+        <h3>Assistant</h3>
+        <div class="field">
+          <label for="speaker-labels">Speaker names</label>
+          <div class="row">
+            <select id="speaker-labels" data-path="assistant.speaker_labels" data-kind="string">
+              <option value="start">At call start: who called and who is in the channel</option>
+              <option value="changes">Also a note when another person starts talking</option>
+              <option value="off">Off: no names reach the model</option>
+            </select>
+            <button class="save" data-for="speaker-labels">Save</button>
+          </div>
+          <p class="hint field-message" data-for="speaker-labels"></p>
+        </div>
+        <div class="field">
+          <label for="codex-executable">Codex executable (empty: found automatically)</label>
+          <div class="row">
+            <input id="codex-executable" type="text" spellcheck="false" placeholder="C:\path\to\codex.exe" data-path="codex.executable" data-kind="string">
+            <button class="save" data-for="codex-executable">Save</button>
+          </div>
+          <p class="hint field-message" data-for="codex-executable"></p>
+        </div>
+        <div class="field">
+          <label for="codex-model">Model (empty: the account default)</label>
+          <div class="row">
+            <select id="codex-model-select" class="listed" data-for="codex-model"></select>
+            <input id="codex-model" type="text" spellcheck="false" list="codex-model-list" data-path="codex.model" data-kind="string">
+            <datalist id="codex-model-list"></datalist>
+            <button class="save" data-for="codex-model">Save</button>
+          </div>
+          <p class="hint">The model and the reasoning effort apply only to the work the voice model delegates to the Codex agent; the voice itself is the realtime model.</p>
+          <p class="hint field-message" data-for="codex-model"></p>
+        </div>
+        <div class="field">
+          <label for="codex-effort">Reasoning effort (empty: the model default)</label>
+          <div class="row">
+            <select id="codex-effort-select" class="listed" data-for="codex-effort"></select>
+            <input id="codex-effort" type="text" spellcheck="false" list="codex-effort-list" data-path="codex.reasoning_effort" data-kind="string">
+            <datalist id="codex-effort-list"></datalist>
+            <button class="save" data-for="codex-effort">Save</button>
+          </div>
+          <p class="hint field-message" data-for="codex-effort"></p>
+        </div>
+        <div class="field">
+          <label for="codex-voice">Voice</label>
+          <div class="row">
+            <select id="codex-voice-select" class="listed" data-for="codex-voice"></select>
+            <input id="codex-voice" type="text" spellcheck="false" list="codex-voice-list" data-path="codex.voice" data-kind="string">
+            <datalist id="codex-voice-list"></datalist>
+            <button class="save" data-for="codex-voice">Save</button>
+          </div>
+          <p class="hint field-message" data-for="codex-voice"></p>
+        </div>
+        <div class="field">
+          <label for="codex-instructions">Instructions for the assistant (sent at the start of every call; empty sends nothing)</label>
+          <div class="row">
+            <textarea id="codex-instructions" rows="5" data-path="codex.instructions" data-kind="string"></textarea>
+            <button class="save" data-for="codex-instructions">Save</button>
+          </div>
+          <p class="hint field-message" data-for="codex-instructions"></p>
+        </div>
 
         <h3>Hotkey</h3>
         <div class="field">

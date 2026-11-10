@@ -45,13 +45,143 @@
     switch (control.dataset.kind) {
       case "number": return Number(control.value);
       case "bool": return control.checked;
+      case "list":
+        return control.value
+          .split(/[\n,]/)
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0);
       default: return control.value;
     }
   }
   function setControlValue(control, value) {
     if (document.activeElement === control) return;
     if (control.dataset.kind === "bool") control.checked = Boolean(value);
+    else if (control.dataset.kind === "list") control.value = Array.isArray(value) ? value.join("\n") : "";
     else control.value = value == null ? "" : value;
+    // A listed field mirrors its text input in the select when the select has options.
+    const select = document.querySelector(`select.listed[data-for="${control.id}"]`);
+    if (select && select.options.length > 0) {
+      const text = control.value;
+      if (![...select.options].some((option) => option.value === text)) {
+        const option = document.createElement("option");
+        option.value = text;
+        option.textContent = text ? `${text} (not in the current list)` : "(default)";
+        select.appendChild(option);
+      }
+      select.value = text;
+    }
+  }
+
+  // Listed fields: a select from the live list when there is one, the text input otherwise.
+  function fillListed(id, options) {
+    const input = $(id);
+    const select = document.querySelector(`select.listed[data-for="${id}"]`);
+    const datalist = $(`${id}-list`);
+    datalist.innerHTML = "";
+    for (const option of options) {
+      const node = document.createElement("option");
+      node.value = option.value;
+      datalist.appendChild(node);
+    }
+    select.innerHTML = "";
+    if (options.length === 0) {
+      select.style.display = "none";
+      input.style.display = "";
+      return;
+    }
+    for (const option of options) {
+      const node = document.createElement("option");
+      node.value = option.value;
+      node.textContent = option.label;
+      select.appendChild(node);
+    }
+    select.style.display = "";
+    input.style.display = "none";
+    const current = input.value;
+    if (![...select.options].some((option) => option.value === current)) {
+      const node = document.createElement("option");
+      node.value = current;
+      node.textContent = current ? `${current} (not in the current list)` : "(default)";
+      select.appendChild(node);
+    }
+    select.value = current;
+  }
+  document.querySelectorAll("select.listed").forEach((select) => {
+    select.addEventListener("change", () => {
+      const input = $(select.dataset.for);
+      input.value = select.value;
+      if (select.dataset.for === "codex-model") applyEffortList();
+    });
+  });
+
+  let wakeModels = [];
+  let capabilities = { models: [], voices: [] };
+  function applyWakeLists(settings) {
+    const engineSelect = $("wake-engine");
+    const modelSelect = $("wake-model");
+    const engines = [...new Set(wakeModels.map((model) => model.engine))];
+    const fill = (select, items, current) => {
+      select.innerHTML = "";
+      for (const item of items) {
+        const option = document.createElement("option");
+        option.value = item.value;
+        option.textContent = item.label;
+        select.appendChild(option);
+      }
+      if (current && ![...select.options].some((option) => option.value === current)) {
+        const option = document.createElement("option");
+        option.value = current;
+        option.textContent = `${current} (not in the catalog)`;
+        select.appendChild(option);
+      }
+      if (document.activeElement !== select) select.value = current || "";
+    };
+    fill(engineSelect, engines.map((engine) => ({ value: engine, label: engine })), settings?.wake?.engine);
+    fill(
+      modelSelect,
+      wakeModels.map((model) => ({ value: model.id, label: `${model.display_name} [${model.language}, ${model.license}]` })),
+      settings?.wake?.model,
+    );
+  }
+  function applyEffortList() {
+    const modelId = $("codex-model").value;
+    const model = capabilities.models.find((entry) => entry.id === modelId)
+      || capabilities.models.find((entry) => entry.is_default);
+    const efforts = model ? model.reasoning_efforts : [];
+    const options = [{ value: "", label: model?.default_reasoning_effort ? `(default: ${model.default_reasoning_effort})` : "(default)" }]
+      .concat(efforts.map((effort) => ({ value: effort, label: effort })));
+    fillListed("codex-effort", efforts.length ? options : []);
+  }
+  function applyCodexLists() {
+    const models = capabilities.models || [];
+    fillListed(
+      "codex-model",
+      models.length
+        ? [{ value: "", label: "(account default)" }].concat(
+            models.map((model) => ({
+              value: model.id,
+              label: `${model.display_name}${model.is_default ? " (default)" : ""} [${model.reasoning_efforts.join(", ") || "no efforts"}]`,
+            })),
+          )
+        : [],
+    );
+    applyEffortList();
+    const voices = capabilities.voices || [];
+    fillListed("codex-voice", voices.map((voice) => ({ value: voice, label: voice + (voice === capabilities.default_voice ? " (default)" : "") })));
+  }
+  async function loadLists() {
+    if (!invoke) return;
+    try {
+      wakeModels = await invoke("wake_models");
+    } catch (error) {
+      appendLog(`wake_models failed: ${error}`);
+    }
+    try {
+      capabilities = await invoke("capabilities");
+    } catch (error) {
+      appendLog(`capabilities failed: ${error}`);
+    }
+    applyCodexLists();
   }
   function fieldMessage(id, text, isError) {
     const node = document.querySelector(`.field-message[data-for="${id}"]`);
@@ -256,9 +386,14 @@
     }
     $("status-counters").textContent = JSON.stringify(counters, null, 2);
 
+    applyWakeLists(status.settings);
     document.querySelectorAll("[data-path]").forEach((control) => {
       setControlValue(control, readByPath(status.settings, control.dataset.path));
     });
+    const unknown = (status.wake || {}).unknown_words || [];
+    $("unknown-words").textContent = unknown.length
+      ? `Not in the model vocabulary (these phrases are ignored): ${unknown.join(", ")}`
+      : "";
   }
 
   async function refresh() {
@@ -347,11 +482,14 @@
           case "chat":
             addChatEntry(payload);
             break;
+          case "assistant":
+            refresh();
+            loadLists();
+            break;
           case "discord":
           case "wake":
           case "gate":
           case "hotkey":
-          case "assistant":
           case "settings_changed":
           case "secret_changed":
           case "connection_error":
@@ -362,6 +500,7 @@
         }
       });
     }
+    await loadLists();
     await refresh();
     await loadChat();
     setInterval(refresh, 5000);
