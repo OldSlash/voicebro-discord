@@ -35,6 +35,22 @@ const CHATTY_CRATES: &[&str] = &[
     "tao",
     "wry",
 ];
+/// Modules quieter still: songbird's receive task warns about every RTCP packet it cannot
+/// decrypt (about 700 lines in 2.5 minutes of a DAVE call), which carries no action.
+const QUIET_MODULES: &[&str] = &["songbird::driver::tasks::udp_rx"];
+
+/// Every per-module level the log uses, most specific last.
+fn log_levels() -> Vec<(&'static str, log::LevelFilter)> {
+    CHATTY_CRATES
+        .iter()
+        .map(|name| (*name, log::LevelFilter::Warn))
+        .chain(
+            QUIET_MODULES
+                .iter()
+                .map(|name| (*name, log::LevelFilter::Error)),
+        )
+        .collect()
+}
 
 struct AppState {
     runtime: Arc<Runtime>,
@@ -243,8 +259,8 @@ fn log_plugin(data_dir: &std::path::Path) -> tauri::plugin::TauriPlugin<tauri::W
         .max_file_size(LOG_FILE_LIMIT)
         .rotation_strategy(RotationStrategy::KeepSome(LOG_FILES_KEPT))
         .timezone_strategy(TimezoneStrategy::UseLocal);
-    for name in CHATTY_CRATES {
-        builder = builder.level_for(*name, log::LevelFilter::Warn);
+    for (name, level) in log_levels() {
+        builder = builder.level_for(name, level);
     }
     builder.build()
 }
@@ -369,4 +385,25 @@ fn main() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn songbird_receive_warnings_are_filtered_and_its_errors_kept() {
+        let levels = log_levels();
+        let udp_rx = levels
+            .iter()
+            .find(|(name, _)| *name == "songbird::driver::tasks::udp_rx")
+            .expect("the receive task has its own level");
+        assert_eq!(udp_rx.1, log::LevelFilter::Error);
+        let songbird = levels.iter().find(|(name, _)| *name == "songbird").unwrap();
+        assert_eq!(
+            songbird.1,
+            log::LevelFilter::Warn,
+            "the rest of songbird stays at Warn"
+        );
+    }
 }

@@ -142,18 +142,17 @@ impl Voices {
 
     /// The voice to use: the configured one when the account has it, else the default.
     /// Returns `(voice, fell_back)`; `None` when nothing is known.
+    /// `None` means "send no voice": the server picks its default. An empty setting asks for
+    /// that; an unavailable voice falls back to it (`fell_back` true).
     pub fn choose(&self, configured: &str) -> (Option<String>, bool) {
         let configured = configured.trim();
-        if self.all.is_empty() {
-            return (
-                (!configured.is_empty()).then(|| configured.to_owned()),
-                false,
-            );
+        if configured.is_empty() {
+            return (None, false);
         }
-        if self.all.iter().any(|voice| voice == configured) {
+        if self.all.is_empty() || self.all.iter().any(|voice| voice == configured) {
             return (Some(configured.to_owned()), false);
         }
-        (self.default.clone(), true)
+        (None, true)
     }
 }
 
@@ -199,7 +198,16 @@ mod tests {
         assert_eq!(voices.all, vec!["juniper", "cove", "maple"]);
         assert_eq!(voices.default.as_deref(), Some("juniper"));
         assert_eq!(voices.choose("cove"), (Some("cove".to_owned()), false));
-        assert_eq!(voices.choose("cedar"), (Some("juniper".to_owned()), true));
+        assert_eq!(
+            voices.choose("cedar"),
+            (None, true),
+            "unavailable: server default"
+        );
+        assert_eq!(
+            voices.choose(""),
+            (None, false),
+            "empty: server default, no fallback"
+        );
         assert_eq!(
             Voices::default().choose("cedar"),
             (Some("cedar".to_owned()), false)

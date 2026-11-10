@@ -7,7 +7,7 @@ use super::app_server::AppServer;
 use super::conversation::{
     call_instructions, call_names_note, speaker_note, CallContext, Conversation,
 };
-use super::rtc::{CallSlot, RtcCall};
+use super::rtc::{CallReport, CallSlot, RtcCall};
 use super::thread::{open_thread, ThreadSettings};
 use super::CodexConfig;
 use crate::assistant::chat_log::{agent_item_line, ChatLog};
@@ -26,6 +26,8 @@ use tokio::sync::oneshot;
 const REALTIME_START_TIMEOUT: Duration = Duration::from_secs(20);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MAX_RESTARTS: u32 = 3;
+/// How the log names the voice when the call is started without one.
+const SERVER_DEFAULT_VOICE: &str = "server default";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Realtime {
@@ -62,6 +64,28 @@ fn truncate(text: &str, maximum: usize) -> String {
     format!("{}…", text.chars().take(maximum).collect::<String>())
 }
 
+/// `thread/realtime/start` for a WebRTC call, before the conversation is added. `voice`
+/// `None` leaves the field out, so the server uses its default voice.
+pub fn realtime_start_params(
+    thread_id: &str,
+    prompt: &str,
+    offer: &str,
+    voice: Option<String>,
+) -> Value {
+    let mut params = json!({
+        "threadId": thread_id,
+        "outputModality": "audio",
+        "version": "v3",
+        "prompt": prompt,
+        "includeStartupContext": false,
+        "transport": { "type": "webrtc", "sdp": offer },
+    });
+    if let Some(voice) = voice {
+        params["voice"] = json!(voice);
+    }
+    params
+}
+
 pub struct CodexSession {
     me: Weak<Self>,
     guild: u64,
@@ -77,6 +101,8 @@ pub struct CodexSession {
     ports: AudioPorts,
     state: Mutex<SessionState>,
     rtc: CallSlot,
+    /// Where each call of this session reports its counters when it ends.
+    report: CallReport,
     pending_answer: Mutex<Option<oneshot::Sender<Result<String, String>>>>,
     chat: Arc<ChatLog>,
     events: EventBus,
@@ -131,6 +157,7 @@ impl CodexSession {
                 last_assistant_text: None,
             }),
             rtc: Mutex::new(None),
+            report: CallReport::new(parts.guild),
             pending_answer: Mutex::new(None),
             chat: parts.chat,
             events: parts.events,
@@ -185,10 +212,18 @@ impl CodexSession {
 
     pub fn status(&self) -> CallStatus {
         let state = self.lock();
+        let rtc = self.rtc();
+        // The running call's counters, else the last ended call's.
+        let audio = rtc
+            .as_ref()
+            .filter(|rtc| !rtc.is_closed())
+            .map(|rtc| rtc.counters())
+            .or(*self.report.last.lock().expect("call report lock"));
         CallStatus {
             guild_id: self.guild.to_string(),
             state: state.realtime.as_str().to_owned(),
-            connected: self.rtc().is_some_and(|rtc| rtc.is_connected()),
+            connected: rtc.is_some_and(|rtc| rtc.is_connected()),
+            audio,
             thread_id: Some(self.thread_id()).filter(|id| !id.is_empty()),
             last_user_text: state.last_user_text.clone(),
             last_assistant_text: state.last_assistant_text.clone(),
@@ -251,7 +286,7 @@ impl CodexSession {
                     self.events.log(log_used(
                         "Codex voice",
                         &configured,
-                        voice.as_deref().unwrap_or("none"),
+                        voice.as_deref().unwrap_or(SERVER_DEFAULT_VOICE),
                         "not available with this sign-in",
                     ));
                 }
@@ -352,7 +387,7 @@ impl CodexSession {
         let voice = self.choose_voice();
         self.emit(&format!(
             "starting the voice call (voice {})",
-            voice.as_deref().unwrap_or("default")
+            voice.as_deref().unwrap_or(SERVER_DEFAULT_VOICE)
         ));
         {
             let description = self
@@ -375,7 +410,7 @@ impl CodexSession {
                 None,
                 &format!(
                     "Call starting: voice {}; Codex: {description}.",
-                    voice.as_deref().unwrap_or("default")
+                    voice.as_deref().unwrap_or(SERVER_DEFAULT_VOICE)
                 ),
             );
         }
@@ -387,14 +422,16 @@ impl CodexSession {
         }
 
         // The peer, track and data channel before the offer.
-        let (rtc, offer) = match RtcCall::open(self.handle.clone(), self.ports.clone()).await {
-            Ok(opened) => opened,
-            Err(error) => {
-                self.lock().realtime = Realtime::Idle;
-                self.set_error(format!("could not set up the voice call: {error}"));
-                return;
-            }
-        };
+        let (rtc, offer) =
+            match RtcCall::open(self.handle.clone(), self.ports.clone(), self.report.clone()).await
+            {
+                Ok(opened) => opened,
+                Err(error) => {
+                    self.lock().realtime = Realtime::Idle;
+                    self.set_error(format!("could not set up the voice call: {error}"));
+                    return;
+                }
+            };
         let previous = self.rtc.lock().expect("rtc lock").replace(Arc::clone(&rtc));
         if let Some(previous) = previous {
             previous.close().await;
@@ -402,17 +439,7 @@ impl CodexSession {
         let (answer_tx, answer_rx) = oneshot::channel();
         *self.pending_answer.lock().expect("answer lock") = Some(answer_tx);
 
-        let mut params = json!({
-            "threadId": self.thread_id(),
-            "outputModality": "audio",
-            "version": "v3",
-            "prompt": self.prompt(),
-            "includeStartupContext": false,
-            "transport": { "type": "webrtc", "sdp": offer },
-        });
-        if let Some(voice) = voice {
-            params["voice"] = json!(voice);
-        }
+        let params = realtime_start_params(&self.thread_id(), &self.prompt(), &offer, voice);
         if let Err(error) = self.start_with_history(params).await {
             self.pending_answer.lock().expect("answer lock").take();
             rtc.close().await;
@@ -876,5 +903,23 @@ impl AssistantSession for CodexSession {
                 Err(error) => session.emit(&format!("speaker note failed: {error}")),
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_start_parameters_leave_out_an_empty_voice() {
+        let default = realtime_start_params("t1", "p", "sdp", None);
+        assert!(
+            default.get("voice").is_none(),
+            "server default: no voice field"
+        );
+        assert_eq!(default["version"], "v3");
+        assert_eq!(default["transport"]["type"], "webrtc");
+        let chosen = realtime_start_params("t1", "p", "sdp", Some("cove".to_owned()));
+        assert_eq!(chosen["voice"], "cove");
     }
 }

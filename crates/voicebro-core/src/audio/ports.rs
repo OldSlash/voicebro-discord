@@ -6,8 +6,10 @@ use super::output::OutputHandle;
 use super::queue::FrameQueue;
 use std::sync::Arc;
 
-/// Frames kept toward the assistant: about 80 ms.
-pub const INPUT_CAPACITY: usize = 4;
+/// Frames kept toward the assistant: 100 ms. The call's send thread takes them in order on
+/// its own 20 ms clock; more than this waiting means the consumer fell behind, and the
+/// oldest is dropped.
+pub const INPUT_CAPACITY: usize = 5;
 
 #[derive(Clone)]
 pub struct FrameSender {
@@ -45,6 +47,11 @@ impl FrameReceiver {
 
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+
+    /// Frames dropped at the sending side because this receiver fell behind.
+    pub fn dropped(&self) -> u64 {
+        self.queue.dropped()
     }
 }
 

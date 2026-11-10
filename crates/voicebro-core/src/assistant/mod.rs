@@ -48,6 +48,8 @@ pub struct CallStatus {
     /// idle, starting, live or stopping.
     pub state: String,
     pub connected: bool,
+    /// The running call's audio counters, or the last ended call's.
+    pub audio: Option<codex::rtc::CallAudioCounters>,
     pub thread_id: Option<String>,
     pub last_user_text: Option<String>,
     pub last_assistant_text: Option<String>,

@@ -167,7 +167,12 @@
     );
     applyEffortList();
     const voices = capabilities.voices || [];
-    fillListed("codex-voice", voices.map((voice) => ({ value: voice, label: voice + (voice === capabilities.default_voice ? " (default)" : "") })));
+    fillListed(
+      "codex-voice",
+      voices.length
+        ? [{ value: "", label: "(server default)" }].concat(voices.map((voice) => ({ value: voice, label: voice })))
+        : [],
+    );
   }
   async function loadLists() {
     if (!invoke) return;

@@ -1071,15 +1071,18 @@ mod tests {
             .collect();
         let mut downsamplers: Vec<StereoDownsampler> =
             (0..4).map(|_| StereoDownsampler::new(3)).collect();
-        let mut encoder =
-            opus2::Encoder::new(48_000, opus2::Channels::Mono, opus2::Application::Voip).unwrap();
+        // The call's encoder settings, and one jitter-buffer decode per tick for the
+        // assistant's voice on the playout side.
+        let mut encoder = crate::assistant::codex::rtc::new_encoder().unwrap();
+        let jitter = crate::assistant::codex::jitter::JitterBuffer::new();
+        let mut played = Frame::silence();
         let mut to_mono = StereoDownsampler::new(1);
         let mut packet = vec![0u8; 4000];
         let mut scratch = Vec::new();
         let mut mixed = Frame::silence();
         let ticks = 5_000;
         let started = std::time::Instant::now();
-        for _ in 0..ticks {
+        for tick in 0..ticks {
             let blocks: Vec<&[i16]> = speakers.iter().map(|frame| frame.as_slice()).collect();
             mix_into(&blocks, &mut scratch, &mut mixed);
             let tagged: Vec<(u32, &[i16])> = blocks
@@ -1093,9 +1096,17 @@ mod tests {
                 let _ = downsampler.process(block);
             }
             let mono = to_mono.process(mixed.as_slice());
-            let _ = encoder.encode(&mono, &mut packet).unwrap();
+            let written = encoder.encode(&mono, &mut packet).unwrap();
+            jitter.insert(
+                tick as u16,
+                (tick as u32).wrapping_mul(960),
+                bytes::Bytes::copy_from_slice(&packet[..written]),
+            );
+            let _ = crate::audio::FrameProvider::next_frame(&jitter, &mut played);
         }
         let per_tick = started.elapsed().as_secs_f64() * 1e6 / ticks as f64;
-        eprintln!("receive path with 4 speakers: {per_tick:.1} us per 20 ms tick");
+        eprintln!(
+            "receive path with 4 speakers plus one playout decode: {per_tick:.1} us per 20 ms tick"
+        );
     }
 }

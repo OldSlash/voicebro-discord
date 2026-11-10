@@ -21,6 +21,15 @@ const STABLE_FRAMES_BEFORE_RELAX: u32 = 750;
 pub const SIGNAL_PEAK: i32 = 256;
 const BYTES_PER_PACKET: usize = FRAME_SAMPLES * std::mem::size_of::<f32>();
 
+/// A source of 20 ms frames that the output pulls on songbird's read clock, ahead of the
+/// pushed frames: the call's jitter buffer. It must not lock the output from inside.
+pub trait FrameProvider: Send + Sync {
+    /// Writes the next frame into `out`; `false` when it has nothing to play right now.
+    fn next_frame(&self, out: &mut Frame) -> bool;
+    /// Drops everything held, as a flush does for the pushed frames.
+    fn reset(&self);
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct OutputCounters {
     pub pushed: u64,
@@ -43,6 +52,7 @@ struct Inner {
     earcon: VecDeque<f32>,
     last_signal: Option<Instant>,
     counters: OutputCounters,
+    provider: Option<Arc<dyn FrameProvider>>,
 }
 
 /// Creates the queue and both ends of it: the handle the assistant and the gate hold, and
@@ -60,6 +70,7 @@ pub fn output_pair() -> (OutputHandle, PcmSource) {
         earcon: VecDeque::new(),
         last_signal: None,
         counters: OutputCounters::default(),
+        provider: None,
     }));
     (
         OutputHandle {
@@ -69,6 +80,7 @@ pub fn output_pair() -> (OutputHandle, PcmSource) {
             inner,
             pending: Vec::new(),
             scratch: vec![0f32; FRAME_SAMPLES],
+            pulled: Frame::silence(),
         },
     )
 }
@@ -99,7 +111,7 @@ impl OutputHandle {
         inner.frames.push_back((epoch, frame));
     }
 
-    /// Discards everything queued but not yet played.
+    /// Discards everything queued but not yet played, the attached provider's too.
     pub fn flush(&self) {
         let mut inner = self.inner.lock().expect("output lock");
         let flushed = inner.frames.len() as u64;
@@ -107,18 +119,36 @@ impl OutputHandle {
         inner.epoch += 1;
         inner.counters.flushed += flushed;
         inner.priming = true;
+        if let Some(provider) = inner.provider.as_ref() {
+            provider.reset();
+        }
     }
 
     pub fn set_muted(&self, muted: bool) {
         let mut inner = self.inner.lock().expect("output lock");
-        if muted && !inner.muted {
+        if muted != inner.muted {
             let flushed = inner.frames.len() as u64;
-            inner.frames.clear();
-            inner.epoch += 1;
-            inner.counters.flushed += flushed;
-            inner.priming = true;
+            if muted {
+                inner.frames.clear();
+                inner.epoch += 1;
+                inner.counters.flushed += flushed;
+                inner.priming = true;
+            }
+            // Whatever the provider holds was said around the change: never play it.
+            if let Some(provider) = inner.provider.as_ref() {
+                provider.reset();
+            }
         }
         inner.muted = muted;
+    }
+
+    /// Lets `provider` supply frames ahead of the pushed ones, until detached.
+    pub fn attach_provider(&self, provider: Arc<dyn FrameProvider>) {
+        self.inner.lock().expect("output lock").provider = Some(provider);
+    }
+
+    pub fn detach_provider(&self) {
+        self.inner.lock().expect("output lock").provider = None;
     }
 
     pub fn is_muted(&self) -> bool {
@@ -159,6 +189,7 @@ pub struct PcmSource {
     inner: Arc<Mutex<Inner>>,
     pending: Vec<u8>,
     scratch: Vec<f32>,
+    pulled: Frame,
 }
 
 impl PcmSource {
@@ -174,6 +205,21 @@ impl PcmSource {
         // Skip frames queued before the last flush.
         while matches!(inner.frames.front(), Some((e, _)) if *e != epoch) {
             inner.frames.pop_front();
+        }
+        // The attached provider (the call's jitter buffer) plays first. While muted its
+        // frames are pulled and discarded, so nothing said during a mute plays later.
+        if let Some(provider) = inner.provider.clone() {
+            if provider.next_frame(&mut self.pulled) && !inner.muted {
+                for (out, sample) in self.scratch.iter_mut().zip(self.pulled.as_slice()) {
+                    *out = *sample as f32 / 32_768.0;
+                }
+                inner.counters.played += 1;
+                if self.pulled.peak() >= SIGNAL_PEAK {
+                    inner.last_signal = Some(Instant::now());
+                }
+                Self::mix_earcon(&mut inner, &mut self.scratch);
+                return true;
+            }
         }
         let ready = if inner.priming {
             if inner.frames.len() >= inner.jitter_target {
@@ -216,18 +262,23 @@ impl PcmSource {
                 }
             }
         }
-        // Earcons are mixed in whatever the state, one mono sample per stereo pair.
-        if !inner.earcon.is_empty() {
-            for pair in self.scratch.chunks_mut(2) {
-                let Some(sample) = inner.earcon.pop_front() else {
-                    break;
-                };
-                for channel in pair {
-                    *channel = (*channel + sample).clamp(-1.0, 1.0);
-                }
+        Self::mix_earcon(&mut inner, &mut self.scratch);
+        true
+    }
+
+    /// Earcons are mixed in whatever the state, one mono sample per stereo pair.
+    fn mix_earcon(inner: &mut Inner, scratch: &mut [f32]) {
+        if inner.earcon.is_empty() {
+            return;
+        }
+        for pair in scratch.chunks_mut(2) {
+            let Some(sample) = inner.earcon.pop_front() else {
+                break;
+            };
+            for channel in pair {
+                *channel = (*channel + sample).clamp(-1.0, 1.0);
             }
         }
-        true
     }
 
     pub fn jitter_target(&self) -> usize {
@@ -387,6 +438,75 @@ mod tests {
         assert!(handle.last_signal().is_none());
         handle.push(loud(1000));
         assert!(handle.last_signal().is_some());
+    }
+
+    /// A provider that plays a fixed number of loud frames and records resets.
+    struct Countdown {
+        left: Mutex<u32>,
+        resets: Mutex<u32>,
+    }
+
+    impl FrameProvider for Countdown {
+        fn next_frame(&self, out: &mut Frame) -> bool {
+            let mut left = self.left.lock().unwrap();
+            if *left == 0 {
+                return false;
+            }
+            *left -= 1;
+            out.as_mut_slice().fill(4_000);
+            true
+        }
+
+        fn reset(&self) {
+            *self.left.lock().unwrap() = 0;
+            *self.resets.lock().unwrap() += 1;
+        }
+    }
+
+    #[test]
+    fn an_attached_provider_plays_first_and_a_flush_empties_it() {
+        let (handle, mut source) = output_pair();
+        let provider = Arc::new(Countdown {
+            left: Mutex::new(5),
+            resets: Mutex::new(0),
+        });
+        handle.attach_provider(provider.clone());
+        handle.push(loud(1000));
+        let packet = read_packet(&mut source).unwrap();
+        assert!(
+            (packet[0] - 4000.0 / 32768.0).abs() < 1e-6,
+            "the provider's frame plays"
+        );
+        assert!(handle.last_signal().is_some());
+        handle.flush();
+        assert_eq!(*provider.resets.lock().unwrap(), 1);
+        assert_eq!(
+            *provider.left.lock().unwrap(),
+            0,
+            "the flush emptied the provider"
+        );
+        let after = read_packet(&mut source).unwrap();
+        assert!(after.iter().all(|s| *s == 0.0), "nothing left to play");
+    }
+
+    #[test]
+    fn a_muted_output_discards_the_providers_frames() {
+        let (handle, mut source) = output_pair();
+        let provider = Arc::new(Countdown {
+            left: Mutex::new(0),
+            resets: Mutex::new(0),
+        });
+        handle.attach_provider(provider.clone());
+        handle.set_muted(true);
+        *provider.left.lock().unwrap() = 3;
+        for _ in 0..3 {
+            let packet = read_packet(&mut source).unwrap();
+            assert!(packet.iter().all(|s| *s == 0.0), "muted: silence");
+        }
+        assert_eq!(*provider.left.lock().unwrap(), 0, "pulled and discarded");
+        handle.detach_provider();
+        handle.set_muted(false);
+        assert!(read_packet(&mut source).is_some());
     }
 
     #[test]
