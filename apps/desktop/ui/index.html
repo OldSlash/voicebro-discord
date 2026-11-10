@@ -27,6 +27,8 @@
           <dd id="status-gates">none</dd>
           <dt>Mute hotkey</dt>
           <dd id="status-hotkey">…</dd>
+          <dt>Codex</dt>
+          <dd id="status-assistant">…</dd>
           <dt>Discord token</dt>
           <dd id="status-token">unknown</dd>
           <dt>Wake word</dt>
@@ -38,6 +40,8 @@
           <button id="discord-connect">Connect</button>
           <button id="discord-disconnect" class="secondary">Disconnect</button>
           <button id="mute-toggle">Mute</button>
+          <button id="codex-sign-in" class="secondary">Sign in to Codex</button>
+          <button id="codex-check" class="secondary">Check Codex</button>
         </div>
         <h3>Connection errors</h3>
         <ul id="status-errors" class="errors"><li class="muted-text">none</li></ul>
@@ -108,7 +112,15 @@
 
       <section id="tab-chat" class="panel">
         <h2>Chat</h2>
-        <p class="muted-text">The assistant chat log arrives with the Codex assistant.</p>
+        <div class="row">
+          <label class="row"><input id="chat-filter-context" type="checkbox" checked> Names and notes</label>
+          <label class="row"><input id="chat-filter-agent" type="checkbox" checked> Agent work</label>
+          <label class="row"><input id="chat-filter-system" type="checkbox" checked> Call events</label>
+          <label class="row"><input id="chat-autoscroll" type="checkbox" checked> Auto-scroll</label>
+          <button id="chat-copy" class="secondary small">Copy</button>
+          <button id="chat-open-folder" class="secondary small">Open log folder</button>
+        </div>
+        <div id="chat"></div>
       </section>
     </main>
 

@@ -132,10 +132,11 @@ impl Default for WakeSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeakerLabels {
     /// Names only at call start, inside the initial items.
+    #[default]
     Start,
     /// Also a note when the speaker changes.
     Changes,

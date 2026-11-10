@@ -373,9 +373,29 @@ assistant is given, so the app never panics on an unknown engine setting.
   **last** developer item of `initialItems`; the session `prompt` is ignored by the ChatGPT
   sign-in and is not relied on. Nothing is sent mid-call by default; the `changes`
   speaker-label mode sends a note only when the speaker changes.
-- `chat_log.rs`: transcripts, call context, call start and end, errors, delegated agent work
-  (`turn/*`, `item/completed`), unwrapped from `<realtime_delegation>`. Kept in memory
-  (bounded), pushed as `AppEvent::Chat`, appended to a daily file.
+- `assistant/chat_log.rs` (engine-independent): transcripts, call context, call start and
+  end, errors, delegated agent work (`turn/*`, `item/completed`), unwrapped from
+  `<realtime_delegation>`. Kept in memory (bounded at 600), pushed as `AppEvent::Chat`,
+  appended to `logs\codex-chat-YYYY-MM-DD.log`.
+- `session.rs`: the state machine idle → starting → live → stopping. `session_wanted(true)`
+  checks the sign-in, ensures the thread, opens the WebRTC call, sends
+  `thread/realtime/start` with the history (retried once without it), applies the answer
+  from `thread/realtime/sdp`, waits for the peer to connect and for
+  `thread/realtime/started`. `ready()` is live and connected. A `closed` notification or a
+  lost transport restarts the call while wanted, at most three times per session, with a
+  backoff of 2 s times the attempt; the fourth failure sets the connection error. A stop
+  closes the peer, sends `thread/realtime/stop` and flushes the output; a restart waits for
+  the stop. Barge-in is left to the realtime server (it stops its own output when the user
+  speaks); the first version's client-side flush is not ported.
+- `CodexAssistant` (`codex/mod.rs`) owns the process, the account, the voices and models,
+  the conversations per guild and the chat log. The process is started at runtime start
+  (not on Discord connect) so the Status tab shows the account before the first `/join`;
+  `attach` while it is still starting fails with "Codex is starting" and the gate logs it.
+  `stop` kills the child at app exit after stopping every call.
+- Live check: `VOICEBRO_CODEX_CALL_WAV=<q1.wav> [VOICEBRO_CODEX_CALL_WAV2=<q2.wav>
+  VOICEBRO_CODEX_EXPECT2="a|b"] cargo test -p voicebro-core live_call_when_enabled --
+  --nocapture` runs a real call through the engine without Discord (canary, audio back,
+  continuity). `VOICEBRO_CODEX_SMOKE=1` runs the handshake only.
 
 The thread's `model` and reasoning effort affect only work the voice model delegates to
 the Codex agent; the voice itself is the realtime model. The UI says so next to the setting.

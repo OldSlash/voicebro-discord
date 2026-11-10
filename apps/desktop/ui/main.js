@@ -93,8 +93,111 @@
     return extras.length ? `${text}; ${extras.join("; ")}` : text;
   }
 
+  // Chat log: entries arrive as events; the full list is pulled at start.
+  const chatPane = $("chat");
+  let chatEntries = [];
+  const CHAT_GROUPS = {
+    context: ["context"],
+    agent: ["task", "agent", "reasoning", "tool"],
+    system: ["system"],
+  };
+  function chatVisible(entry) {
+    for (const [group, kinds] of Object.entries(CHAT_GROUPS)) {
+      if (kinds.includes(entry.kind) && !$(`chat-filter-${group}`).checked) return false;
+    }
+    return true;
+  }
+  function chatLineText(entry) {
+    const who = entry.who || (entry.kind === "user" ? "user" : entry.kind);
+    return `${entry.at} [${entry.guild_id}] ${who}: ${entry.text}`;
+  }
+  function renderChat() {
+    chatPane.innerHTML = "";
+    for (const entry of chatEntries) {
+      if (!chatVisible(entry)) continue;
+      const line = document.createElement("div");
+      line.className = `chat-line ${entry.kind}`;
+      const at = document.createElement("span");
+      at.className = "at";
+      at.textContent = entry.at;
+      const who = document.createElement("span");
+      who.className = "who";
+      who.textContent = entry.who || (entry.kind === "user" ? "user" : entry.kind);
+      const text = document.createElement("span");
+      text.className = "text";
+      text.textContent = entry.text;
+      line.append(at, who, text);
+      chatPane.appendChild(line);
+    }
+    if ($("chat-autoscroll").checked) chatPane.scrollTop = chatPane.scrollHeight;
+  }
+  function addChatEntry(entry) {
+    chatEntries.push(entry);
+    if (chatEntries.length > 600) chatEntries = chatEntries.slice(chatEntries.length - 600);
+    renderChat();
+  }
+  document.querySelectorAll("#tab-chat input[type='checkbox']").forEach((box) => {
+    box.addEventListener("change", renderChat);
+  });
+  $("chat-copy").addEventListener("click", async () => {
+    const text = chatEntries.filter(chatVisible).map(chatLineText).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      appendLog("chat copied to the clipboard");
+    } catch (error) {
+      appendLog(`copy failed: ${error}`);
+    }
+  });
+  $("chat-open-folder").addEventListener("click", async () => {
+    try {
+      appendLog(`opened ${await invoke("open_log_folder")}`);
+    } catch (error) {
+      appendLog(`open log folder failed: ${error}`);
+    }
+  });
+  async function loadChat() {
+    if (!invoke) return;
+    try {
+      chatEntries = await invoke("chat_log");
+      renderChat();
+    } catch (error) {
+      appendLog(`chat log failed: ${error}`);
+    }
+  }
+
+  function assistantText(assistant) {
+    const parts = [assistant.summary || "unknown"];
+    if (assistant.version) parts.push(`Codex ${assistant.version}`);
+    if (assistant.model_in_use != null) {
+      parts.push(`thread: ${assistant.model_in_use || "default model"}, reasoning ${assistant.reasoning_effort_in_use || "default"}`);
+    }
+    for (const call of assistant.calls || []) {
+      parts.push(`call ${call.guild_id}: ${call.state}${call.connected ? ", connected" : ""}${call.last_error ? `, error: ${call.last_error}` : ""}`);
+    }
+    return parts.join("; ");
+  }
+
+  $("codex-sign-in").addEventListener("click", async () => {
+    try {
+      await invoke("codex_sign_in");
+      appendLog("sign-in page opened in the browser; finish there, then press Check Codex");
+    } catch (error) {
+      appendLog(`sign-in failed: ${error}`);
+    }
+  });
+  $("codex-check").addEventListener("click", async () => {
+    try {
+      const account = await invoke("codex_check");
+      appendLog(account.signed_in ? `Codex: signed in (${account.kind || "account"})` : "Codex: not signed in");
+    } catch (error) {
+      appendLog(`Codex check failed: ${error}`);
+    }
+    await refresh();
+  });
+
   function renderStatus(status) {
     const discord = status.discord || {};
+    $("status-assistant").textContent = assistantText(status.assistant || {});
     let discordText = discord.state || "unknown";
     if (discord.state === "connected") discordText = `connected as ${discord.user_name} (${discord.guild_count} servers)`;
     if (discord.state === "error") discordText = `error: ${discord.last_error || ""}`;
@@ -241,10 +344,14 @@
             else appendLog(`${payload.label}: ${payload.percent}%`);
             refresh();
             break;
+          case "chat":
+            addChatEntry(payload);
+            break;
           case "discord":
           case "wake":
           case "gate":
           case "hotkey":
+          case "assistant":
           case "settings_changed":
           case "secret_changed":
           case "connection_error":
@@ -256,6 +363,7 @@
       });
     }
     await refresh();
+    await loadChat();
     setInterval(refresh, 5000);
   }
 

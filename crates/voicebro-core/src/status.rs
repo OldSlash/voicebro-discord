@@ -3,9 +3,50 @@
 //! The snapshot holds measured and known values only. A quantity that is not measured is
 //! absent, never a label.
 
+use crate::events::{AppEvent, EventBus};
 use crate::settings::Settings;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::sync::Mutex;
+
+/// The connection errors by source (`discord`, `codex`, `assistant`, `secret_store`,
+/// `runtime`), shared by the runtime, the gates and the assistant. Setting one publishes
+/// `AppEvent::ConnectionError`; clearing it publishes the same event with no message.
+pub struct ConnectionErrors {
+    errors: Mutex<BTreeMap<String, String>>,
+    events: EventBus,
+}
+
+impl ConnectionErrors {
+    pub fn new(events: EventBus) -> Self {
+        Self {
+            errors: Mutex::new(BTreeMap::new()),
+            events,
+        }
+    }
+
+    pub fn report(&self, source: &str, message: Option<String>) {
+        {
+            let mut errors = self.errors.lock().expect("errors lock");
+            match &message {
+                Some(text) => {
+                    errors.insert(source.to_owned(), text.clone());
+                }
+                None => {
+                    errors.remove(source);
+                }
+            }
+        }
+        self.events.publish(AppEvent::ConnectionError {
+            source: source.to_owned(),
+            message,
+        });
+    }
+
+    pub fn snapshot(&self) -> BTreeMap<String, String> {
+        self.errors.lock().expect("errors lock").clone()
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SecretStatus {

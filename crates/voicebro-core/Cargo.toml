@@ -21,6 +21,16 @@ symphonia = { version = "0.5.2", default-features = false, features = ["pcm"] }
 # Wake word: the recognizer library is loaded at runtime; downloads are hash-checked.
 libloading = "0.9"
 sha2 = "0.11"
+# Codex: the realtime call runs over WebRTC inside the process. `rtc` is the sans-io core
+# the `webrtc` crate re-exports parts of; `opus2` is the Opus binding songbird links.
+webrtc = "0.21"
+rtc = "0.21"
+opus2 = "0.4"
+bytes = "1"
+async-trait = "0.1"
+rand = "0.9"
+# Local dates for the daily chat log file.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

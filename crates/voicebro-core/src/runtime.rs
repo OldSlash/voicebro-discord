@@ -10,11 +10,11 @@ use crate::gate::{ErrorReporter, GateSettings, RelayGate, RelayRegistry};
 use crate::secrets::{SecretError, SecretKey, SecretStore};
 use crate::settings::store::{SettingsStore, StoreError};
 use crate::settings::{SessionMode, Settings, ValidationError};
-use crate::status::{HotkeyStatus, SecretStatus, Status};
+use crate::status::{ConnectionErrors, HotkeyStatus, SecretStatus, Status};
 use crate::wake::WakeManager;
 use serde_json::Value;
 use serenity::all::GuildId;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -36,30 +36,9 @@ pub enum RuntimeError {
     Discord(#[from] DiscordError),
 }
 
-/// The connection errors by source, shared with the gates so they can report the
-/// assistant failing to become ready.
-struct ErrorSink {
-    errors: Mutex<BTreeMap<String, String>>,
-    events: EventBus,
-}
-
-impl ErrorReporter for ErrorSink {
+impl ErrorReporter for ConnectionErrors {
     fn report(&self, source: &str, message: Option<String>) {
-        {
-            let mut errors = self.errors.lock().expect("errors lock");
-            match &message {
-                Some(text) => {
-                    errors.insert(source.to_owned(), text.clone());
-                }
-                None => {
-                    errors.remove(source);
-                }
-            }
-        }
-        self.events.publish(AppEvent::ConnectionError {
-            source: source.to_owned(),
-            message,
-        });
+        ConnectionErrors::report(self, source, message);
     }
 }
 
@@ -70,7 +49,7 @@ struct GateHost {
     wake: WakeManager,
     assistant: Arc<dyn Assistant>,
     events: EventBus,
-    errors: Arc<ErrorSink>,
+    errors: Arc<ConnectionErrors>,
     gate_settings: Mutex<GateSettings>,
     discord: Mutex<Option<Arc<DiscordRuntime>>>,
 }
@@ -181,7 +160,7 @@ pub struct Runtime {
     discord: Arc<DiscordRuntime>,
     wake: WakeManager,
     assistant: Arc<dyn Assistant>,
-    errors: Arc<ErrorSink>,
+    errors: Arc<ConnectionErrors>,
     secrets_set: Mutex<HashSet<SecretKey>>,
     hotkey: Mutex<HotkeyStatus>,
 }
@@ -201,12 +180,15 @@ impl Runtime {
             data_dir,
             store,
             secrets,
-            events,
+            events.clone(),
             handle,
+            Arc::new(ConnectionErrors::new(events)),
             Arc::new(StubAssistant::default()),
         )
     }
 
+    /// `errors` is shared with the assistant, which reports its own failures there.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_assistant(
         build_stamp: impl Into<String>,
         data_dir: PathBuf,
@@ -214,13 +196,10 @@ impl Runtime {
         secrets: Arc<dyn SecretStore>,
         events: EventBus,
         handle: Handle,
+        errors: Arc<ConnectionErrors>,
         assistant: Arc<dyn Assistant>,
     ) -> Self {
         let registry = RelayRegistry::default();
-        let errors = Arc::new(ErrorSink {
-            errors: Mutex::new(BTreeMap::new()),
-            events: events.clone(),
-        });
         let wake = WakeManager::with_default_engines(
             crate::paths::assets_dir(&data_dir),
             events.clone(),
@@ -288,6 +267,8 @@ impl Runtime {
             GateSettings::from_settings(&self.settings());
         crate::wake::assets::cleanup_partial(&crate::paths::assets_dir(&self.data_dir));
         self.wake.configure(&self.settings());
+        self.assistant.configure(&self.settings());
+        self.assistant.start();
 
         for key in SecretKey::ALL {
             match self.secrets.get(*key) {
@@ -314,6 +295,7 @@ impl Runtime {
     /// Stops the wake engine and Discord; waits for Discord so the process can exit cleanly.
     pub fn shutdown(&self) {
         self.wake.stop();
+        self.assistant.stop();
         let discord = Arc::clone(&self.discord);
         if discord.is_running() {
             let _ = self.handle.block_on(async move {
@@ -372,7 +354,11 @@ impl Runtime {
                     gates_dirty = true;
                 }
                 "wake" => wake_dirty = true,
-                "assistant" => gates_dirty = true,
+                "assistant" => {
+                    gates_dirty = true;
+                    self.assistant.configure(&settings);
+                }
+                "codex" => self.assistant.configure(&settings),
                 _ => {}
             }
         }
@@ -520,7 +506,7 @@ impl Runtime {
                     )
                 })
                 .collect(),
-            connection_errors: self.errors.errors.lock().expect("errors lock").clone(),
+            connection_errors: self.errors.snapshot(),
             discord: self.discord.status(),
             wake: self.wake.status(),
             gates: self.host.registry.statuses(),
@@ -661,7 +647,7 @@ mod tests {
         let status = runtime.status();
         assert!(status.gates["42"].active, "always mode: active at once");
         assert!(status.gates["42"].session_wanted);
-        assert_eq!(status.assistant.calls, vec!["42".to_owned()]);
+        assert_eq!(status.assistant.calls[0].guild_id, "42");
         assert_eq!(host.assistant_state(42), AssistantState::Listening);
         assert_eq!(host.assistant_state(43), AssistantState::Off);
 
