@@ -131,7 +131,7 @@
 
   Not checked: hearing it in a real Discord channel.
 - [x] 7.3 Verify: `cargo fmt --check`, `cargo clippy --all-targets` and `cargo test` all pass; report their output. (fmt clean. Clippy: no errors, and the same 6 warnings in code this change does not touch; the 2 new `chunks_exact` warnings in `playout.rs` and the replay test were fixed. Tests: core 160, desktop 6, all pass.)
-- [ ] 7.4 Build the release `voicebro.exe` at the change tip and hand it over. Verify: the build stamp names the commit.
+- [x] 7.4 Build the release `voicebro.exe` at the change tip and hand it over. Verify: the build stamp names the commit. (Commit `0b96aae`; `target\release\voicebro.exe` reads `0.2.0+0b96aae 2026-11-10` with no `.dirty`. Launched at 15:59, and it connected to Discord.)
 
 ## 8. The start of a call (spec: Buffer depth follows measured lateness; design D2a)
 
