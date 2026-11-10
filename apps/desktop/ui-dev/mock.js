@@ -200,6 +200,10 @@
     codex_models: () => clone(capabilities.models),
     open_log_folder: () => "C:\\VoiceBro\\logs",
     app_info: () => ({ version: "0.2.0", build_stamp: "0.2.0+mock 2026-11-10", data_dir: "C:\\VoiceBro" }),
+    memory_status: () => ({
+      total_mb: 172.4, app_mb: 61.2, webview_mb: 111.2, webview_processes: 5, codex_mb: null,
+      metric: "private working set",
+    }),
   };
 
   async function invoke(name, args = {}) {

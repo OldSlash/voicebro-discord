@@ -505,8 +505,8 @@ Two or more people, a game running, the acceptance list in section 7. Each run i
 the report lists what passed, what failed, and what was not tested. Only after this does any
 feature count as working.
 
-Measurements, with the same script for every build (private bytes per process, repeated
-three times):
+Measurements, with the same script for every build (the private working set per process,
+the number Task Manager shows as "Memory", repeated three times, release builds only):
 
 | State | Target from STACK-DECISION §6 |
 |---|---|
@@ -515,24 +515,34 @@ three times):
 | During a call | Rust + in-process WebRTC + codex during a call (never measured before) |
 | Receive-path CPU with 2–4 speakers, `opt-level = 3` versus `z` | decides the release profile |
 
-#### Measurements (2026-11-09, `scripts\measure.ps1`, debug build 0.2.0, window open, bot connected, nobody in the channel)
+#### Measurements (2026-11-10, `scripts\measure.ps1`, release build `0.2.0+d6fac39`, window open, bot connected, nobody in the channel, Codex not running before `/join`)
 
-| State | Run | voicebro.exe private | codex.exe | WebView2 (all) | Total | voicebro.exe CPU (one core) |
+Private working set (Task Manager's "Memory"), in MB:
+
+| State | Run | voicebro.exe | codex.exe | WebView2 (6 processes) | Total | voicebro.exe CPU (one core) |
 |---|---|---|---|---|---|---|
-| Idle, always mode | 1 | 9.1 MB | 94.4 MB | 184.4 MB | 289.1 MB | 0.47 % |
-| Idle, always mode | 2 | 9.1 MB | 27.1 MB | 184.7 MB | 222.1 MB | 0.16 % |
-| Idle, always mode | 3 | 9.1 MB | 27.1 MB | 184.7 MB | 222.1 MB | 0.16 % |
-| Idle, wake-word mode, model loaded | 1 | 434.6 MB | 97.7 MB | 171.6 MB | 705.1 MB | 0.47 % |
-| Idle, wake-word mode, model loaded | 2 | 434.6 MB | 26.9 MB | 178.0 MB | 640.7 MB | 0.31 % |
-| Idle, wake-word mode, model loaded | 3 | 434.6 MB | 26.9 MB | 177.9 MB | 640.6 MB | 0.31 % |
+| Idle, always mode | 1 | 4.8 | not running | 90.4 | 95.2 | 0.31 % |
+| Idle, always mode | 2 | 4.8 | not running | 86.3 | 91.1 | 0.47 % |
+| Idle, always mode | 3 | 4.8 | not running | 86.1 | 90.9 | 0.78 % |
+| Idle, wake-word mode, model loaded | 1 | 169.9 | not running | 88.9 | 258.8 | 0.62 % |
+| Idle, wake-word mode, model loaded | 2 | 169.8 | not running | 85.8 | 255.6 | 0.47 % |
+| Idle, wake-word mode, model loaded | 3 | 169.8 | not running | 85.5 | 255.3 | 0.47 % |
 
-The Vosk library plus `vosk-model-small-ru-0.22` take about 425 MB of private memory in the
-Rust process once loaded (the model's decoding graph, not the 45 MB archive), well above the
-150–200 MB the stack decision expected. The first codex.exe sample of each series is higher
-because the account, voice and model reads had just run. Not measured: during a call and
-with speakers in the channel (needs people; the user's real-channel step), and the release
-build (the numbers above are from the debug binary; private memory of the Rust process is
-dominated by the model either way).
+Started on demand with Check Codex in the wake-word run, `codex.exe` added 25.6 MB and
+stopped by itself a minute later. The window's own reading (status bar and System tab)
+matched the script within 1 % in every run.
+
+For comparison, measured on 2026-11-09 at 22:02 with both apps running and the wake word
+loaded: the first version's `gptvoice-tauri.exe` (release) 179 MB private working set, this
+app's `voicebro.exe` (release 0.2.0) 169 MB. The Vosk library and `vosk-model-small-ru-0.22`
+account for about 165 MB of the Rust process once loaded (always mode: 4.8 MB), which is
+inside the 150–200 MB the stack decision expected; the process is not larger than the first
+version's. Private bytes (the commit charge) are much higher (946 MB for `voicebro.exe` with
+the model, 1213 MB for the first version) because they count memory reserved but never
+touched; they are not what Task Manager shows. An earlier table here reported 434 MB: that
+was private bytes of a debug build, and its conclusion ("well above the expected range") was
+wrong. Not measured: during a call and with speakers in the channel (the user's
+real-channel step, with the window's readings).
 
 ## 5. Technical details by subsystem
 

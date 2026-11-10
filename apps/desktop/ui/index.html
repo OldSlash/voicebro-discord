@@ -144,6 +144,17 @@
               </dl>
             </article>
             <article class="card">
+              <h2>Memory use</h2>
+              <div class="memory-bar" aria-hidden="true"><span class="bar-app" id="memory-meter-app"></span><span class="bar-webview" id="memory-meter-webview"></span><span class="bar-codex" id="memory-meter-codex"></span></div>
+              <dl class="info-list">
+                <div><dt>Rust process</dt><dd id="memory-app">—</dd></div>
+                <div><dt>WebView2</dt><dd id="memory-webview">—</dd></div>
+                <div><dt>Codex</dt><dd id="memory-codex">—</dd></div>
+                <div><dt>Total</dt><dd id="memory-total">—</dd></div>
+              </dl>
+              <p class="muted system-help">Private working set, the memory Task Manager shows, read every 3 seconds. Codex runs only while the bot is in a voice channel.</p>
+            </article>
+            <article class="card">
               <h2>Files</h2>
               <dl class="info-list">
                 <div><dt>Data folder</dt><dd class="path-value" id="system-data-dir">—</dd></div>

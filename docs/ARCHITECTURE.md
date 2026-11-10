@@ -580,9 +580,10 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     frames the assistant missed, wake chunks dropped, both levels and clip counts, the
     number of answers measured and the last answer's four durations.
   - System shows `system_status` (version, build stamp, process id, uptime, runtime,
-    platform with the Windows build, architecture, CPU cores) and the files (data folder,
-    `settings.json`, the Codex CLI path); the memory row is filled by change
-    `memory-measurement`.
+    platform with the Windows build, architecture, CPU cores), the memory (the "Native
+    host" card: a bar and the private working set of the Rust process, WebView2 and Codex,
+    "not running" while Codex is stopped, and the total, which the status bar shows too)
+    and the files (data folder, `settings.json`, the Codex CLI path).
   - Settings has the cards Appearance, Audio, Assistant, Codex and Hotkey, one control per
     field with its JSON path (`data-path`) and kind (string, number, bool, list, percent).
     Each control saves itself on `change` with one `save_settings` patch (text when leaving
@@ -750,8 +751,16 @@ Values that worked in the first version. Change them only with a measurement or 
   "ChatGPT audio -> Discord relay handoff" is the time the answer waited in the jitter
   buffer. The last 50 measurements per guild, with their local time, are
   `Status.latency`.
-- The status snapshot holds measured values only. A quantity that is not measured (memory)
-  is omitted, never replaced by a label.
+- **Memory** is the private working set, the number Task Manager shows as "Memory", and
+  only that is compared or reported. `apps/desktop/src/memory.rs` walks the process tree
+  from the app's id with a ToolHelp snapshot (the app, its `msedgewebview2.exe`
+  descendants, its `codex*` child and everything under it) and reads each process with
+  `GetProcessMemoryInfo` into `PROCESS_MEMORY_COUNTERS_EX2` (`PrivateWorkingSetSize`)
+  every 3 s on its own thread; the `memory_status` command returns the latest reading.
+  `scripts\measure.ps1` reads the same metric from the `Working Set - Private` counter for
+  release builds; private bytes (the commit charge) are printed only for diagnosis.
+- The status snapshot holds measured values only. A quantity that is not measured is
+  omitted, never replaced by a label.
 
 ## 8. Conventions
 

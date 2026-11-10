@@ -23,3 +23,11 @@ tauri = { version = "2.12", features = [] }
 tauri-plugin-log = "2.10"
 tauri-plugin-global-shortcut = "2.4"
 tokio.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# The memory reading: the process tree and each process's private working set.
+windows-sys = { workspace = true, features = [
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
