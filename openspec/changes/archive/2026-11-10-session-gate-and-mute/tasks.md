@@ -19,7 +19,9 @@
 
 ## 4. Close-out
 
-- [ ] 4.1 Live run in wake-word mode with the stub assistant: say the activation phrase, see the session start and the rising earcon; say the deactivation phrase, see the falling earcon and the stub told "not wanted"; verify the log sequence and the gate status (the user's step: needs a person speaking in the channel)
+- [x] 4.1 Live run in wake-word mode with the stub assistant: say the activation phrase, see the session start and the rising earcon; say the deactivation phrase, see the falling earcon and the stub told "not wanted"; verify the log sequence and the gate status (the user's step: needs a person speaking in the channel)
+
+  Closed by the user's decision of 2026-11-10 at the merge into `main` (every remaining check counts as done); not verified separately as a task.
 - [x] 4.2 Update `docs/ARCHITECTURE.md` 4.3 and 4.5 where the code differs, `AGENTS.md`, `LOCAL-TESTING.md`; verify no stale statement remains
 - [x] 4.3 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`; verify all pass
 
