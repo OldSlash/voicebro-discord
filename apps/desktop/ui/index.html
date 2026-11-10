@@ -23,6 +23,10 @@
           <dd id="status-voice">none</dd>
           <dt>Assistant</dt>
           <dd id="status-mute">not muted</dd>
+          <dt>Sessions</dt>
+          <dd id="status-gates">none</dd>
+          <dt>Mute hotkey</dt>
+          <dd id="status-hotkey">…</dd>
           <dt>Discord token</dt>
           <dd id="status-token">unknown</dd>
           <dt>Wake word</dt>
@@ -72,12 +76,33 @@
 
         <h3>Session</h3>
         <div class="field">
+          <label for="session-mode">Mode</label>
+          <div class="row">
+            <select id="session-mode" data-path="session.mode" data-kind="string">
+              <option value="wake_word">Wake word: the assistant listens after an activation phrase</option>
+              <option value="always">Always: the assistant hears the channel whenever the bot is in it</option>
+            </select>
+            <button class="save" data-for="session-mode">Save</button>
+          </div>
+          <p class="hint field-message" data-for="session-mode"></p>
+        </div>
+        <div class="field">
           <label for="idle-timeout">Idle timeout, seconds (0 disables; otherwise 5 to 3600)</label>
           <div class="row">
             <input id="idle-timeout" type="number" min="0" max="3600" step="1" data-path="session.idle_timeout_seconds" data-kind="number">
             <button class="save" data-for="idle-timeout">Save</button>
           </div>
           <p class="hint field-message" data-for="idle-timeout"></p>
+        </div>
+
+        <h3>Hotkey</h3>
+        <div class="field">
+          <label for="hotkey-mute">Mute toggle (for example Ctrl+Alt+M; empty disables it)</label>
+          <div class="row">
+            <input id="hotkey-mute" type="text" spellcheck="false" data-path="hotkey.mute" data-kind="string">
+            <button class="save" data-for="hotkey-mute">Save</button>
+          </div>
+          <p class="hint field-message" data-for="hotkey-mute"></p>
         </div>
       </section>
 

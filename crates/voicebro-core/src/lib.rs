@@ -4,9 +4,11 @@
 //! these to Tauri commands and events. This crate has no Tauri dependency, so its tests run
 //! without a window. See `docs/ARCHITECTURE.md`.
 
+pub mod assistant;
 pub mod audio;
 pub mod discord;
 pub mod events;
+pub mod gate;
 pub mod paths;
 pub mod runtime;
 pub mod secrets;

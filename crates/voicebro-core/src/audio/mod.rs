@@ -11,5 +11,5 @@ pub mod queue;
 pub use earcon::Earcon;
 pub use frame::{peak, Frame, CHANNELS, FRAME_DURATION, FRAME_SAMPLES, SAMPLE_RATE};
 pub use output::{output_pair, OutputCounters, OutputHandle, PcmSource};
-pub use ports::{frame_channel, AudioPorts, FrameReceiver, FrameSender};
+pub use ports::{frame_channel, AudioPorts, FrameReceiver, FrameSender, INPUT_CAPACITY};
 pub use queue::FrameQueue;

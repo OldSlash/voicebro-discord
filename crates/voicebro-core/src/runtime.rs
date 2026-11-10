@@ -1,20 +1,21 @@
-//! The composition root. It owns the settings, the secret store, the event bus and the
-//! Discord adapter, and it is the only place that knows every subsystem. Later changes add
-//! the wake engine, the gate and the assistant here.
+//! The composition root. It owns the settings, the secret store, the event bus, the Discord
+//! adapter, the gates, the wake engine and the assistant, and it is the only place that
+//! knows every subsystem.
 
-use crate::audio::{Frame, OutputHandle};
+use crate::assistant::{Assistant, StubAssistant};
+use crate::audio::{frame_channel, AudioPorts, Frame, OutputHandle, INPUT_CAPACITY};
 use crate::discord::{AssistantState, DiscordError, DiscordRuntime, VoiceHost};
 use crate::events::{AppEvent, EventBus};
+use crate::gate::{ErrorReporter, GateSettings, RelayGate, RelayRegistry};
 use crate::secrets::{SecretError, SecretKey, SecretStore};
 use crate::settings::store::{SettingsStore, StoreError};
-use crate::settings::{Settings, ValidationError};
-use crate::status::{SecretStatus, Status};
-use crate::wake::{PhraseKind, PhraseSink, WakeFeed, WakeManager};
+use crate::settings::{SessionMode, Settings, ValidationError};
+use crate::status::{HotkeyStatus, SecretStatus, Status};
+use crate::wake::WakeManager;
 use serde_json::Value;
 use serenity::all::GuildId;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::runtime::Handle;
@@ -35,108 +36,136 @@ pub enum RuntimeError {
     Discord(#[from] DiscordError),
 }
 
-/// What Discord needs from the app before the session gate exists: the mute flag and the
-/// assistant state. The gate replaces this in the next change.
-struct Host {
-    muted: Arc<AtomicBool>,
-    events: EventBus,
-    outputs: Mutex<BTreeMap<u64, OutputHandle>>,
-    /// Set once the wake manager exists; the receive path feeds it per speaker.
-    wake: Mutex<Option<WakeManager>>,
-}
-
-/// Logs confirmed phrases until the session gate takes them over in the next change.
-struct LoggingSink {
+/// The connection errors by source, shared with the gates so they can report the
+/// assistant failing to become ready.
+struct ErrorSink {
+    errors: Mutex<BTreeMap<String, String>>,
     events: EventBus,
 }
 
-impl PhraseSink for LoggingSink {
-    fn on_phrase(
-        &self,
-        guild: u64,
-        kind: PhraseKind,
-        phrase: &str,
-        ssrc: u32,
-        since_phrase_end: Duration,
-    ) -> bool {
-        let label = match kind {
-            PhraseKind::Activate => "activation phrase",
-            PhraseKind::Deactivate => "deactivation phrase",
-        };
-        self.events.log(format!(
-            "{label} «{phrase}» heard in guild {guild} from speaker {ssrc}, {} ms after it ended",
-            since_phrase_end.as_millis()
-        ));
-        true
+impl ErrorReporter for ErrorSink {
+    fn report(&self, source: &str, message: Option<String>) {
+        {
+            let mut errors = self.errors.lock().expect("errors lock");
+            match &message {
+                Some(text) => {
+                    errors.insert(source.to_owned(), text.clone());
+                }
+                None => {
+                    errors.remove(source);
+                }
+            }
+        }
+        self.events.publish(AppEvent::ConnectionError {
+            source: source.to_owned(),
+            message,
+        });
     }
 }
 
-impl VoiceHost for Host {
-    fn on_tick(&self, guild: u64, _mixed: &Frame, speakers: &[(u32, &[i16])]) {
-        if speakers.is_empty() {
-            return;
-        }
-        let wake = self.wake.lock().expect("wake lock").clone();
-        let Some(wake) = wake else {
-            return;
-        };
-        if !wake.is_enabled() {
-            return;
-        }
-        for (ssrc, pcm) in speakers {
-            wake.feed(guild, *ssrc, pcm);
+/// What Discord needs from the app: a gate per voice channel, built on join from the
+/// current settings and attached to the assistant.
+struct GateHost {
+    registry: RelayRegistry,
+    wake: WakeManager,
+    assistant: Arc<dyn Assistant>,
+    events: EventBus,
+    errors: Arc<ErrorSink>,
+    gate_settings: Mutex<GateSettings>,
+    discord: Mutex<Option<Arc<DiscordRuntime>>>,
+}
+
+impl VoiceHost for GateHost {
+    fn on_tick(&self, guild: u64, mixed: &Frame, speakers: &[(u32, &[i16])]) {
+        if let Some(gate) = self.registry.get(guild) {
+            gate.process_tick(mixed, speakers);
         }
     }
 
-    fn set_speaker_name(&self, _guild: u64, _ssrc: u32, _name: &str) {}
+    fn set_speaker_name(&self, guild: u64, ssrc: u32, name: &str) {
+        if let Some(gate) = self.registry.get(guild) {
+            gate.set_speaker_name(ssrc, name);
+        }
+    }
 
-    fn set_participants(&self, _guild: u64, _names: &[String]) {}
+    fn set_participants(&self, guild: u64, names: &[String]) {
+        if let Some(gate) = self.registry.get(guild) {
+            gate.set_participants(names);
+        }
+    }
 
     fn on_join(&self, guild: u64, output: OutputHandle) {
-        output.set_muted(self.muted.load(Ordering::Acquire));
-        self.outputs
-            .lock()
-            .expect("outputs lock")
-            .insert(guild, output);
+        let (sender, receiver) = frame_channel(INPUT_CAPACITY);
+        let gate = RelayGate::new(
+            guild,
+            sender,
+            output.clone(),
+            self.gate_settings
+                .lock()
+                .expect("gate settings lock")
+                .clone(),
+            self.registry.is_muted(),
+            self.events.clone(),
+            Some(Arc::new(self.wake.clone())),
+            Some(Arc::clone(&self.errors) as Arc<dyn ErrorReporter>),
+        );
+        self.registry.register(Arc::clone(&gate));
+        match self.assistant.attach(
+            guild,
+            AudioPorts {
+                input: receiver,
+                output,
+            },
+        ) {
+            Ok(session) => gate.set_session(session),
+            Err(error) => {
+                self.events.log(format!(
+                    "assistant could not attach to guild {guild}: {error}"
+                ));
+                self.errors.report("assistant", Some(error.to_string()));
+            }
+        }
     }
 
     fn on_leave(&self, guild: u64) {
-        self.outputs.lock().expect("outputs lock").remove(&guild);
+        self.assistant.detach(guild);
+        if let Some(gate) = self.registry.unregister(guild) {
+            gate.output().flush();
+        }
     }
 
     fn assistant_state(&self, guild: u64) -> AssistantState {
-        if !self
-            .outputs
-            .lock()
-            .expect("outputs lock")
-            .contains_key(&guild)
-        {
-            AssistantState::Off
-        } else if self.muted.load(Ordering::Acquire) {
+        let Some(gate) = self.registry.get(guild) else {
+            return AssistantState::Off;
+        };
+        let status = gate.status();
+        if status.muted {
             AssistantState::Muted
+        } else if status.mode == SessionMode::WakeWord && !status.active {
+            AssistantState::WaitingForWakeWord
         } else {
             AssistantState::Listening
         }
     }
 
     fn toggle_mute(&self) -> bool {
-        let muted = !self.muted.fetch_xor(true, Ordering::AcqRel);
-        self.apply_mute(muted);
+        let muted = self.registry.toggle_muted();
+        self.after_mute_change(muted);
         muted
     }
 
     fn is_muted(&self) -> bool {
-        self.muted.load(Ordering::Acquire)
+        self.registry.is_muted()
     }
 }
 
-impl Host {
-    fn apply_mute(&self, muted: bool) {
-        for output in self.outputs.lock().expect("outputs lock").values() {
-            output.set_muted(muted);
-        }
+impl GateHost {
+    fn after_mute_change(&self, muted: bool) {
         log::info!("mute {}", if muted { "on" } else { "off" });
         self.events.publish(AppEvent::MuteChanged { muted });
+        if let Some(discord) = self.discord.lock().expect("discord lock").as_ref() {
+            discord.mark_panels_dirty();
+        }
     }
 }
 
@@ -148,15 +177,17 @@ pub struct Runtime {
     events: EventBus,
     handle: Handle,
     settings: RwLock<Settings>,
-    muted: Arc<AtomicBool>,
-    host: Arc<Host>,
+    host: Arc<GateHost>,
     discord: Arc<DiscordRuntime>,
     wake: WakeManager,
+    assistant: Arc<dyn Assistant>,
+    errors: Arc<ErrorSink>,
     secrets_set: Mutex<HashSet<SecretKey>>,
-    connection_errors: Mutex<BTreeMap<String, String>>,
+    hotkey: Mutex<HotkeyStatus>,
 }
 
 impl Runtime {
+    /// Builds the runtime with the stub assistant. `with_assistant` swaps in a real one.
     pub fn new(
         build_stamp: impl Into<String>,
         data_dir: PathBuf,
@@ -165,25 +196,51 @@ impl Runtime {
         events: EventBus,
         handle: Handle,
     ) -> Self {
-        let muted = Arc::new(AtomicBool::new(false));
+        Self::with_assistant(
+            build_stamp,
+            data_dir,
+            store,
+            secrets,
+            events,
+            handle,
+            Arc::new(StubAssistant::default()),
+        )
+    }
+
+    pub fn with_assistant(
+        build_stamp: impl Into<String>,
+        data_dir: PathBuf,
+        store: SettingsStore,
+        secrets: Arc<dyn SecretStore>,
+        events: EventBus,
+        handle: Handle,
+        assistant: Arc<dyn Assistant>,
+    ) -> Self {
+        let registry = RelayRegistry::default();
+        let errors = Arc::new(ErrorSink {
+            errors: Mutex::new(BTreeMap::new()),
+            events: events.clone(),
+        });
         let wake = WakeManager::with_default_engines(
             crate::paths::assets_dir(&data_dir),
             events.clone(),
-            Arc::new(LoggingSink {
-                events: events.clone(),
-            }),
+            Arc::new(registry.clone()),
         );
-        let host = Arc::new(Host {
-            muted: Arc::clone(&muted),
+        let host = Arc::new(GateHost {
+            registry,
+            wake: wake.clone(),
+            assistant: Arc::clone(&assistant),
             events: events.clone(),
-            outputs: Mutex::new(BTreeMap::new()),
-            wake: Mutex::new(Some(wake.clone())),
+            errors: Arc::clone(&errors),
+            gate_settings: Mutex::new(GateSettings::from_settings(&Settings::default())),
+            discord: Mutex::new(None),
         });
         let discord = Arc::new(DiscordRuntime::new(
             events.clone(),
             host.clone(),
             handle.clone(),
         ));
+        *host.discord.lock().expect("discord lock") = Some(Arc::clone(&discord));
         Self {
             build_stamp: build_stamp.into(),
             data_dir,
@@ -192,17 +249,19 @@ impl Runtime {
             events,
             handle,
             settings: RwLock::new(Settings::default()),
-            muted,
             host,
             discord,
             wake,
+            assistant,
+            errors,
             secrets_set: Mutex::new(HashSet::new()),
-            connection_errors: Mutex::new(BTreeMap::new()),
+            hotkey: Mutex::new(HotkeyStatus::default()),
         }
     }
 
     /// Loads settings (writing the defaults on first start), learns which secrets are set,
-    /// and connects to Discord when a token is stored and auto-connect is on.
+    /// configures the wake engine, and connects to Discord when a token is stored and
+    /// auto-connect is on.
     pub fn start(&self) -> Result<(), RuntimeError> {
         self.store.cleanup_partial();
         let settings = match self.store.load()? {
@@ -225,6 +284,8 @@ impl Runtime {
             }
         };
         *self.settings.write().expect("settings lock") = settings;
+        *self.host.gate_settings.lock().expect("gate settings lock") =
+            GateSettings::from_settings(&self.settings());
         crate::wake::assets::cleanup_partial(&crate::paths::assets_dir(&self.data_dir));
         self.wake.configure(&self.settings());
 
@@ -250,13 +311,13 @@ impl Runtime {
         Ok(())
     }
 
-    /// Stops Discord; waits for it so the process can exit cleanly.
+    /// Stops the wake engine and Discord; waits for Discord so the process can exit cleanly.
     pub fn shutdown(&self) {
         self.wake.stop();
         let discord = Arc::clone(&self.discord);
         if discord.is_running() {
             let _ = self.handle.block_on(async move {
-                tokio::time::timeout(std::time::Duration::from_secs(10), discord.stop()).await
+                tokio::time::timeout(Duration::from_secs(10), discord.stop()).await
             });
         }
         log::info!("runtime stopped");
@@ -274,6 +335,14 @@ impl Runtime {
         self.settings.read().expect("settings lock").clone()
     }
 
+    pub fn wake(&self) -> &WakeManager {
+        &self.wake
+    }
+
+    pub fn assistant(&self) -> &Arc<dyn Assistant> {
+        &self.assistant
+    }
+
     /// Validates and stores a patched document, then applies the changed sections.
     pub fn save_settings(&self, patch: &Value) -> Result<Settings, RuntimeError> {
         let current = self.settings();
@@ -289,28 +358,32 @@ impl Runtime {
 
     /// Reconfigures only the subsystems whose section changed.
     fn apply(&self, changed: &[&'static str]) {
+        let settings = self.settings();
         let mut wake_dirty = false;
+        let mut gates_dirty = false;
         for section in changed {
+            log::info!("settings: {section} changed");
             match *section {
                 "discord" => {
-                    log::info!(
-                        "settings: discord changed; the guild id applies at the next connection"
-                    );
+                    log::info!("settings: the guild id applies at the next connection");
                 }
-                "session" | "wake" => {
-                    log::info!("settings: {section} changed");
+                "session" => {
                     wake_dirty = true;
+                    gates_dirty = true;
                 }
-                other => log::info!("settings: {other} changed"),
+                "wake" => wake_dirty = true,
+                "assistant" => gates_dirty = true,
+                _ => {}
             }
         }
-        if wake_dirty {
-            self.wake.configure(&self.settings());
+        if gates_dirty {
+            let gate_settings = GateSettings::from_settings(&settings);
+            *self.host.gate_settings.lock().expect("gate settings lock") = gate_settings.clone();
+            self.host.registry.apply_settings(&gate_settings);
         }
-    }
-
-    pub fn wake(&self) -> &WakeManager {
-        &self.wake
+        if wake_dirty {
+            self.wake.configure(&settings);
+        }
     }
 
     pub fn set_secret(&self, name: &str, value: &str) -> Result<(), RuntimeError> {
@@ -394,14 +467,12 @@ impl Runtime {
     }
 
     pub fn is_muted(&self) -> bool {
-        self.muted.load(Ordering::Acquire)
+        self.host.registry.is_muted()
     }
 
     pub fn set_muted(&self, muted: bool) -> bool {
-        let previous = self.muted.swap(muted, Ordering::AcqRel);
-        if previous != muted {
-            self.host.apply_mute(muted);
-            self.discord.mark_panels_dirty();
+        if self.host.registry.set_muted(muted) {
+            self.host.after_mute_change(muted);
         }
         muted
     }
@@ -411,21 +482,24 @@ impl Runtime {
         self.set_muted(!self.is_muted())
     }
 
-    pub fn set_connection_error(&self, source: &str, message: Option<String>) {
-        let mut errors = self.connection_errors.lock().expect("errors lock");
-        match &message {
-            Some(text) => {
-                errors.insert(source.to_owned(), text.clone());
+    /// The desktop shell reports the global hotkey registration here.
+    pub fn set_hotkey_status(&self, status: HotkeyStatus) {
+        match &status.error {
+            Some(error) => self.events.log(format!(
+                "hotkey «{}» not registered: {error}; the app button and the Discord panel still work",
+                status.shortcut
+            )),
+            None if status.registered => {
+                log::info!("hotkey «{}» registered", status.shortcut);
             }
-            None => {
-                errors.remove(source);
-            }
+            None => log::info!("no mute hotkey configured"),
         }
-        drop(errors);
-        self.events.publish(AppEvent::ConnectionError {
-            source: source.to_owned(),
-            message,
-        });
+        *self.hotkey.lock().expect("hotkey lock") = status.clone();
+        self.events.publish(AppEvent::Hotkey(Box::new(status)));
+    }
+
+    pub fn set_connection_error(&self, source: &str, message: Option<String>) {
+        self.errors.report(source, message);
     }
 
     pub fn status(&self) -> Status {
@@ -434,6 +508,7 @@ impl Runtime {
             build_stamp: self.build_stamp.clone(),
             data_dir: self.data_dir.display().to_string(),
             muted: self.is_muted(),
+            hotkey: self.hotkey.lock().expect("hotkey lock").clone(),
             secrets: SecretKey::ALL
                 .iter()
                 .map(|key| {
@@ -445,9 +520,11 @@ impl Runtime {
                     )
                 })
                 .collect(),
-            connection_errors: self.connection_errors.lock().expect("errors lock").clone(),
+            connection_errors: self.errors.errors.lock().expect("errors lock").clone(),
             discord: self.discord.status(),
             wake: self.wake.status(),
+            gates: self.host.registry.statuses(),
+            assistant: self.assistant.status(),
             settings: self.settings(),
         }
     }
@@ -456,6 +533,7 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::output_pair;
     use crate::secrets::MemoryStore;
     use serde_json::json;
 
@@ -566,6 +644,67 @@ mod tests {
             events.try_recv().is_err(),
             "no event when the state did not change"
         );
+    }
+
+    #[test]
+    fn joining_builds_a_gate_attached_to_the_assistant_and_leaving_removes_it() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({ "session": { "mode": "always" } }))
+            .unwrap();
+        let (output, _source) = output_pair();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.on_join(42, output.clone());
+        let status = runtime.status();
+        assert!(status.gates["42"].active, "always mode: active at once");
+        assert!(status.gates["42"].session_wanted);
+        assert_eq!(status.assistant.calls, vec!["42".to_owned()]);
+        assert_eq!(host.assistant_state(42), AssistantState::Listening);
+        assert_eq!(host.assistant_state(43), AssistantState::Off);
+
+        runtime.set_muted(true);
+        assert_eq!(host.assistant_state(42), AssistantState::Muted);
+        assert!(output.is_muted());
+        runtime.set_muted(false);
+
+        runtime
+            .save_settings(&json!({ "session": { "mode": "wake_word" } }))
+            .unwrap();
+        assert_eq!(host.assistant_state(42), AssistantState::WaitingForWakeWord);
+        assert!(
+            output.is_muted(),
+            "waiting for the wake word keeps the output silent"
+        );
+
+        host.on_leave(42);
+        assert!(runtime.status().gates.is_empty());
+        assert!(runtime.status().assistant.calls.is_empty());
+        assert_eq!(host.assistant_state(42), AssistantState::Off);
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn hotkey_status_is_kept_and_published() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        let mut events = runtime.events().subscribe();
+        runtime.set_hotkey_status(HotkeyStatus {
+            shortcut: "Ctrl+Alt+M".to_owned(),
+            registered: false,
+            error: Some("taken".to_owned()),
+        });
+        assert_eq!(runtime.status().hotkey.error.as_deref(), Some("taken"));
+        let mut saw = false;
+        while let Ok(event) = events.try_recv() {
+            if let AppEvent::Hotkey(status) = event {
+                saw = !status.registered;
+            }
+        }
+        assert!(saw);
     }
 
     #[test]

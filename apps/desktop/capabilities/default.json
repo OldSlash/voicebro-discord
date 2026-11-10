@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "The main window may call the app's commands and the log plugin.",
   "windows": ["main"],
-  "permissions": ["core:default", "log:default"]
+  "permissions": [
+    "core:default",
+    "log:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered"
+  ]
 }

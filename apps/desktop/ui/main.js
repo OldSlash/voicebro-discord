@@ -105,6 +105,23 @@
       : "none";
     $("status-mute").textContent = status.muted ? "muted" : "not muted";
     $("mute-toggle").textContent = status.muted ? "Unmute" : "Mute";
+    const gates = Object.values(status.gates || {});
+    $("status-gates").textContent = gates.length
+      ? gates.map((g) => {
+          const parts = [g.mode === "always" ? "always on" : g.active ? "session active" : "waiting for the wake word"];
+          if (g.muted) parts.push("muted");
+          if (g.session_wanted) parts.push(g.assistant_ready ? "assistant ready" : "assistant connecting");
+          if (g.last_wake_phrase) parts.push(`last phrase “${g.last_wake_phrase}”`);
+          if (g.replay_held) parts.push(`${g.replay_held} frames held`);
+          return `${g.guild_id}: ${parts.join(", ")}`;
+        }).join("; ")
+      : "none";
+    const hotkey = status.hotkey || {};
+    $("status-hotkey").textContent = !hotkey.shortcut
+      ? "none configured"
+      : hotkey.registered
+        ? `${hotkey.shortcut} (registered)`
+        : `${hotkey.shortcut}: not registered${hotkey.error ? `: ${hotkey.error}` : ""}`;
     $("status-data-dir").textContent = status.data_dir;
     $("status-wake").textContent = wakeText(status.wake || {});
     const tokenSet = Boolean(status.secrets?.discord_token?.is_set);
@@ -226,6 +243,8 @@
             break;
           case "discord":
           case "wake":
+          case "gate":
+          case "hotkey":
           case "settings_changed":
           case "secret_changed":
           case "connection_error":

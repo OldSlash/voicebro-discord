@@ -28,6 +28,10 @@ pub enum AppEvent {
     Discord(Box<crate::discord::DiscordStatus>),
     /// The wake-word engine changed state (downloading, loading, ready, error).
     Wake(Box<crate::wake::WakeStatus>),
+    /// A guild's session gate changed (session started or ended, mute, settings).
+    Gate(Box<crate::gate::GateStatus>),
+    /// The global hotkey was registered, re-registered or failed.
+    Hotkey(Box<crate::status::HotkeyStatus>),
     /// Progress of a first-use asset download, in steps of at least 20 %.
     Assets {
         label: String,

@@ -4,11 +4,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde_json::{json, Value};
-use std::sync::Arc;
-use tauri::{Emitter, Manager, State};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
 use voicebro_core::settings::store::SettingsStore;
-use voicebro_core::{paths, secrets, EventBus, Runtime, Settings, Status};
+use voicebro_core::status::HotkeyStatus;
+use voicebro_core::{paths, secrets, AppEvent, EventBus, Runtime, Settings, Status};
 
 const BUILD_STAMP: &str = env!("VOICEBRO_BUILD_STAMP");
 const LOG_FILE_LIMIT: u128 = 4_000_000;
@@ -33,6 +35,53 @@ const CHATTY_CRATES: &[&str] = &[
 
 struct AppState {
     runtime: Arc<Runtime>,
+    /// The shortcut currently registered with the system, if any.
+    hotkey: Mutex<Option<Shortcut>>,
+}
+
+/// Registers the mute hotkey from the settings, unregistering the previous one first. An
+/// empty setting registers nothing. The outcome goes to the runtime's status.
+fn apply_hotkey(app: &AppHandle, state: &AppState) {
+    let wanted = state.runtime.settings().hotkey.mute.trim().to_owned();
+    let shortcuts = app.global_shortcut();
+    let mut current = state.hotkey.lock().expect("hotkey lock");
+    if let Some(previous) = current.take() {
+        if let Err(error) = shortcuts.unregister(previous) {
+            log::warn!("hotkey: could not unregister {previous}: {error}");
+        }
+    }
+    if wanted.is_empty() {
+        state.runtime.set_hotkey_status(HotkeyStatus::default());
+        return;
+    }
+    let status = match wanted.parse::<Shortcut>() {
+        Ok(shortcut) => match shortcuts.register(shortcut) {
+            Ok(()) => {
+                *current = Some(shortcut);
+                HotkeyStatus {
+                    shortcut: wanted,
+                    registered: true,
+                    error: None,
+                }
+            }
+            Err(error) => HotkeyStatus {
+                shortcut: wanted,
+                registered: false,
+                error: Some(error.to_string()),
+            },
+        },
+        Err(error) => HotkeyStatus {
+            shortcut: wanted,
+            registered: false,
+            error: Some(format!("not a valid shortcut: {error}")),
+        },
+    };
+    state.runtime.set_hotkey_status(status);
+}
+
+#[tauri::command]
+fn toggle_mute(state: State<'_, AppState>) -> bool {
+    state.runtime.toggle_mute()
 }
 
 #[tauri::command]
@@ -132,8 +181,22 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(log_plugin(&data_dir))
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    // Toggle only, on the key-down edge; the hotkey is the mute switch.
+                    if event.state() == ShortcutState::Pressed {
+                        if let Some(state) = app.try_state::<AppState>() {
+                            let muted = state.runtime.toggle_mute();
+                            log::info!("mute {} from the hotkey", if muted { "on" } else { "off" });
+                        }
+                    }
+                })
+                .build(),
+        )
         .manage(AppState {
             runtime: Arc::clone(&runtime),
+            hotkey: Mutex::new(None),
         })
         .setup(move |app| {
             // The first log line identifies the build.
@@ -142,14 +205,25 @@ fn main() {
                 log::error!("runtime start: {error}");
                 runtime.set_connection_error("runtime", Some(error.to_string()));
             }
+            apply_hotkey(app.handle(), &app.state::<AppState>());
 
-            // Forward every core event to the webview as one Tauri event.
+            // Forward every core event to the webview as one Tauri event, and re-register
+            // the hotkey when the settings change.
             let app_handle = app.handle().clone();
             let mut events = runtime.events().subscribe();
+            let mut last_hotkey = runtime.settings().hotkey.mute.clone();
             tauri::async_runtime::spawn(async move {
                 loop {
                     match events.recv().await {
                         Ok(event) => {
+                            if matches!(event, AppEvent::SettingsChanged) {
+                                let state = app_handle.state::<AppState>();
+                                let now = state.runtime.settings().hotkey.mute.clone();
+                                if now != last_hotkey {
+                                    last_hotkey = now;
+                                    apply_hotkey(&app_handle, &state);
+                                }
+                            }
                             if let Err(error) = app_handle.emit("app-event", &event) {
                                 log::warn!("event bridge: {error}");
                             }
@@ -171,6 +245,7 @@ fn main() {
             status,
             app_info,
             set_muted,
+            toggle_mute,
             discord_connect,
             discord_disconnect
         ])

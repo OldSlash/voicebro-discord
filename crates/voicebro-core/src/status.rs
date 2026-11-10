@@ -12,17 +12,29 @@ pub struct SecretStatus {
     pub is_set: bool,
 }
 
+/// The global mute hotkey as the desktop shell reports it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct HotkeyStatus {
+    pub shortcut: String,
+    pub registered: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Status {
     pub build_stamp: String,
     pub data_dir: String,
     pub muted: bool,
+    pub hotkey: HotkeyStatus,
     /// Keyed by secret name; values say only whether the secret is set.
     pub secrets: BTreeMap<String, SecretStatus>,
     /// Keyed by source (`discord`, `codex`, `call`, `secret_store`); present while failing.
     pub connection_errors: BTreeMap<String, String>,
     pub discord: crate::discord::DiscordStatus,
     pub wake: crate::wake::WakeStatus,
+    /// One gate per guild the bot is in a voice channel of, keyed by guild id.
+    pub gates: BTreeMap<String, crate::gate::GateStatus>,
+    pub assistant: crate::assistant::AssistantStatus,
     pub settings: Settings,
 }
 
