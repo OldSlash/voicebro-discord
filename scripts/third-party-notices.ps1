@@ -5,7 +5,8 @@
 # installer's components; the components the app downloads only after the user's OK (Vosk
 # and its models); and what the app needs but does not ship (the Codex CLI). License texts
 # that no crate ships are kept in scripts\notices\. The script stops and writes nothing when
-# one of those texts is missing or a crate with a native library changed its version.
+# one of those texts is missing, a crate with a native library changed its version, or its
+# list of wake models and the catalog in wake\catalog.rs differ.
 # Run from the repository root; the release script calls it before `cargo tauri build`:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\third-party-notices.ps1
 param(
@@ -156,15 +157,42 @@ Add-Component "NSIS 3.13 (Nullsoft Scriptable Install System)" "zlib/libpng; the
 Add-Component "nsis_tauri_utils 0.5.3" "MIT OR Apache-2.0" "https://github.com/tauri-apps/nsis-tauri-utils" @("Tauri's NSIS plug-in.") "LICENSE_MIT" (Read-NoticeText "scripts\notices\nsis_tauri_utils-LICENSE_MIT.txt")
 Add-Component "Microsoft Edge WebView2 Runtime" "Microsoft's license terms for the WebView2 Runtime" "https://developer.microsoft.com/microsoft-edge/webview2/" @("Not part of VoiceBro's files. When the runtime is missing, the installer downloads", "Microsoft's installer for it (MicrosoftEdgeWebview2Setup.exe) from go.microsoft.com", "and runs it.") "" ""
 
-Add-Heading "4. Downloaded only after you agree in the window (Settings > Assistant > Download)"
+# The wake catalog's models with their licenses. This list must name exactly the models of
+# crates\voicebro-core\src\wake\catalog.rs: a model on one side only stops the script.
+$wakeModels = [ordered]@{
+    "vosk-model-small-en-us-0.15" = "Apache-2.0"
+    "vosk-model-small-ru-0.22" = "Apache-2.0"
+    "vosk-model-small-cs-0.4-rhasspy" = "MIT"
+    "vosk-model-small-nl-0.22" = "Apache-2.0"
+    "vosk-model-small-fr-0.22" = "Apache-2.0"
+    "vosk-model-small-de-0.15" = "Apache-2.0"
+    "vosk-model-small-it-0.22" = "Apache-2.0"
+    "vosk-model-small-pl-0.22" = "Apache-2.0"
+    "vosk-model-small-pt-0.3" = "Apache-2.0"
+    "vosk-model-small-es-0.42" = "Apache-2.0"
+}
+$catalogIds = @(Select-String -Path "crates\voicebro-core\src\wake\catalog.rs" -Pattern 'directory: "(vosk-model-[^"]+)"' |
+    ForEach-Object { $_.Matches[0].Groups[1].Value })
+foreach ($id in $catalogIds) {
+    if (-not $wakeModels.Contains($id)) { $problems.Add("wake model $id is in catalog.rs but not in the notices script") }
+}
+foreach ($id in $wakeModels.Keys) {
+    if ($catalogIds -notcontains $id) { $problems.Add("wake model $id is in the notices script but not in catalog.rs") }
+}
+
+Add-Heading "4. Downloaded only after you agree in the window"
 [void]$text.AppendLine("Vosk 0.3.45 (libvosk.dll and its runtime DLLs)")
 [void]$text.AppendLine("License: Apache-2.0")
 [void]$text.AppendLine("Source: https://github.com/alphacep/vosk-api")
 [void]$text.AppendLine("")
-[void]$text.AppendLine("Vosk models vosk-model-small-en-us-0.15 and vosk-model-small-ru-0.22")
+[void]$text.AppendLine("Vosk models, one per wake word language you choose:")
+foreach ($id in $wakeModels.Keys) {
+    if ($wakeModels[$id] -eq "Apache-2.0") { [void]$text.AppendLine("  $id") }
+}
 [void]$text.AppendLine("License: Apache-2.0")
 [void]$text.AppendLine("Source: https://alphacephei.com/vosk/models")
 [void]$text.AppendLine("")
+Add-Component "Vosk model vosk-model-small-cs-0.4-rhasspy (Czech, from the Rhasspy project)" "MIT" "https://github.com/rhasspy/cs_kaldi-rhasspy (downloaded from https://alphacephei.com/vosk/models)" @() "LICENSE" (Read-NoticeText "scripts\notices\cs_kaldi-rhasspy-LICENSE.txt")
 [void]$text.AppendLine("Models you put into the models folder yourself carry their own licenses.")
 [void]$text.AppendLine("")
 
