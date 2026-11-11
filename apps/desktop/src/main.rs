@@ -3,6 +3,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod codex_install;
 mod log_ring;
 mod memory;
 mod system;
@@ -84,10 +85,10 @@ struct AppState {
     memory: memory::Slot,
     /// The reading thread, present while `diagnostics.memory` is on.
     memory_reader: Mutex<Option<memory::Reader>>,
+    /// The Codex install offered on the Status tab when Codex is missing.
+    installer: codex_install::Installer,
 }
 
-/// Starts or stops the memory reader so that it runs exactly while `diagnostics.memory`
-/// is on. Called at start-up and after every settings change.
 /// Follows `diagnostics.verbose_log`: the file filter reads the flag on every record.
 fn apply_verbose_log(state: &AppState) {
     set_verbose_log(state.runtime.settings().diagnostics.verbose_log);
@@ -109,6 +110,8 @@ fn set_verbose_log(on: bool) -> bool {
     was != on
 }
 
+/// Starts or stops the memory reader so that it runs exactly while `diagnostics.memory`
+/// is on. Called at start-up and after every settings change.
 fn apply_memory_reader(state: &AppState) {
     let wanted = state.runtime.settings().diagnostics.memory;
     let mut reader = state.memory_reader.lock().expect("memory reader lock");
@@ -141,6 +144,31 @@ fn codex(state: &AppState) -> Result<CodexAssistant, String> {
 #[tauri::command]
 async fn codex_sign_in(state: State<'_, AppState>) -> Result<String, String> {
     codex(&state)?.sign_in().await
+}
+
+/// Whether winget is on this PC, what an install does, and the install's state.
+#[tauri::command]
+fn codex_install_info(state: State<'_, AppState>) -> codex_install::InstallInfo {
+    state.installer.info()
+}
+
+/// Runs winget in a console window the user sees; the window gets an `app-event` of kind
+/// `codex_install` when it ends.
+#[tauri::command]
+fn codex_install(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    log::info!("Codex install: winget started in its own console window");
+    state.installer.start_winget(move |finished| {
+        match &finished {
+            codex_install::InstallState::Finished { code } => {
+                log::info!("Codex install: winget ended with code {code}")
+            }
+            other => log::warn!("Codex install: {other:?}"),
+        }
+        let event = json!({ "event": "codex_install", "state": finished });
+        if let Err(error) = app.emit("app-event", &event) {
+            log::warn!("event bridge: {error}");
+        }
+    })
 }
 
 #[tauri::command]
@@ -453,6 +481,7 @@ fn main() {
             started: Instant::now(),
             memory: Arc::new(Mutex::new(None)),
             memory_reader: Mutex::new(None),
+            installer: codex_install::Installer::default(),
         })
         .setup(move |app| {
             log.attach(app.handle().clone());
@@ -520,6 +549,8 @@ fn main() {
             discord_disconnect,
             codex_sign_in,
             codex_check,
+            codex_install_info,
+            codex_install,
             codex_models,
             capabilities,
             wake_models,
