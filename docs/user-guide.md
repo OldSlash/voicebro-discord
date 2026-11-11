@@ -118,14 +118,24 @@ Open **Settings → Assistant**.
   session when someone says an activation phrase and ends it with a deactivation phrase
   or after the **Auto-stop** time. **Always listening** sends everything said in the
   channel to the assistant while the bot is there.
-- **Wake model** is the language of your phrases. English (US) and Russian are built in.
-  Each model keeps its own phrases, so switching languages loses nothing.
+- **Wake model** is the language of your phrases: English (US, the default), Russian,
+  Czech, Dutch, French, German, Italian, Polish, Portuguese (Brazil) or Spanish. None of
+  them comes with the installer; each is downloaded once, after you agree. Each model
+  keeps its own phrases, so switching languages loses nothing.
 - **Activation phrases** and **Deactivation phrases** belong to the model chosen below
   them: one per line, or separated by commas. Words the model does not know are listed
   under the field.
-- The first time a model is used, VoiceBro shows what it needs to download (the Vosk
-  recognizer, 15 MB from github.com, and the model, 41 MB for English or 46 MB for
-  Russian, from alphacephei.com) and waits for you to press **Download**.
+- When the wake word's files are not on this PC, a window says so: **The wake word is not
+  installed**, with what it needs to download (the Vosk recognizer, 15 MB from
+  github.com, once, and the model, 32 to 53 MB depending on the language, from
+  alphacephei.com). It appears when VoiceBro starts, when the bot joins a voice channel,
+  when you switch to **Wake word**, and when you choose a model that is not downloaded
+  yet. Nothing is downloaded until you press **Download**; the window shows the progress
+  and closes when the files are in place.
+- **Not now** closes the window and downloads nothing. The same notice stays under
+  **Wake model** in **Settings → Assistant**, with its own **Download** button, and the
+  window comes back at the next start or join. When you were choosing a model,
+  **Cancel** keeps the model you had.
 
 Good phrases are easy to recognize and rare in game talk:
 
@@ -133,16 +143,22 @@ Good phrases are easy to recognize and rare in game talk:
   always recognized; a lone `bro` at the start of a sentence was sometimes heard as
   another word.
 - If a phrase can be written two ways, add both, for example `goodbye` and `good bye`.
+- Check what the model hears. The **Console** shows a "heard:" line for everything the
+  recognizer understood; if it writes your phrase differently, use its spelling. In our
+  tests the small Czech model heard "kámo" as "kámoš" and the small French model heard
+  "pote" as "pâte", while "hallo maat", "ciao amico", "cześć stary" and "hallo kumpel"
+  were recognized every time.
 - Keep the deactivation phrase distinct: it cuts off the current answer.
 
 ## 6. Add another language
 
-VoiceBro works with any [Vosk model](https://alphacephei.com/vosk/models).
+VoiceBro works with any [Vosk model](https://alphacephei.com/vosk/models), also for a
+language that is not in the **Wake model** list.
 
 1. Download a **small** model for your language, for example
-   `vosk-model-small-de-0.15` for German.
+   `vosk-model-small-ca-0.4` for Catalan.
 2. In **Settings → Assistant**, press **Open models folder** and extract the zip there, so
-   that you get `models\vosk-model-small-de-0.15\am\final.mdl`.
+   that you get `models\vosk-model-small-ca-0.4\am\final.mdl`.
 3. Restart VoiceBro. The model appears in **Wake model**, marked "models folder".
 
 Use the small models: the large ones take minutes to load and gigabytes of memory. A model
@@ -227,7 +243,7 @@ need it.
 |---|---|
 | The commands do not show up in Discord | Put your server's ID into **Config → Discord guild ID**, or wait up to an hour. |
 | `/join` replies "Codex CLI is not installed" or "not signed in" | Do [step 4](#4-set-up-codex); the **Status** tab shows what is missing. |
-| The wake phrase does nothing | Look at **Wake word** on the **Status** tab: it says when no phrases are set, when a download waits for you, or which words the model does not know. The **Console** shows a "heard:" line for everything the recognizer understood, so you can pick phrases it hears correctly. |
+| The wake phrase does nothing | Look at **Wake word** on the **Status** tab: it says when the model still waits for its download (you pressed **Not now**; press **Download** under **Wake model** in **Settings → Assistant**), when no phrases are set, or which words the model does not know. The **Console** shows a "heard:" line for everything the recognizer understood, so you can pick phrases it hears correctly. |
 | The bot joins but does not hear or speak | Check that the bot has **Connect** and **Speak** in that channel, and look for errors in the **Console**. |
 | The assistant's voice stutters in places | The ping from the PC that runs VoiceBro to the channel's Discord voice server is probably too high: at around 300 ms or more the voice can break up. Set the channel's **Region Override** (**Edit Channel → Overview**) to a region close to that PC. See [Limitations](../README.md#limitations). |
 | VoiceBro does not start and names a folder | Install or extract it into a folder you can write to, such as `%LOCALAPPDATA%\VoiceBro`. |

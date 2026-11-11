@@ -342,17 +342,27 @@ pub trait WakeFeed: Send + Sync {
 ```
 
 - **`WakeManager`** owns the engines, the assets directory and the worker. `configure(settings)`
-  is called at start and whenever the `session` or `wake` section changes: it stops the
-  engine outside wake-word mode (`Off`), stops it when both phrase lists of the selected
-  model are empty (`NoPhrases`), sends new phrases to the running worker when only the
-  phrases changed, and otherwise loads and starts on a thread of its own (`Loading` →
-  `Ready`, or `Error {message}`). When files of the engine or the model are missing, the
-  loader asks first: it publishes `NeedsDownload {items}` (label, host, bytes of each
-  missing archive), requests nothing from the network and ends. `WakeManager::download()`
-  (the window's Download button, command `wake_download`) records the consent for that
-  engine and model in memory and runs `configure` again with the last settings, which then
-  downloads (`Downloading {label, percent}`) and loads. The consent is not stored: files on
-  disk need none, and after a restart with files still missing the question comes back.
+  is called at start and whenever the `session` or `wake` section changes. Outside
+  wake-word mode it stops the engine (`Off`) and checks nothing. In wake-word mode it first
+  checks, in the calling thread, which files of the engine and the selected model are
+  missing (two file stats), before it looks at the phrases. Missing files without the
+  user's consent publish `NeedsDownload {items}` (label, host, bytes of each missing
+  archive) at once, with or without phrases, and nothing is requested from the network.
+  With everything on disk it stops the engine when both phrase lists of the selected model
+  are empty (`NoPhrases`), sends new phrases to the running worker when only the phrases
+  changed, and otherwise loads and starts on a thread of its own (`Loading` → `Ready`, or
+  `Error {message}`). An unknown model or engine, or a local folder that is gone, skips the
+  check and ends in the loader's `Error`. `WakeManager::download(model)` (the Download
+  buttons, command `wake_download {model}`) is refused unless `model` is the selected
+  model; it records the consent for that engine and model in memory and runs `configure`
+  again with the last settings, which then downloads (`Downloading {label, percent}`) and
+  loads, or ends in `NoPhrases` when the model has none. The consent is not stored: files
+  on disk need none, after a restart with files still missing the question comes back, and
+  another model asks again. A load that ends after a newer `configure` (a generation
+  counter) applies the newest settings instead of publishing its own result.
+  `WakeManager::requirements(model)` (command `wake_requirements {model}`) lists what
+  choosing any catalog or local model would download, without changing anything; the
+  window's model choice asks it before saving.
   Every transition is published as `AppEvent::Wake(WakeStatus)` and visible in
   `Status.wake`. The manager implements `WakeFeed`; `feed` drops when the worker's queue is
   full and counts the drop.
@@ -376,8 +386,15 @@ pub trait WakeFeed: Send + Sync {
   carries no phrases: the activation and deactivation phrases are the user's, live in the
   settings file and start empty; the wake engine shows "no phrases configured" until the
   user enters them.
-  Today: `vosk-model-small-en-us-0.15` (the default of a new settings file) and
-  `vosk-model-small-ru-0.22`, plus the Vosk 0.3.45 Windows library.
+  Today ten small models, in the order the window lists them:
+  `vosk-model-small-en-us-0.15` (the default of a new settings file),
+  `vosk-model-small-ru-0.22`, then by language name `-cs-0.4-rhasspy` (MIT), `-nl-0.22`,
+  `-fr-0.22`, `-de-0.15`, `-it-0.22`, `-pl-0.22`, `-pt-0.3` (Brazilian; Vosk's older flat
+  layout, so its marker is `final.mdl`) and `-es-0.42`, all Apache 2.0 but Czech; plus the
+  Vosk 0.3.45 Windows library. None ships with the app. Sizes and hashes were measured
+  from a download (alphacephei publishes neither), and `catalog_models_load_when_enabled`
+  loads every entry through the real library. Swedish (289 MB), Greek (1.1 GB only) and the
+  EU languages without a Vosk model are left out; the models folder takes any other.
 - **Local models** (`local.rs`): `models\` in the data directory holds Vosk models the user
   extracted for other languages. `WakeManager::scan_local_models` creates the folder and
   lists it once at start (a new folder needs a restart): every subfolder with
@@ -625,10 +642,13 @@ recognizes; the code ships none.
   renamed over the old one. Unknown fields are kept; missing fields take defaults.
 - Schema version 2 keeps the wake phrases per model: `wake.phrases` maps a model id to its
   `activation` and `deactivation` lists, and only the selected model's lists are spotted.
-  Loading a version-1 file runs `store::migrate_v1` on the JSON first: its
-  `activation_phrases` and `deactivation_phrases` move under the model the file names (or
-  `vosk-model-small-ru-0.22`, the only model of version 1, which is then written into
-  `wake.model`), and the old fields are removed. The next save writes version 2.
+  Loading a version-1 file runs `store::migrate_v1` on the JSON first. When it has a
+  non-empty phrase list, its `activation_phrases` and `deactivation_phrases` move under the
+  model the file names (or `vosk-model-small-ru-0.22`, the only model of version 1, which
+  is then written into `wake.model`), so those phrases keep working. When it has none,
+  `wake.model` becomes the default of a new file (English): version 1 only ever had the
+  Russian model, so the model it names was never the user's choice. The old fields are
+  removed either way, and the next save writes version 2.
 - `Settings::validate()` is the only validator (one model's phrase lists must not overlap,
   timeout range, the model is a catalog id or `local:<plain folder name>` of the engine,
   shortcut parses). `Runtime::apply(settings)` diffs against the
@@ -767,10 +787,14 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     `wake.phrases.<selected model>.<list>`, built as a key array because model ids contain
     dots, show the selected model's name in their labels, and are filled again from the
     stored settings when another model is saved. Under the wake model control, the
-    download notice renders from `status.wake.state`: `needs_download` lists each file with
-    its size and site and a Download button (`wake_download`), `downloading` shows the
-    progress, and an error after a download shows the message with the button again; next
-    to it "Open models folder" (`open_models_folder`). The Codex model, reasoning effort and
+    download notice renders from `status.wake.state`: `needs_download` (with or without
+    phrases) lists each file with its size and site and a Download button
+    (`wake_download {model}`), `downloading` shows the progress, and an error after a
+    download shows the message with the button again; next to it "Open models folder"
+    (`open_models_folder`). Choosing a wake model first asks `wake_requirements {model}`:
+    nothing missing saves at once; otherwise the install dialog opens with the `choice`
+    reason and nothing is saved until its Download (which saves, then calls
+    `wake_download`); Cancel puts the list back on the stored model. The Codex model, reasoning effort and
     voice are selects filled from `capabilities` when the engine has them and text inputs
     with a datalist otherwise; the effort list follows the chosen model. The Codex card's
     "Answer handoff" list (`codex.handoff_mode`) offers Conversation items (recommended),
@@ -782,6 +806,19 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     "How loud the assistant speaks" and the tone volume, saved on release without a Save
     button, with the earcon switch, and under each gain the last second's peak and the clip
     count from `Status.audio`.
+  - **Install dialog** (`<dialog id="wake-install">`, opened with `showModal()`): one modal
+    dialog for the wake word's missing files, driven by `status.wake`. It opens when the
+    window's first status after `start()` (armed once the model list and the settings are
+    loaded) is in wake-word mode and `needs_download` (`start`), when the wake state later
+    turns into `needs_download` from another kind, as after a switch to wake word (`mode`),
+    when the number of `discord.voice_channels` grows while it is `needs_download` (`join`),
+    and from the wake model choice (`choice`). It names the model and each missing file
+    with its size and site, and the total. Download calls `wake_download` and shows the
+    progress in the dialog (one button, Hide), closes when the state leaves `downloading`
+    for `ready`, `no_phrases` or `loading`, and shows an error with Try again and Close.
+    Not now, Hide, Close and Escape store nothing: the state stays `needs_download`, so
+    only a new trigger opens it again, and the card's notice stays.
+    `apps/desktop/ui-dev/check-wake-dialog.mjs` runs all of this against the mock.
   - **Form state is kept apart from the status.** `main.js` holds the stored settings
     (from `get_settings`, refreshed on `settings_changed` and returned by each
     `save_settings`) and a state per field: clean, dirty (unsaved), saving or error
