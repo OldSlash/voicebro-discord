@@ -94,8 +94,8 @@ or a version mismatch; a trial build SHALL be marked as such and SHALL never be 
 The installer and the zip SHALL include `THIRD-PARTY-NOTICES.txt` naming, with license and
 license text, every crate built into `voicebro.exe`, the native libraries compiled or linked
 into it from inside those crates, and the installer's own components. It SHALL name Vosk
-and its models, which the app downloads with the user's OK, and the Codex CLI, which the
-app needs but does not ship, with their licenses.
+and every model of the wake catalog, which the app downloads with the user's OK, and the
+Codex CLI, which the app needs but does not ship, with their licenses.
 
 #### Scenario: Notices complete
 - **WHEN** the notices file of a release is compared with the crates of the release build
@@ -112,6 +112,14 @@ app needs but does not ship, with their licenses.
 #### Scenario: A license text goes missing
 - **WHEN** a license file the notices take a native library's or the installer's text from does not exist, for example after a dependency update moved it
 - **THEN** the notices script stops with an error that names the file and writes no notices file
+
+#### Scenario: Wake models named
+- **WHEN** the notices of a release are read
+- **THEN** they name the Vosk library and each of the ten catalog models with its license: the nine Apache 2.0 models in one group, and the Czech model with its MIT license text and copyright holder
+
+#### Scenario: Catalog and notices differ
+- **WHEN** the wake catalog has a model the notices script does not list, or the script lists one the catalog does not have
+- **THEN** the notices script stops with an error that names the model and writes no notices file
 
 ### Requirement: User guide
 `README.md` SHALL say what VoiceBro does, what it needs, where to download it, a quick
@@ -136,3 +144,11 @@ updating, uninstalling and troubleshooting.
 #### Scenario: What it is built on
 - **WHEN** a reader wants to know which third-party software VoiceBro is made of
 - **THEN** the README names its main components with links and licenses and says where the full list with every license text is
+
+### Requirement: Release artifacts carry no wake files
+The installer and the portable zip SHALL contain neither the Vosk library nor any wake
+model; the app SHALL download them only after the user's OK.
+
+#### Scenario: Release contents
+- **WHEN** the installer of a release is unpacked and the zip is listed
+- **THEN** neither contains `libvosk.dll`, a `vosk-model-*` folder or an `assets\` folder
