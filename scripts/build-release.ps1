@@ -57,6 +57,10 @@ if (Test-Path "target\release\dist-zip") { Remove-Item -Recurse -Force "target\r
 New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item "target\release\voicebro.exe" $stage
 Copy-Item "README.md" $stage
+# The user guide and the images both documents show, at the paths their links use.
+New-Item -ItemType Directory -Force "$stage\docs\images" | Out-Null
+Copy-Item "docs\user-guide.md" "$stage\docs"
+Copy-Item "docs\images\*.png" "$stage\docs\images"
 Copy-Item "LICENSE" $stage
 Copy-Item "target\release\dist-notices\THIRD-PARTY-NOTICES.txt" $stage
 $zipName = "VoiceBro_${version}_x64-portable$suffix.zip"

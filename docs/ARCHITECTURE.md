@@ -62,8 +62,8 @@ voicebro-discord/
       ui/                      static HTML/CSS/JS, no bundler, `withGlobalTauri: true`
     probe/                     headless dev binary: live probes and self-tests, not shipped
   scripts/                     build-release.ps1, third-party-notices.ps1, make-wake-corpus.ps1, measure.ps1
-  README.md                    the user guide, also in the portable zip
-  docs/
+  README.md                    the landing page: features, quick start, building from source, license
+  docs/                        this file, the user guide (user-guide.md) and its images (images/)
   openspec/
 ```
 
@@ -846,7 +846,13 @@ is built on it.
   `main`, with a clean tree and the tag `v<version>` on `HEAD`. It writes the notices,
   runs `cargo tauri build`, and puts into `target\release\dist\` (`dist-trial\` with
   `-trial` names) the installer, `VoiceBro_<version>_x64-portable.zip` (`voicebro.exe`,
-  `README.md`, `LICENSE`, `THIRD-PARTY-NOTICES.txt`) and `SHA256SUMS.txt`.
+  `README.md`, `docs\user-guide.md` with `docs\images\*.png`, `LICENSE`,
+  `THIRD-PARTY-NOTICES.txt`) and `SHA256SUMS.txt`.
+- **The documentation:** `README.md` is the landing page (features, requirements,
+  download, a five-step quick start, building from source, license); `docs/user-guide.md`
+  is the full guide. Their screenshots in `docs/images/` are taken from the command mock
+  opened with `?sample` (a sample session, a release-like build stamp), so no real server,
+  token or conversation shows.
 - **Third-party notices** `scripts\third-party-notices.ps1`: the crates of `cargo tree -p
   voicebro-desktop -e normal --target x86_64-pc-windows-msvc` (the metadata's resolve
   graph is not used: it unifies the whole workspace's features, dev dependencies included),
