@@ -42,10 +42,14 @@ const LAST_LEAVE_STOP_DELAY: Duration = Duration::from_millis(500);
 /// A sign-in that never completes stops holding the app-server after this long.
 const SIGN_IN_WAIT_LIMIT: Duration = Duration::from_secs(600);
 
+/// The status and start error when no Codex executable is found.
+pub const NOT_FOUND_STATUS: &str =
+    "codex not found: press Install Codex on the Status tab, or set the path of codex.exe in Config";
+
 /// Why a join was refused. The message is the reply the caller sees in Discord.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PrepareError {
-    #[error("Codex is not installed: install Codex CLI (npm install -g @openai/codex) or set its path in the VoiceBro settings")]
+    #[error("Codex CLI is not installed: press Install Codex on the VoiceBro Status tab (or set the path of codex.exe in Config), then run /join again")]
     NotFound,
     #[error("Codex did not start: {0}")]
     Start(String),
@@ -367,10 +371,8 @@ impl CodexAssistant {
         if let Some(server) = slot.as_ref().filter(|server| server.is_alive()) {
             return Ok(Arc::clone(server));
         }
-        let executable = find_codex(&self.config().executable).ok_or_else(|| {
-            "codex not found: install Codex CLI (npm install -g @openai/codex) or set its path in Settings"
-                .to_owned()
-        })?;
+        let executable =
+            find_codex(&self.config().executable).ok_or_else(|| NOT_FOUND_STATUS.to_owned())?;
         let server = AppServer::spawn(
             self.inner.handle.clone(),
             self.inner.events.clone(),
@@ -666,7 +668,7 @@ impl Assistant for CodexAssistant {
             .clone();
         let signed_in = account.as_ref().is_some_and(|account| account.signed_in);
         let summary = match (&executable, &server, &account, &error) {
-            (None, _, _, _) => "codex not found".to_owned(),
+            (None, _, _, _) => NOT_FOUND_STATUS.to_owned(),
             (_, _, _, Some(error)) => error.clone(),
             (_, None, _, _) => "codex found; it starts at /join".to_owned(),
             (_, Some(_), Some(account), _) if account.signed_in => format!(
@@ -838,7 +840,21 @@ mod tests {
             Err(PrepareError::NotFound)
         );
         assert!(!missing.status().running);
-        assert!(PrepareError::NotFound.to_string().contains("install Codex"));
+        let reply = PrepareError::NotFound.to_string();
+        assert!(
+            reply.contains("Install Codex") && reply.contains("Status tab"),
+            "{reply}"
+        );
+        assert!(reply.contains("/join again"), "{reply}");
+        assert!(!reply.contains("npm"), "{reply}");
+        let summary = missing.status().summary;
+        assert!(summary.starts_with("codex not found"), "{summary}");
+        assert!(summary.contains("Install Codex"), "{summary}");
+        assert_eq!(
+            PrepareError::SignedOut.to_string(),
+            "Codex is not signed in: use Sign in on the VoiceBro Status tab, then run /join again",
+            "the signed-out reply is unchanged"
+        );
 
         let Some(signed_out) = fake_codex("fake_codex_signed_out.cmd") else {
             return;

@@ -22,18 +22,36 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Distinguishes app-server processes, since thread ids only live as long as theirs.
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// Finds the native `codex.exe`: the configured path, then PATH, then the npm vendor
-/// folder, then the `codex.cmd` shim as a last resort (it runs through node and
-/// `kill_on_drop` would only kill the shim).
+/// Finds the native `codex.exe` with this process's environment; see [`find_codex_in`].
 pub fn find_codex(configured: &str) -> Option<PathBuf> {
+    let path_dirs = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    find_codex_in(
+        configured,
+        &path_dirs,
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .as_deref(),
+        std::env::var_os("APPDATA").map(PathBuf::from).as_deref(),
+    )
+}
+
+/// The configured path (only that one when set), then `codex.exe` on the PATH, then
+/// winget's command links folder (a running app's PATH does not have it after an install),
+/// then npm's native exe, then the `codex.cmd` shim as a last resort (it runs through node
+/// and `kill_on_drop` would only kill the shim).
+pub fn find_codex_in(
+    configured: &str,
+    path_dirs: &[PathBuf],
+    local_app_data: Option<&Path>,
+    app_data: Option<&Path>,
+) -> Option<PathBuf> {
     let configured = configured.trim();
     if !configured.is_empty() {
         let path = PathBuf::from(configured);
         return path.is_file().then_some(path);
     }
-    let path_dirs = std::env::var_os("PATH")
-        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
-        .unwrap_or_default();
     if let Some(found) = path_dirs
         .iter()
         .map(|dir| dir.join("codex.exe"))
@@ -41,8 +59,14 @@ pub fn find_codex(configured: &str) -> Option<PathBuf> {
     {
         return Some(found);
     }
-    if let Some(app_data) = std::env::var_os("APPDATA") {
-        let native = PathBuf::from(app_data)
+    if let Some(local) = local_app_data {
+        let link = local.join("Microsoft/WinGet/Links/codex.exe");
+        if link.is_file() {
+            return Some(link);
+        }
+    }
+    if let Some(app_data) = app_data {
+        let native = app_data
             .join("npm/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64")
             .join("vendor/x86_64-pc-windows-msvc/bin/codex.exe");
         if native.is_file() {
@@ -444,6 +468,57 @@ mod tests {
         let file = dir.path().join("codex.exe");
         std::fs::write(&file, b"").unwrap();
         assert_eq!(find_codex(&file.to_string_lossy()), Some(file));
+    }
+
+    #[test]
+    fn the_finder_looks_in_winget_links_after_the_path_and_before_npm() {
+        let root = tempfile::tempdir().unwrap();
+        let touch = |relative: &str| {
+            let path = root.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"").unwrap();
+            path
+        };
+        let local = root.path().join("local");
+        let roaming = root.path().join("roaming");
+        let path_dir = root.path().join("bin");
+        std::fs::create_dir_all(&path_dir).unwrap();
+        let path_dirs = std::slice::from_ref(&path_dir);
+        let find = || find_codex_in("", path_dirs, Some(&local), Some(&roaming));
+
+        assert_eq!(find(), None, "nothing installed");
+        let shim = touch("bin/codex.cmd");
+        assert_eq!(find(), Some(shim), "the shim as the last resort");
+        let npm = touch(
+            "roaming/npm/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+        );
+        assert_eq!(find(), Some(npm), "npm's native exe before the shim");
+        let winget = touch("local/Microsoft/WinGet/Links/codex.exe");
+        assert_eq!(find(), Some(winget), "winget's link before npm");
+        let on_path = touch("bin/codex.exe");
+        assert_eq!(find(), Some(on_path), "the PATH before winget's link");
+
+        let configured = touch("elsewhere/codex.exe");
+        assert_eq!(
+            find_codex_in(
+                &configured.to_string_lossy(),
+                path_dirs,
+                Some(&local),
+                Some(&roaming)
+            ),
+            Some(configured),
+            "the configured path wins"
+        );
+        assert_eq!(
+            find_codex_in(
+                "Z:/nowhere/codex.exe",
+                path_dirs,
+                Some(&local),
+                Some(&roaming)
+            ),
+            None,
+            "a missing configured path finds nothing, without falling back"
+        );
     }
 
     /// Live handshake when `VOICEBRO_CODEX_SMOKE=1`: initialize, account/read, a thread.

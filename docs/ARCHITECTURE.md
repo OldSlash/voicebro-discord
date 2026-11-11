@@ -438,6 +438,11 @@ assistant is given, so the app never panics on an unknown engine setting.
 
 **Codex implementation** (`assistant/codex/`), ChatGPT sign-in only:
 
+- Finding Codex (`find_codex_in`, every status read and every start): the configured
+  executable (only that one when set); else `codex.exe` on the PATH; else winget's
+  command links folder `%LOCALAPPDATA%\Microsoft\WinGet\Links\codex.exe` (winget adds it to
+  the PATH of new processes only, so a Codex installed while the app runs is found there);
+  else npm's native exe under `%APPDATA%\npm`; else the `codex.cmd` shim.
 - `app_server.rs`: spawns `codex app-server --disable shell_tool`, JSON-RPC over stdio with
   `experimentalApi: true`, request timeouts, a generation counter (thread ids die with the
   process), and automatic decline of every approval, tool call and user-input request.
@@ -692,6 +697,18 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     account, call, Codex thread, mute hotkey, token stored, build; then connection errors
     and the counters behind a details toggle. Events trigger a refresh; a 5 s timer backs
     it up. Buttons: Mute, Connect, Disconnect, Sign in to Codex, Check Codex, Refresh.
+    When the status has no Codex executable, the Codex area shows the install offer
+    (`codex_install.rs`): `codex_install_info` says whether winget is on the PC (its App
+    Execution Alias in `%LOCALAPPDATA%\Microsoft\WindowsApps`, found with
+    `symlink_metadata`, or `winget.exe` on the PATH), the package, the source and the
+    sizes, and the install state (idle, running, finished with winget's exit code, failed
+    to start). `codex_install` starts `cmd.exe /V:ON /C "winget install --id OpenAI.Codex
+    --exact --source winget & … & pause & exit !rc!"` in a new console window the user
+    sees, accepts no agreement for them, refuses a second start while one runs, and
+    emits an `app-event` of kind `codex_install` with the final state; the finder then
+    sees winget's link on the next status read. Without winget the notice gives the npm
+    and the manual ways instead of the button. With Codex found and no account, the area
+    names the next step, Sign in to Codex.
   - Performance, as in the first version: a window selector (30 s, 60 s, 5 min), Refresh,
     a health dot and a quality label, two canvas charts drawn with the first version's
     `drawChart` (no library), and stat cards, all behind the "Performance monitoring"
