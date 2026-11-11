@@ -29,6 +29,11 @@ pub fn assets_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("assets")
 }
 
+/// Vosk models the user adds for other languages; the app only reads it.
+pub fn models_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("models")
+}
+
 pub fn codex_workspace_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("codex-workspace")
 }

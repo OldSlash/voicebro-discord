@@ -23,6 +23,7 @@ pub struct ModelEntry {
     pub engine: &'static str,
     /// BCP 47 language tag of the speech the model recognizes.
     pub language: &'static str,
+    /// The name without the size: the window shows the size from `asset.size`.
     pub display_name: &'static str,
     pub license: &'static str,
     pub asset: Asset,
@@ -30,21 +31,42 @@ pub struct ModelEntry {
 
 pub const VOSK_ENGINE: &str = "vosk";
 
-const ENTRIES: &[ModelEntry] = &[ModelEntry {
-    id: "vosk-model-small-ru-0.22",
-    engine: VOSK_ENGINE,
-    language: "ru",
-    display_name: "Vosk small Russian 0.22 (45 MB)",
-    license: "Apache-2.0",
-    asset: Asset {
-        label: "Vosk Russian model",
-        url: "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip",
-        sha256: "961d5ff98a17f4aa6de69864d0aa71fa5bac682301d2b5d17a3f24c5c99a46d4",
-        directory: "vosk-model-small-ru-0.22",
-        marker: "am/final.mdl",
-        size: 46_220_000,
+/// The model of a settings file from schema version 1, which had only this one.
+pub const RUSSIAN_SMALL: &str = "vosk-model-small-ru-0.22";
+
+/// The first entry is the default of a new settings file.
+const ENTRIES: &[ModelEntry] = &[
+    ModelEntry {
+        id: "vosk-model-small-en-us-0.15",
+        engine: VOSK_ENGINE,
+        language: "en-US",
+        display_name: "Vosk small English (US) 0.15",
+        license: "Apache-2.0",
+        asset: Asset {
+            label: "Vosk English model",
+            url: "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+            sha256: "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498",
+            directory: "vosk-model-small-en-us-0.15",
+            marker: "am/final.mdl",
+            size: 41_205_931,
+        },
     },
-}];
+    ModelEntry {
+        id: RUSSIAN_SMALL,
+        engine: VOSK_ENGINE,
+        language: "ru",
+        display_name: "Vosk small Russian 0.22",
+        license: "Apache-2.0",
+        asset: Asset {
+            label: "Vosk Russian model",
+            url: "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip",
+            sha256: "961d5ff98a17f4aa6de69864d0aa71fa5bac682301d2b5d17a3f24c5c99a46d4",
+            directory: "vosk-model-small-ru-0.22",
+            marker: "am/final.mdl",
+            size: 46_220_000,
+        },
+    },
+];
 
 pub fn entries() -> &'static [ModelEntry] {
     ENTRIES
@@ -69,6 +91,15 @@ mod tests {
         assert_eq!(find(entry.id), Some(entry));
         assert_eq!(entry.engine, VOSK_ENGINE);
         assert!(find("nope").is_none());
+    }
+
+    #[test]
+    fn english_is_the_default_and_russian_stays_in_the_catalog() {
+        assert_eq!(default_entry().id, "vosk-model-small-en-us-0.15");
+        assert_eq!(default_entry().language, "en-US");
+        let russian = find(RUSSIAN_SMALL).expect("the Russian model");
+        assert_eq!(russian.language, "ru");
+        assert_eq!(entries().len(), 2);
     }
 
     #[test]

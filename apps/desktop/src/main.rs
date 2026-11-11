@@ -137,21 +137,24 @@ fn capabilities(state: State<'_, AppState>) -> Capabilities {
     state.runtime.assistant().capabilities()
 }
 
-/// The wake-model catalog for the Settings tab.
+/// The wake models for the Settings tab: the catalog with whether each is downloaded, and
+/// the models folder's models found at start.
 #[tauri::command]
-fn wake_models() -> Vec<Value> {
-    voicebro_core::wake::catalog::entries()
-        .iter()
-        .map(|entry| {
-            json!({
-                "id": entry.id,
-                "engine": entry.engine,
-                "language": entry.language,
-                "display_name": entry.display_name,
-                "license": entry.license,
-            })
-        })
-        .collect()
+fn wake_models(state: State<'_, AppState>) -> Vec<voicebro_core::wake::ModelInfo> {
+    state.runtime.wake().models()
+}
+
+/// The user agreed to download what the selected wake model needs.
+#[tauri::command]
+fn wake_download(state: State<'_, AppState>) -> Result<(), String> {
+    state.runtime.wake().download()
+}
+
+/// Opens the models folder, where the user puts Vosk models for other languages.
+#[tauri::command]
+fn open_models_folder(state: State<'_, AppState>) -> Result<String, String> {
+    let dir = state.runtime.wake().models_dir().to_path_buf();
+    open_folder(&dir)
 }
 
 #[tauri::command]
@@ -167,10 +170,15 @@ fn chat_log(state: State<'_, AppState>) -> Vec<ChatEntry> {
 #[tauri::command]
 fn open_log_folder(state: State<'_, AppState>) -> Result<String, String> {
     let dir = paths::logs_dir(std::path::Path::new(&state.runtime.status().data_dir));
-    std::fs::create_dir_all(&dir)
+    open_folder(&dir)
+}
+
+/// Creates `dir` when missing and opens it in Explorer.
+fn open_folder(dir: &std::path::Path) -> Result<String, String> {
+    std::fs::create_dir_all(dir)
         .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
     std::process::Command::new("explorer.exe")
-        .arg(&dir)
+        .arg(dir)
         .spawn()
         .map_err(|error| format!("could not open {}: {error}", dir.display()))?;
     Ok(dir.display().to_string())
@@ -472,11 +480,13 @@ fn main() {
             codex_models,
             capabilities,
             wake_models,
+            wake_download,
             chat_log,
             log_history,
             system_status,
             memory_status,
-            open_log_folder
+            open_log_folder,
+            open_models_folder
         ])
         .build(tauri::generate_context!())
         .expect("error while building the VoiceBro application")
