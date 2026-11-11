@@ -306,6 +306,11 @@
       if (control.dataset.path.startsWith("ui.")) {
         applyAppearance({ theme: $("setting-theme").value, font_size: Number($("setting-font-size").value) });
       }
+      // A wake model that is not on this PC asks in the install dialog before it is saved.
+      if (control.id === "wake-model") {
+        chooseWakeModel(control);
+        return;
+      }
       saveControl(control);
     });
     if (control.tagName === "SELECT") trackOpenList(control);
@@ -659,9 +664,11 @@
 
   // ---------- The wake model download: nothing downloads without the button ----------
   let lastWakeKind = "";
+  let lastWakeModel = "";
   let downloadRequestError = "";
   function renderWakeDownload(wake) {
     const state = wake.state || {};
+    lastWakeModel = wake.model || lastWakeModel;
     const box = $("wake-download");
     const text = $("wake-download-text");
     const list = $("wake-download-items");
@@ -672,7 +679,7 @@
       box.hidden = false;
       box.dataset.failed = "";
       text.textContent = downloadRequestError
-        || "To listen for the phrases of this model, VoiceBro needs these files. Nothing is downloaded until you press Download.";
+        || "The wake word listens with this model, which is not on this PC yet. VoiceBro needs these files; nothing is downloaded until you press Download.";
       for (const item of state.items || []) {
         const line = document.createElement("li");
         line.textContent = `${item.label} — ${megabytes(item.bytes)} MB from ${item.host}`;
@@ -695,7 +702,9 @@
       box.hidden = true;
       box.dataset.failed = "";
     }
-    if (state.kind === "ready" && lastWakeKind && lastWakeKind !== "ready") reloadWakeModels();
+    // A finished download, with or without phrases to load: the list marks it downloaded.
+    if ((state.kind === "ready" && lastWakeKind && lastWakeKind !== "ready")
+      || (lastWakeKind === "downloading" && state.kind !== "downloading")) reloadWakeModels();
     if (state.kind !== "needs_download") downloadRequestError = "";
     lastWakeKind = state.kind || "";
   }
@@ -703,7 +712,7 @@
     if (!invoke) return;
     $("wake-download-button").disabled = true;
     try {
-      await invoke("wake_download");
+      await invoke("wake_download", { model: lastWakeModel });
       downloadRequestError = "";
     } catch (error) {
       downloadRequestError = `Could not start the download: ${error}`;
@@ -720,6 +729,173 @@
     } catch (error) {
       $("settings-feedback").textContent = `Could not open the models folder: ${error}`;
     }
+  });
+
+  // ---------- The install dialog: the wake word's files are not on this PC ----------
+  // One modal dialog. It opens when the window starts in wake-word mode with files missing
+  // (`start`), when the wake state turns to needs_download later, as after a switch to
+  // wake word (`mode`), when the bot joins a voice channel while files are still missing
+  // (`join`), and before a model choice whose files are missing is saved (`choice`).
+  // Download asks for that model's download and shows the progress here; Not now, Hide,
+  // Close and Escape store nothing, and the Assistant card's notice stays.
+  const installDialog = $("wake-install");
+  const install = {
+    armed: false, // set by `start()` once the model list and the settings are loaded
+    started: false, // the start check ran
+    lastKind: "",
+    voiceCount: null,
+    reason: "",
+    model: "",
+    previous: "", // the stored model a `choice` goes back to on Cancel
+    saved: true, // false while a `choice` is not saved yet
+    downloading: false, // Download was pressed for `model`
+  };
+  const installNames = (id) => wakeModels.find((entry) => entry.id === id)?.display_name || id;
+  function installSetItems(items) {
+    const list = $("wake-install-items");
+    list.innerHTML = "";
+    for (const item of items) {
+      const line = document.createElement("li");
+      line.textContent = `${item.label} — ${megabytes(item.bytes)} MB from ${item.host}`;
+      list.appendChild(line);
+    }
+    const total = items.reduce((sum, item) => sum + Number(item.bytes || 0), 0);
+    $("wake-install-total").textContent = items.length > 1 ? `${megabytes(total)} MB in total.` : "";
+  }
+  function installButtons(primary, secondary) {
+    const button = $("wake-install-primary");
+    button.hidden = !primary;
+    button.disabled = false;
+    if (primary) button.textContent = primary;
+    $("wake-install-secondary").textContent = secondary;
+  }
+  function installOpen(reason, model, items) {
+    if (installDialog.open) return;
+    Object.assign(install, { reason, model, saved: reason !== "choice", downloading: false });
+    const onlyLibrary = items.length === 1 && items[0].label === "Vosk library";
+    $("wake-install-text").textContent = onlyLibrary
+      ? `The wake word needs the Vosk recognizer to use ${installNames(model)}, and it is not on this PC yet. Download it now?`
+      : `VoiceBro listens for your wake phrase with the ${installNames(model)} model, which is not on this PC yet. Download it now?`;
+    installSetItems(items);
+    $("wake-install-progress").hidden = true;
+    $("wake-install-error").hidden = true;
+    $("wake-install-note").textContent = reason === "choice"
+      ? `Nothing is downloaded until you press Download. Cancel keeps ${installNames(install.previous)}.`
+      : "Nothing is downloaded until you press Download. Not now keeps the notice under Wake model in Settings → Assistant.";
+    installButtons("Download", reason === "choice" ? "Cancel" : "Not now");
+    installDialog.showModal();
+    // The window may come to the front while the user types elsewhere: a stray Enter or
+    // Space must not agree to a download, so the focus starts on Not now (Cancel).
+    $("wake-install-secondary").focus();
+  }
+  // Closes the dialog; a `choice` that was never saved goes back to the stored model.
+  function installClose() {
+    if (!install.saved) {
+      const select = $("wake-model");
+      select.value = install.previous;
+      setState(select.id, "clean");
+      install.saved = true;
+    }
+    busyLists.delete("wake-model");
+    if (pendingRebuilds.size) runPendingRebuilds();
+    if (installDialog.open) installDialog.close();
+  }
+  // The dialog follows the wake state of the model it is about; the triggers open it.
+  function renderInstall(status) {
+    const wake = status.wake || {};
+    const state = wake.state || {};
+    const kind = state.kind || "";
+    const voiceCount = Object.keys(status.discord?.voice_channels || {}).length;
+    const wakeWord = (stored?.session?.mode ?? status.settings?.session?.mode) === "wake_word";
+    if (installDialog.open && wake.model === install.model) {
+      if (kind === "downloading") {
+        install.downloading = true;
+        $("wake-install-progress").hidden = false;
+        $("wake-install-progress").textContent = `Downloading the ${state.label}: ${state.percent} %`;
+        $("wake-install-error").hidden = true;
+        installButtons(null, "Hide");
+      } else if (kind === "error" && install.downloading) {
+        $("wake-install-progress").hidden = true;
+        $("wake-install-error").hidden = false;
+        $("wake-install-error").textContent = `The download failed: ${state.message}`;
+        installButtons("Try again", "Close");
+      } else if (install.downloading && ["ready", "no_phrases", "loading"].includes(kind)) {
+        installClose();
+      }
+    }
+    if (install.armed && !installDialog.open && kind === "needs_download" && wakeWord) {
+      if (!install.started) installOpen("start", wake.model, state.items || []);
+      else if (install.lastKind && install.lastKind !== "needs_download") installOpen("mode", wake.model, state.items || []);
+      else if (install.voiceCount !== null && voiceCount > install.voiceCount) installOpen("join", wake.model, state.items || []);
+    }
+    if (install.armed) install.started = true;
+    install.lastKind = kind;
+    install.voiceCount = voiceCount;
+  }
+  // The wake model list: a model whose files are all on disk saves at once; otherwise the
+  // dialog asks first and nothing is saved until Download.
+  async function chooseWakeModel(select) {
+    const model = select.value;
+    const previous = readByPath(stored, "wake.model") ?? "";
+    // The dialog is modal, but a script or a keyboard path can still reach the list: while
+    // it is open, nothing about the wake model changes.
+    if (installDialog.open) {
+      select.value = previous;
+      setState(select.id, "clean");
+      return;
+    }
+    let items = [];
+    try {
+      items = await invoke("wake_requirements", { model });
+    } catch (error) {
+      appendLog(`wake_requirements failed: ${error}`);
+    }
+    if (!items.length) {
+      saveControl(select);
+      return;
+    }
+    busyLists.add(select.id);
+    install.previous = previous;
+    installOpen("choice", model, items);
+  }
+  $("wake-install-primary").addEventListener("click", async () => {
+    const button = $("wake-install-primary");
+    // Hidden while a download runs, disabled while one starts: a click that still arrives
+    // (from a script) must not ask for a download of a model that is no longer the choice.
+    if (!invoke || button.hidden || button.disabled || !installDialog.open) return;
+    button.disabled = true;
+    if (!install.saved) {
+      const select = $("wake-model");
+      await saveControl(select);
+      if (stored?.wake?.model !== install.model) {
+        // The save was refused; its message is under the field.
+        install.saved = true;
+        installClose();
+        return;
+      }
+      install.saved = true;
+      busyLists.delete(select.id);
+    }
+    $("wake-install-error").hidden = true;
+    $("wake-install-progress").hidden = false;
+    $("wake-install-progress").textContent = "Starting the download…";
+    try {
+      await invoke("wake_download", { model: install.model });
+      install.downloading = true;
+      installButtons(null, "Hide");
+    } catch (error) {
+      $("wake-install-progress").hidden = true;
+      $("wake-install-error").hidden = false;
+      $("wake-install-error").textContent = `Could not start the download: ${error}`;
+      installButtons("Try again", "Close");
+    }
+    refresh();
+  });
+  $("wake-install-secondary").addEventListener("click", installClose);
+  // Escape is Not now (or Cancel), never a half-closed dialog.
+  installDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    installClose();
   });
 
   // ---------- Status (never touches the form) ----------
@@ -861,6 +1037,7 @@
       ? `Not in the model vocabulary (these phrases are ignored): ${unknown.join(", ")}`
       : "";
     renderWakeDownload(status.wake || {});
+    renderInstall(status);
     const badge = $("token-badge");
     badge.textContent = tokenSet ? "stored" : "not stored";
     badge.className = `badge ${tokenSet ? "ok" : "warn"}`;
@@ -1376,6 +1553,8 @@
     buildWakeLists();
     await loadCapabilities();
     fillForm();
+    // The install dialog may open from here on: the model names and the mode are known.
+    install.armed = true;
     await refresh();
     await loadChat();
     // The status timer and the memory timer are set by the diagnostics switches

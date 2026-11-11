@@ -44,16 +44,44 @@
     signed_in: true,
   };
   // As `wake_models` answers: the catalog with its download state, then the models folder.
+  // `asset` is the mock's own: the label the app gives the model's archive.
+  const catalog = [
+    ["vosk-model-small-en-us-0.15", "en-US", "English (US) 0.15", "English", 41205931],
+    ["vosk-model-small-ru-0.22", "ru", "Russian 0.22", "Russian", 46220000],
+    ["vosk-model-small-cs-0.4-rhasspy", "cs", "Czech 0.4", "Czech", 46088666, "MIT"],
+    ["vosk-model-small-nl-0.22", "nl", "Dutch 0.22", "Dutch", 40441176],
+    ["vosk-model-small-fr-0.22", "fr", "French 0.22", "French", 42233323],
+    ["vosk-model-small-de-0.15", "de", "German 0.15", "German", 46499967],
+    ["vosk-model-small-it-0.22", "it", "Italian 0.22", "Italian", 49665141],
+    ["vosk-model-small-pl-0.22", "pl", "Polish 0.22", "Polish", 52979372],
+    ["vosk-model-small-pt-0.3", "pt-BR", "Portuguese (Brazil) 0.3", "Portuguese (Brazil)", 32453112],
+    ["vosk-model-small-es-0.42", "es", "Spanish 0.42", "Spanish", 39817833],
+  ].map(([id, language, name, asset, bytes, license = "Apache-2.0"]) => ({
+    id, engine: "vosk", language, display_name: `Vosk small ${name}`, license, source: "catalog",
+    installed: false, bytes, asset: `Vosk ${asset} model`,
+  }));
   const wakeModels = [
-    { id: "vosk-model-small-en-us-0.15", engine: "vosk", language: "en-US", display_name: "Vosk small English (US) 0.15", license: "Apache-2.0", source: "catalog", installed: false, bytes: 41205931 },
-    { id: "vosk-model-small-ru-0.22", engine: "vosk", language: "ru", display_name: "Vosk small Russian 0.22", license: "Apache-2.0", source: "catalog", installed: true, bytes: 46220000 },
-    { id: "local:vosk-model-small-de-0.15", engine: "vosk", language: "de", display_name: "vosk-model-small-de-0.15", license: "", source: "local", installed: true, bytes: 0 },
+    ...catalog,
+    { id: "local:vosk-model-small-ca-0.4", engine: "vosk", language: "ca", display_name: "vosk-model-small-ca-0.4", license: "", source: "local", installed: true, bytes: 0 },
   ];
-  // The wake engine as the app runs it: the Vosk library is on disk (the Russian model was
-  // used), a model that is not asks first, and Download walks through the progress.
-  let libraryInstalled = true;
+  // `?fresh` in the page's address: a first start in an empty folder (English selected, no
+  // phrases, nothing downloaded, the bot in no voice channel). Otherwise the Russian model
+  // and the Vosk library are on disk and the bot sits in a channel.
+  const FRESH = new URLSearchParams(location.search).has("fresh");
+  let libraryInstalled = !FRESH;
+  if (!FRESH) wakeModels[1].installed = true;
+  if (FRESH) {
+    settings.wake.model = "vosk-model-small-en-us-0.15";
+    settings.wake.phrases = {};
+  }
+  // `?always`: the session mode starts as always listening.
+  if (new URLSearchParams(location.search).has("always")) settings.session.mode = "always";
+  let inVoice = !FRESH;
+  // The wake engine as the app runs it: in wake-word mode the files are checked before the
+  // phrases, a model that is not on disk asks first, and Download walks through the
+  // progress. The consent covers one model.
   let consentFor = null;
-  let download = null; // { model, percent, failed }
+  let download = null; // { model, items, index, percent, failed }
   let failNextDownload = false;
   const LIBRARY = { label: "Vosk library", host: "github.com", bytes: 14900000 };
   // Missing lists are empty, as the app fills them when it reads the document.
@@ -61,30 +89,39 @@
     const entry = settings.wake.phrases[settings.wake.model] || {};
     return { activation: entry.activation || [], deactivation: entry.deactivation || [] };
   }
+  // What choosing `id` needs to download, as `wake_requirements` answers.
+  function requirements(id) {
+    const model = wakeModels.find((entry) => entry.id === id);
+    if (!model) throw `model «${id}» is neither in the catalog nor a local: model`;
+    const items = [];
+    if (!libraryInstalled) items.push(clone(LIBRARY));
+    if (!model.installed) items.push({ label: model.asset, host: "alphacephei.com", bytes: model.bytes });
+    return items;
+  }
   function wakeState() {
     if (settings.session.mode !== "wake_word") return { kind: "off" };
-    const phrases = selectedPhrases();
-    if (!normalize(phrases.activation).length && !normalize(phrases.deactivation).length) return { kind: "no_phrases" };
     if (download && download.model === settings.wake.model) {
-      if (download.failed) return { kind: "error", message: `${download.label}: SHA-256 mismatch; nothing was extracted` };
-      return { kind: "downloading", label: download.label, percent: download.percent };
+      if (download.failed) return { kind: "error", message: `${download.items[download.index].label}: SHA-256 mismatch; nothing was extracted` };
+      return { kind: "downloading", label: download.items[download.index].label, percent: download.percent };
     }
     const model = wakeModels.find((entry) => entry.id === settings.wake.model);
     if (!model) return { kind: "error", message: `the model folder C:\\VoiceBro\\models\\${settings.wake.model.slice(6)} is missing; put the model back or choose another one` };
-    const items = [];
-    if (!libraryInstalled) items.push(clone(LIBRARY));
-    if (!model.installed) items.push({ label: model.language === "ru" ? "Vosk Russian model" : "Vosk English model", host: "alphacephei.com", bytes: model.bytes });
+    const items = requirements(model.id);
     if (items.length && consentFor !== settings.wake.model) return { kind: "needs_download", items };
+    const phrases = selectedPhrases();
+    if (!normalize(phrases.activation).length && !normalize(phrases.deactivation).length) return { kind: "no_phrases" };
     return { kind: "ready" };
   }
-  function startDownload() {
+  function startDownload(id) {
+    if (id !== settings.wake.model) throw `${id} is not the selected wake model (${settings.wake.model})`;
     const state = wakeState();
     if (state.kind !== "needs_download" && state.kind !== "error") throw "nothing is waiting for a download";
     consentFor = settings.wake.model;
     const model = wakeModels.find((entry) => entry.id === settings.wake.model);
-    download = { model: model.id, label: model.language === "ru" ? "Vosk Russian model" : "Vosk English model", percent: 0, failed: false };
+    // A retry goes on with what is still missing.
+    download = { model: model.id, items: requirements(model.id), index: 0, percent: 0, failed: false };
     const step = () => {
-      if (!download) return;
+      if (!download || download.model !== settings.wake.model) return;
       if (failNextDownload && download.percent >= 40) {
         failNextDownload = false;
         download.failed = true;
@@ -93,14 +130,16 @@
       }
       download.percent += 20;
       if (download.percent >= 100) {
-        model.installed = true;
-        libraryInstalled = true;
-        download = null;
+        if (download.items[download.index].label === LIBRARY.label) libraryInstalled = true;
+        else model.installed = true;
+        download.index += 1;
+        download.percent = 0;
+        if (download.index >= download.items.length) download = null;
       }
       emit("app-event", { event: "wake" });
-      if (download) setTimeout(step, 400);
+      if (download) setTimeout(step, 300);
     };
-    setTimeout(step, 400);
+    setTimeout(step, 300);
   }
   // A sample session for the documentation's screenshots (the page opened with `?sample`),
   // whose build stamp then reads like a release.
@@ -230,7 +269,7 @@
         user_name: "Mock bot",
         guild_count: 1,
         guilds: [{ id: "1091401169441656933", name: "Mock server" }],
-        voice_channels: {
+        voice_channels: !inVoice ? {} : {
           "1091401169441656933": {
             guild_name: "Mock server",
             channel_name: "General",
@@ -315,8 +354,9 @@
       uptime_seconds: Math.floor((Date.now() - started) / 1000), runtime: "Rust / Tauri 2 / WebView2 (mock)",
       platform: "Windows (mock)", architecture: "x86_64", cpu_cores: 8,
     }),
-    wake_models: () => clone(wakeModels),
-    wake_download: () => startDownload(),
+    wake_models: () => wakeModels.map(({ asset, ...model }) => clone(model)),
+    wake_requirements: ({ model }) => requirements(model),
+    wake_download: ({ model }) => startDownload(model),
     open_models_folder: () => "C:\\VoiceBro\\models",
     capabilities: () => clone(capabilities),
     // `?sample` in the page's address: a sample session for the screenshots in docs/images.
@@ -422,8 +462,10 @@
     },
     // The wake engine: `wakeState()` as the status reports it; `failNextDownload()` makes
     // the next Download stop at 40 % with a hash error; `resetDownloads()` puts the English
-    // model and the library back to "not downloaded" and forgets the consent.
+    // model and the library back to "not downloaded" and forgets the consent;
+    // `setInstalled(ids, library)` marks those models (and the library) as on disk.
     wakeState: () => wakeState(),
+    requirements: (id) => requirements(id),
     failNextDownload() {
       failNextDownload = true;
     },
@@ -433,6 +475,20 @@
       consentFor = null;
       download = null;
       emit("app-event", { event: "wake" });
+    },
+    setInstalled(ids, library = true) {
+      for (const model of wakeModels) if (ids.includes(model.id)) model.installed = true;
+      libraryInstalled = library;
+      emit("app-event", { event: "wake" });
+    },
+    // The bot joins or leaves the mock server's voice channel, as `/join` and `/leave` do.
+    join() {
+      inVoice = true;
+      emit("app-event", { event: "discord" });
+    },
+    leave() {
+      inVoice = false;
+      emit("app-event", { event: "discord" });
     },
     changeCapabilities() {
       capabilities = clone(capabilities);
