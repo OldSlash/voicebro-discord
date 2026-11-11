@@ -21,13 +21,13 @@
       model: "vosk-model-small-ru-0.22",
       phrases: { "vosk-model-small-ru-0.22": { activation: ["alpha"], deactivation: ["omega"] } },
     },
-    assistant: { engine: "codex", speaker_labels: "start" },
+    assistant: { engine: "codex", speaker_labels: "start", save_chat_history: false },
     // `handoff_mode` as the app fills it for a file without the field: the default.
     codex: { executable: "", model: "", reasoning_effort: "", voice: "", instructions: "Answer briefly.", handoff_mode: "items" },
     hotkey: { mute: "Ctrl+Alt+M" },
     ui: { theme: "dark", font_size: 13 },
-    // Both off, as the app fills them for a file without the section.
-    diagnostics: { performance: false, memory: false },
+    // All off, as the app fills them for a file without the section.
+    diagnostics: { performance: false, memory: false, verbose_log: false },
   };
   let tokenSet = true;
   let muted = false;
@@ -182,10 +182,13 @@
       throw `codex.handoff_mode: «${doc.codex.handoff_mode}» is not an answer handoff mode; use one of ${modes.join(", ")}`;
     }
     // The app rejects a wrong type when it reads the patched document.
-    for (const field of ["performance", "memory"]) {
+    for (const field of ["performance", "memory", "verbose_log"]) {
       if (typeof doc.diagnostics[field] !== "boolean") {
         throw `invalid type: expected a boolean at diagnostics.${field}`;
       }
+    }
+    if (typeof doc.assistant.save_chat_history !== "boolean") {
+      throw "invalid type: expected a boolean at assistant.save_chat_history";
     }
   }
 
