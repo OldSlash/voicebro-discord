@@ -102,6 +102,24 @@
     };
     setTimeout(step, 400);
   }
+  // A sample session for the documentation's screenshots (the page opened with `?sample`),
+  // whose build stamp then reads like a release.
+  const SAMPLE = new URLSearchParams(location.search).has("sample");
+  const STAMP = SAMPLE ? "1.0.0 2026-11-11" : "1.0.0+mock 2026-11-11";
+  const SAMPLE_CHAT = [
+    ["20:14:02", "system", null, "Call started"],
+    ["20:14:02", "context", null, "In the channel: Alex, Sam. Addressed by: Alex."],
+    ["20:14:04", "user", "Alex", "Hey bro, how long is one day in Minecraft?"],
+    ["20:14:06", "assistant", null, "A full day in Minecraft lasts twenty real minutes, about ten of them daylight."],
+    ["20:15:31", "user", "Sam", "Brother, what's the weather in Berlin tomorrow?"],
+    ["20:15:32", "assistant", null, "Let me check."],
+    ["20:15:32", "task", null, "Weather forecast for Berlin tomorrow"],
+    ["20:15:34", "tool", null, "Web search: Berlin weather forecast tomorrow"],
+    ["20:15:39", "agent", null, "Tomorrow in Berlin: cloudy, 8 to 12 °C, light rain in the evening."],
+    ["20:15:41", "assistant", null, "Cloudy tomorrow in Berlin, eight to twelve degrees, and some rain in the evening."],
+    ["20:16:05", "user", "Alex", "Thanks, bro. Goodbye."],
+    ["20:16:05", "system", null, "Call ended"],
+  ].map(([at, kind, who, text], index) => ({ id: index + 1, at, guild_id: "1", kind, who, text }));
   const started = Date.now();
   const listeners = {};
   const calls = [];
@@ -201,7 +219,7 @@
 
   function status() {
     return {
-      build_stamp: "0.2.0+mock 2026-11-10",
+      build_stamp: STAMP,
       data_dir: "C:\\VoiceBro",
       muted,
       hotkey: { shortcut: settings.hotkey.mute, registered: true, error: null },
@@ -293,7 +311,7 @@
       tokenSet = false;
     },
     system_status: () => ({
-      version: "0.2.0", build_stamp: "0.2.0+mock 2026-11-10", process_id: 4242,
+      version: "1.0.0", build_stamp: STAMP, process_id: 4242,
       uptime_seconds: Math.floor((Date.now() - started) / 1000), runtime: "Rust / Tauri 2 / WebView2 (mock)",
       platform: "Windows (mock)", architecture: "x86_64", cpu_cores: 8,
     }),
@@ -301,11 +319,12 @@
     wake_download: () => startDownload(),
     open_models_folder: () => "C:\\VoiceBro\\models",
     capabilities: () => clone(capabilities),
-    chat_log: () => [
+    // `?sample` in the page's address: a sample session for the screenshots in docs/images.
+    chat_log: () => (SAMPLE ? clone(SAMPLE_CHAT) : [
       { id: 1, at: "12:00:01", guild_id: "1091401169441656933", kind: "user", who: "Alex", text: "What time is it?" },
       { id: 2, at: "12:00:03", guild_id: "1091401169441656933", kind: "assistant", who: null, text: "It is noon." },
-    ],
-    log_history: () => ["[2026-11-10][12:00:00][INFO][voicebro] VoiceBro 0.2.0+mock (mock log)"],
+    ]),
+    log_history: () => ["[2026-11-11][12:00:00][INFO][voicebro] VoiceBro 1.0.0+mock (mock log)"],
     set_muted: ({ muted: next }) => {
       muted = next;
       return muted;
@@ -338,7 +357,7 @@
     codex_sign_in: () => "https://chatgpt.com/mock",
     codex_models: () => clone(capabilities.models),
     open_log_folder: () => "C:\\VoiceBro\\logs",
-    app_info: () => ({ version: "0.2.0", build_stamp: "0.2.0+mock 2026-11-10", data_dir: "C:\\VoiceBro" }),
+    app_info: () => ({ version: "1.0.0", build_stamp: STAMP, data_dir: "C:\\VoiceBro" }),
     // `null` while the switch is off, as the app answers when its reader is not running.
     memory_status: () => (settings.diagnostics.memory
       ? {
