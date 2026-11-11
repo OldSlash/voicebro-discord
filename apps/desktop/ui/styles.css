@@ -326,3 +326,11 @@ textarea.prompt-input { min-height: 80px; line-height: 1.45; }
   .chat-entry { grid-template-columns: 1fr; gap: 1px; }
   .split-layout, .form-grid, .detail-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Wake model: the selected model's name next to the phrase fields, the download notice. */
+.model-name { color: var(--ink-dim); font-weight: normal; }
+.wake-model-tools { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.wake-download { align-self: stretch; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); background: var(--field); }
+.wake-download p { margin: 0 0 6px; }
+.wake-download ul { margin: 0 0 10px; padding-left: 18px; }
+.wake-download li { line-height: 1.5; }

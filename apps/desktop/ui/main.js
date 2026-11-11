@@ -99,11 +99,18 @@
   }
 
   // ---------- Values and paths ----------
+  // A path is "a.b.c", or an array of keys when a key holds dots (a wake model id).
+  const keysOf = (path) => (Array.isArray(path) ? path : path.split("."));
   function readByPath(object, path) {
-    return path.split(".").reduce((o, key) => (o == null ? undefined : o[key]), object);
+    return keysOf(path).reduce((o, key) => (o == null ? undefined : o[key]), object);
+  }
+  // The phrase fields belong to the selected wake model: `wake.phrases.<model>.<list>`.
+  function pathOf(control) {
+    if (control.dataset.phrases) return ["wake", "phrases", stored?.wake?.model ?? "", control.dataset.phrases];
+    return control.dataset.path;
   }
   function patchFor(path, value) {
-    const keys = path.split(".");
+    const keys = keysOf(path);
     const patch = {};
     let cursor = patch;
     keys.forEach((key, index) => {
@@ -229,12 +236,13 @@
   function fillField(control, force) {
     if (!stored) return;
     if (!force && (stateOf(control.id) !== "clean" || isBusy(control))) return;
-    writeControl(control, readByPath(stored, control.dataset.path));
+    writeControl(control, readByPath(stored, pathOf(control)));
     if (control.tagName === "SELECT" && !control.options.length) return;
     mirrorListed(control);
   }
   function fillForm() {
     document.querySelectorAll("[data-path]").forEach((control) => fillField(control, false));
+    showPhraseModel();
     fillConfig(false);
     applyAppearance(stored?.ui);
     handoffHint();
@@ -261,10 +269,15 @@
     if (!invoke) return;
     setState(control.id, "saving");
     try {
-      stored = await invoke("save_settings", { patch: patchFor(control.dataset.path, controlValue(control)) });
+      stored = await invoke("save_settings", { patch: patchFor(pathOf(control), controlValue(control)) });
       setState(control.id, "clean");
       fieldMessage(control.id, "");
       fillField(control, true);
+      // Another wake model: its own phrases in the phrase fields, its name in their labels.
+      if (control.id === "wake-model") {
+        document.querySelectorAll("[data-phrases]").forEach((phrases) => fillField(phrases, false));
+        showPhraseModel();
+      }
       // A second control of the same setting (the Performance tab's switch and the
       // Diagnostics card) follows at once, before the settings event arrives.
       document.querySelectorAll(`[data-path="${control.dataset.path}"]`).forEach((other) => {
@@ -286,7 +299,7 @@
     control.addEventListener("input", () => {
       if (control.dataset.kind === "percent" || control.dataset.kind === "bool") percentLabel(control);
       if (stateOf(control.id) === "saving") return;
-      const differs = !stored || !sameValue(controlValue(control), readByPath(stored, control.dataset.path));
+      const differs = !stored || !sameValue(controlValue(control), readByPath(stored, pathOf(control)));
       if (stateOf(control.id) !== "error") setState(control.id, differs ? "dirty" : "clean");
     });
     control.addEventListener("change", () => {
@@ -374,9 +387,36 @@
     fillSelect($("wake-engine"), engines.map((engine) => ({ value: engine, label: engine })), readByPath(stored, "wake.engine"));
     fillSelect(
       $("wake-model"),
-      wakeModels.map((model) => ({ value: model.id, label: `${model.display_name} [${model.language}, ${model.license}]` })),
+      wakeModels.map((model) => ({ value: model.id, label: wakeModelLabel(model) })),
       readByPath(stored, "wake.model"),
     );
+  }
+  // Decimal megabytes, rounded, as the app's log writes them.
+  const megabytes = (bytes) => Math.round(Number(bytes || 0) / 1e6);
+  function wakeModelLabel(model) {
+    const state = model.source === "local"
+      ? "models folder"
+      : model.installed ? "downloaded" : `to download, ${megabytes(model.bytes)} MB`;
+    return `${model.language || "?"} — ${model.display_name} · ${state}`;
+  }
+  // The selected model's name in the phrase fields' labels.
+  function showPhraseModel() {
+    const id = stored?.wake?.model ?? "";
+    const model = wakeModels.find((entry) => entry.id === id);
+    const name = model ? model.display_name : id;
+    document.querySelectorAll("[data-model-name]").forEach((node) => {
+      node.textContent = name ? ` — ${name}` : "";
+    });
+  }
+  // The download state of the wake models changes when a download ends: list them again.
+  async function reloadWakeModels() {
+    try {
+      wakeModels = await invoke("wake_models");
+      buildWakeLists();
+      showPhraseModel();
+    } catch (error) {
+      appendLog(`wake_models failed: ${error}`);
+    }
   }
   function applyEffortList() {
     if (busyLists.has("codex-effort-select")) {
@@ -617,6 +657,71 @@
     }
   }
 
+  // ---------- The wake model download: nothing downloads without the button ----------
+  let lastWakeKind = "";
+  let downloadRequestError = "";
+  function renderWakeDownload(wake) {
+    const state = wake.state || {};
+    const box = $("wake-download");
+    const text = $("wake-download-text");
+    const list = $("wake-download-items");
+    const button = $("wake-download-button");
+    const afterDownload = lastWakeKind === "downloading" || lastWakeKind === "needs_download" || box.dataset.failed === "1";
+    list.innerHTML = "";
+    if (state.kind === "needs_download") {
+      box.hidden = false;
+      box.dataset.failed = "";
+      text.textContent = downloadRequestError
+        || "To listen for the phrases of this model, VoiceBro needs these files. Nothing is downloaded until you press Download.";
+      for (const item of state.items || []) {
+        const line = document.createElement("li");
+        line.textContent = `${item.label} — ${megabytes(item.bytes)} MB from ${item.host}`;
+        list.appendChild(line);
+      }
+      button.hidden = false;
+      button.disabled = false;
+    } else if (state.kind === "downloading") {
+      box.hidden = false;
+      box.dataset.failed = "";
+      text.textContent = `Downloading the ${state.label}: ${state.percent} %`;
+      button.hidden = true;
+    } else if (state.kind === "error" && afterDownload) {
+      box.hidden = false;
+      box.dataset.failed = "1";
+      text.textContent = `The download failed: ${state.message}`;
+      button.hidden = false;
+      button.disabled = false;
+    } else {
+      box.hidden = true;
+      box.dataset.failed = "";
+    }
+    if (state.kind === "ready" && lastWakeKind && lastWakeKind !== "ready") reloadWakeModels();
+    if (state.kind !== "needs_download") downloadRequestError = "";
+    lastWakeKind = state.kind || "";
+  }
+  $("wake-download-button").addEventListener("click", async () => {
+    if (!invoke) return;
+    $("wake-download-button").disabled = true;
+    try {
+      await invoke("wake_download");
+      downloadRequestError = "";
+    } catch (error) {
+      downloadRequestError = `Could not start the download: ${error}`;
+      $("wake-download-text").textContent = downloadRequestError;
+      $("wake-download-button").disabled = false;
+    }
+    refresh();
+  });
+  $("open-models-folder").addEventListener("click", async () => {
+    if (!invoke) return;
+    try {
+      const path = await invoke("open_models_folder");
+      $("settings-feedback").textContent = `Opened ${path}`;
+    } catch (error) {
+      $("settings-feedback").textContent = `Could not open the models folder: ${error}`;
+    }
+  });
+
   // ---------- Status (never touches the form) ----------
   function wakeText(wake) {
     const state = wake.state || {};
@@ -624,6 +729,9 @@
     switch (state.kind) {
       case "off": text = "off (the session mode is not wake word)"; break;
       case "no_phrases": text = "no phrases configured"; break;
+      case "needs_download":
+        text = `waiting for your OK to download ${(state.items || []).map((item) => `the ${item.label} (${megabytes(item.bytes)} MB)`).join(" and ")}: Settings → Assistant`;
+        break;
       case "downloading": text = `downloading the ${state.label}: ${state.percent}%`; break;
       case "loading": text = `loading ${wake.model}`; break;
       case "ready": text = `ready (${wake.model})`; break;
@@ -751,6 +859,7 @@
     $("unknown-words").textContent = unknown.length
       ? `Not in the model vocabulary (these phrases are ignored): ${unknown.join(", ")}`
       : "";
+    renderWakeDownload(status.wake || {});
     const badge = $("token-badge");
     badge.textContent = tokenSet ? "stored" : "not stored";
     badge.className = `badge ${tokenSet ? "ok" : "warn"}`;

@@ -11,15 +11,15 @@
   const THEMES = ["dark", "darcula", "light", "intellij"];
   const clone = (value) => JSON.parse(JSON.stringify(value));
   let settings = {
-    version: 1,
+    version: 2,
     discord: { guild_id: "1091401169441656933" },
     session: { mode: "wake_word", idle_timeout_seconds: 60, earcons: true, earcon_volume: 0.18 },
     audio: { input_gain: 1, output_gain: 1 },
+    // Version 2: the phrases of each model under its id.
     wake: {
       engine: "vosk",
       model: "vosk-model-small-ru-0.22",
-      activation_phrases: ["alpha"],
-      deactivation_phrases: ["omega"],
+      phrases: { "vosk-model-small-ru-0.22": { activation: ["alpha"], deactivation: ["omega"] } },
     },
     assistant: { engine: "codex", speaker_labels: "start" },
     // `handoff_mode` as the app fills it for a file without the field: the default.
@@ -40,10 +40,65 @@
     default_voice: "cove",
     signed_in: true,
   };
+  // As `wake_models` answers: the catalog with its download state, then the models folder.
   const wakeModels = [
-    { id: "vosk-model-small-ru-0.22", engine: "vosk", language: "ru", display_name: "Vosk small Russian 0.22 (45 MB)", license: "Apache-2.0" },
-    { id: "vosk-model-small-en-us-0.15", engine: "vosk", language: "en-US", display_name: "Vosk small English 0.15 (40 MB)", license: "Apache-2.0" },
+    { id: "vosk-model-small-en-us-0.15", engine: "vosk", language: "en-US", display_name: "Vosk small English (US) 0.15", license: "Apache-2.0", source: "catalog", installed: false, bytes: 41205931 },
+    { id: "vosk-model-small-ru-0.22", engine: "vosk", language: "ru", display_name: "Vosk small Russian 0.22", license: "Apache-2.0", source: "catalog", installed: true, bytes: 46220000 },
+    { id: "local:vosk-model-small-de-0.15", engine: "vosk", language: "de", display_name: "vosk-model-small-de-0.15", license: "", source: "local", installed: true, bytes: 0 },
   ];
+  // The wake engine as the app runs it: the Vosk library is on disk (the Russian model was
+  // used), a model that is not asks first, and Download walks through the progress.
+  let libraryInstalled = true;
+  let consentFor = null;
+  let download = null; // { model, percent, failed }
+  let failNextDownload = false;
+  const LIBRARY = { label: "Vosk library", host: "github.com", bytes: 14900000 };
+  // Missing lists are empty, as the app fills them when it reads the document.
+  function selectedPhrases() {
+    const entry = settings.wake.phrases[settings.wake.model] || {};
+    return { activation: entry.activation || [], deactivation: entry.deactivation || [] };
+  }
+  function wakeState() {
+    if (settings.session.mode !== "wake_word") return { kind: "off" };
+    const phrases = selectedPhrases();
+    if (!normalize(phrases.activation).length && !normalize(phrases.deactivation).length) return { kind: "no_phrases" };
+    if (download && download.model === settings.wake.model) {
+      if (download.failed) return { kind: "error", message: `${download.label}: SHA-256 mismatch; nothing was extracted` };
+      return { kind: "downloading", label: download.label, percent: download.percent };
+    }
+    const model = wakeModels.find((entry) => entry.id === settings.wake.model);
+    if (!model) return { kind: "error", message: `the model folder C:\\VoiceBro\\models\\${settings.wake.model.slice(6)} is missing; put the model back or choose another one` };
+    const items = [];
+    if (!libraryInstalled) items.push(clone(LIBRARY));
+    if (!model.installed) items.push({ label: model.language === "ru" ? "Vosk Russian model" : "Vosk English model", host: "alphacephei.com", bytes: model.bytes });
+    if (items.length && consentFor !== settings.wake.model) return { kind: "needs_download", items };
+    return { kind: "ready" };
+  }
+  function startDownload() {
+    const state = wakeState();
+    if (state.kind !== "needs_download" && state.kind !== "error") throw "nothing is waiting for a download";
+    consentFor = settings.wake.model;
+    const model = wakeModels.find((entry) => entry.id === settings.wake.model);
+    download = { model: model.id, label: model.language === "ru" ? "Vosk Russian model" : "Vosk English model", percent: 0, failed: false };
+    const step = () => {
+      if (!download) return;
+      if (failNextDownload && download.percent >= 40) {
+        failNextDownload = false;
+        download.failed = true;
+        emit("app-event", { event: "wake" });
+        return;
+      }
+      download.percent += 20;
+      if (download.percent >= 100) {
+        model.installed = true;
+        libraryInstalled = true;
+        download = null;
+      }
+      emit("app-event", { event: "wake" });
+      if (download) setTimeout(step, 400);
+    };
+    setTimeout(step, 400);
+  }
   const started = Date.now();
   const listeners = {};
   const calls = [];
@@ -99,11 +154,18 @@
     if (timeout !== 0 && !(timeout >= 5 && timeout <= 3600)) {
       throw `session.idle_timeout_seconds: ${timeout} is outside 0 or 5..3600`;
     }
-    const activation = normalize(doc.wake.activation_phrases);
-    const deactivation = normalize(doc.wake.deactivation_phrases);
-    const shared = activation.find((phrase) => deactivation.includes(phrase));
-    if (shared) {
-      throw `wake.deactivation_phrases: «${shared}» is in both the activation and the deactivation list`;
+    for (const [model, lists] of Object.entries(doc.wake.phrases || {})) {
+      const activation = normalize(lists.activation || []);
+      const deactivation = normalize(lists.deactivation || []);
+      const shared = activation.find((phrase) => deactivation.includes(phrase));
+      if (shared) {
+        throw `wake.phrases.${model}.deactivation: «${shared}» is in both the activation and the deactivation list of «${model}»`;
+      }
+    }
+    const local = doc.wake.model.startsWith("local:") ? doc.wake.model.slice(6) : null;
+    const known = wakeModels.some((entry) => entry.source === "catalog" && entry.id === doc.wake.model);
+    if (!known && (local === null || !local.trim() || /[\\/:]|\.\./.test(local))) {
+      throw `wake.model: «${doc.wake.model}» is neither in the model catalog nor a local:<folder> model`;
     }
     for (const field of ["input_gain", "output_gain"]) {
       const gain = doc.audio[field];
@@ -168,7 +230,11 @@
         last_error: null,
         counters: { ticks: Math.floor((Date.now() - started) / 20), speaker_frames: 0, malformed_frames: 0, unnamed_sources: 0 },
       },
-      wake: { state: { kind: "ready" }, model: settings.wake.model, unknown_words: [], dropped_chunks: 0 },
+      wake: {
+        state: wakeState(), engine: settings.wake.engine, model: settings.wake.model,
+        activation_phrases: normalize(selectedPhrases().activation), deactivation_phrases: normalize(selectedPhrases().deactivation),
+        unknown_words: normalize(selectedPhrases().activation).includes("zzz") ? ["zzz"] : [], dropped_chunks: 0,
+      },
       gates: {
         "1091401169441656933": {
           guild_id: "1091401169441656933", mode: settings.session.mode, muted, active: false,
@@ -200,8 +266,11 @@
     save_settings: ({ patch }) => {
       const next = merge(clone(settings), patch);
       validate(next);
+      const wakeChanged = JSON.stringify(next.wake) !== JSON.stringify(settings.wake) || next.session.mode !== settings.session.mode;
       settings = next;
       setTimeout(() => emit("app-event", { event: "settings_changed" }), 0);
+      // The app's wake engine publishes its new state after a wake or session change.
+      if (wakeChanged) setTimeout(() => emit("app-event", { event: "wake" }), 10);
       return clone(settings);
     },
     set_secret: ({ value }) => {
@@ -217,6 +286,8 @@
       platform: "Windows (mock)", architecture: "x86_64", cpu_cores: 8,
     }),
     wake_models: () => clone(wakeModels),
+    wake_download: () => startDownload(),
+    open_models_folder: () => "C:\\VoiceBro\\models",
     capabilities: () => clone(capabilities),
     chat_log: () => [
       { id: 1, at: "12:00:01", guild_id: "1091401169441656933", kind: "user", who: "Alex", text: "What time is it?" },
@@ -288,6 +359,20 @@
     // The share of received packets the call conceals from now on (0.03 = 3 %).
     setLoss(rate) {
       lossRate = rate;
+    },
+    // The wake engine: `wakeState()` as the status reports it; `failNextDownload()` makes
+    // the next Download stop at 40 % with a hash error; `resetDownloads()` puts the English
+    // model and the library back to "not downloaded" and forgets the consent.
+    wakeState: () => wakeState(),
+    failNextDownload() {
+      failNextDownload = true;
+    },
+    resetDownloads(library = false) {
+      wakeModels[0].installed = false;
+      libraryInstalled = !library;
+      consentFor = null;
+      download = null;
+      emit("app-event", { event: "wake" });
     },
     changeCapabilities() {
       capabilities = clone(capabilities);
