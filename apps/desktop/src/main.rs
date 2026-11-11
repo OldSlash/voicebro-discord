@@ -424,8 +424,55 @@ fn log_plugin(
     builder.build()
 }
 
+/// Whether the app can write to its folder: creates it when missing, then writes and
+/// removes a probe file.
+fn check_writable(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let probe = dir.join(".voicebro-write-test");
+    std::fs::write(&probe, b"")?;
+    std::fs::remove_file(&probe)
+}
+
+/// A message box before any window exists (the folder check runs before Tauri).
+fn show_error(title: &str, text: &str) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let wide = |text: &str| {
+            text.encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<u16>>()
+        };
+        let (text, title) = (wide(text), wide(title));
+        // SAFETY: both strings are NUL-terminated UTF-16 buffers that outlive the call; a
+        // null owner window is allowed.
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    eprintln!("{title}: {text}");
+}
+
 fn main() {
     let data_dir = paths::data_dir();
+    // Everything the app creates lives in its own folder: without write access there,
+    // say so and stop before anything is created.
+    if let Err(error) = check_writable(&data_dir) {
+        show_error(
+            "VoiceBro",
+            &format!(
+                "VoiceBro cannot write to its folder:\n{}\n\n({error})\n\nInstall or extract VoiceBro into a folder you can write to, for example %LOCALAPPDATA%\\VoiceBro.",
+                data_dir.display()
+            ),
+        );
+        std::process::exit(1);
+    }
     let handle = tauri::async_runtime::handle().inner().clone();
     let events = EventBus::default();
     let errors = Arc::new(ConnectionErrors::new(events.clone()));
@@ -625,6 +672,35 @@ mod tests {
             assert!(keep_in_file(target, Warn, false, true), "verbose: {target}");
             assert!(keep_in_file(target, Warn, true, false), "debug: {target}");
         }
+    }
+
+    #[test]
+    fn a_folder_without_write_access_fails_the_check() {
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.parent().unwrap().join("test-scratch").join("no-write");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        check_writable(&dir).expect("a normal folder is writable");
+        assert!(
+            !dir.join(".voicebro-write-test").exists(),
+            "the probe is removed"
+        );
+
+        let user = std::env::var("USERNAME").expect("USERNAME");
+        let icacls = |args: &[&str]| {
+            let status = std::process::Command::new("icacls")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .expect("icacls runs");
+            assert!(status.status.success(), "icacls {args:?}: {status:?}");
+        };
+        icacls(&["/deny", &format!("{user}:(W)")]);
+        let denied = check_writable(&dir);
+        icacls(&["/remove:d", &user]);
+        assert!(denied.is_err(), "writing must fail while denied");
+        check_writable(&dir).expect("writable again after the deny is removed");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -57,9 +57,12 @@ voicebro-discord/
   apps/
     desktop/                   the Tauri app (what `src-tauri` is in a plain Tauri project)
       Cargo.toml, build.rs, windows-app-manifest.xml, tauri.conf.json, capabilities/
+      installer-hooks.nsh      the NSIS uninstall hook (section 4.10)
       src/                     commands, event bridge to the webview, global hotkey, lifecycle
       ui/                      static HTML/CSS/JS, no bundler, `withGlobalTauri: true`
     probe/                     headless dev binary: live probes and self-tests, not shipped
+  scripts/                     build-release.ps1, third-party-notices.ps1, make-wake-corpus.ps1, measure.ps1
+  README.md                    the user guide, also in the portable zip
   docs/
   openspec/
 ```
@@ -640,9 +643,18 @@ recognizes; the code ships none.
   (`VOICEBRO_DATA_DIR` overrides it for tests). It holds `settings.json`, `logs\`, `assets\`
   (the Vosk library and the catalog models the app downloaded), `models\` (Vosk models the
   user added, only read), `codex-workspace\` (the empty, read-only cwd for Codex
-  threads) and `webview-data\` (the window's WebView2 data, about 11 MB). Nothing is written
-  under the user profile; builds before change `ui-layout-port` left a
+  threads) and `webview-data\` (the window's WebView2 data, cache and component downloads,
+  tens of MB). The app creates files only there. Outside it are only the Discord token in
+  the Windows Credential Manager (written by the app), the user's own Codex data in
+  `~\.codex` (written by Codex) and, when Codex was installed through the app, Codex itself
+  where winget puts it. Builds before change `ui-layout-port` left a
   `%LOCALAPPDATA%\com.voicebro.desktop` folder (WebView2 data) that the user may delete.
+- **The folder must be writable.** The first thing `main()` of the desktop app does is
+  `check_writable(data_dir)`: create the folder if needed, write and remove
+  `.voicebro-write-test`. On failure a `MessageBoxW` names the folder and says to install
+  or extract VoiceBro into a folder the user can write to, and the process exits with
+  code 1 before logging, settings or a window exist (a copy under Program Files, for
+  example).
 
 ### 4.7 Composition root (`runtime.rs`)
 
@@ -814,6 +826,34 @@ A headless dev binary over `voicebro-core`: Codex handshake and account check, W
 with a WAV, Vosk corpus runs, Credential Manager round trip, timer jitter, memory
 measurement. Not shipped. It exists so that every external API is probed live before code
 is built on it.
+
+### 4.10 Distribution (`apps/desktop/tauri.conf.json`, `scripts/`)
+
+- **Installer:** Tauri's NSIS template with `installMode: currentUser` (no elevation,
+  `%LOCALAPPDATA%\VoiceBro` by default, the folder selectable; per-machine is not offered
+  because Program Files is not writable for the app), English and Russian by the system
+  language without a selector, a `VoiceBro` Start menu folder, the desktop shortcut on the
+  last page, no license page. `LICENSE` (as `LICENSE.txt`) and
+  `THIRD-PARTY-NOTICES.txt` are installed next to `voicebro.exe` as resources.
+- **Update and uninstall:** an install over an older one replaces only the bundled files.
+  `apps/desktop/installer-hooks.nsh` defines `NSIS_HOOK_POSTUNINSTALL`: only when "Delete
+  the application data" is checked and not in update mode, it removes `logs`, `assets`,
+  `models`, `codex-workspace`, `webview-data`, `settings.json`, runs
+  `cmdkey /delete:VoiceBro/discord_token`, and removes the then empty install folder.
+  Tauri's own deletion of `%APPDATA%` / `%LOCALAPPDATA%\com.voicebro.desktop` stays.
+- **Release script** `scripts\build-release.ps1`: checks that `tauri.conf.json` and
+  `apps/desktop/Cargo.toml` agree on the version; without `-Trial` it refuses unless on
+  `main`, with a clean tree and the tag `v<version>` on `HEAD`. It writes the notices,
+  runs `cargo tauri build`, and puts into `target\release\dist\` (`dist-trial\` with
+  `-trial` names) the installer, `VoiceBro_<version>_x64-portable.zip` (`voicebro.exe`,
+  `README.md`, `LICENSE`, `THIRD-PARTY-NOTICES.txt`) and `SHA256SUMS.txt`.
+- **Third-party notices** `scripts\third-party-notices.ps1`: the crates of `cargo tree -p
+  voicebro-desktop -e normal --target x86_64-pc-windows-msvc` (the metadata's resolve
+  graph is not used: it unifies the whole workspace's features, dev dependencies included),
+  each with version, license, source and the `LICENSE*`, `COPYING*`, `NOTICE*` files from
+  its package folder, then Vosk and the two catalog models as downloaded components.
+- Code signing is not set up; `bundle.windows.signCommand` or a certificate thumbprint can
+  be added later without changing the rest.
 
 ## 5. Data flow
 
