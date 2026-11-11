@@ -1,7 +1,11 @@
 # Writes THIRD-PARTY-NOTICES.txt: every crate built into voicebro.exe (the normal
 # dependencies of voicebro-desktop for x86_64-pc-windows-msvc, from `cargo metadata`) with
-# its version, license, repository and the license and notice files it ships, then the
-# components the app downloads only after the user's OK (Vosk and its models).
+# its version, license, repository and the license and notice files it ships; the native
+# libraries that crates compile or link into voicebro.exe under licenses of their own; the
+# installer's components; the components the app downloads only after the user's OK (Vosk
+# and its models); and what the app needs but does not ship (the Codex CLI). License texts
+# that no crate ships are kept in scripts\notices\. The script stops and writes nothing when
+# one of those texts is missing or a crate with a native library changed its version.
 # Run from the repository root; the release script calls it before `cargo tauri build`:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\third-party-notices.ps1
 param(
@@ -37,14 +41,70 @@ $crates = $metadata["packages"] |
     Where-Object { $wanted.ContainsKey("$($_["name"]) $($_["version"])") -and -not $workspace.ContainsKey($_["id"]) } |
     Sort-Object { $_["name"] }, { $_["version"] }
 
+# Native libraries that crates compile or link into voicebro.exe under licenses of their
+# own. Each entry was checked for one version of its crate: another version stops the
+# script, since the bundled library and the place of its license text may have changed.
+# Text is a path inside the crate ("crate:...") or in this repository.
+$native = @(
+    @{
+        Crate = "libopus_sys"; Checked = "0.3.3"; Name = "Opus 1.5"
+        What = "The Opus audio codec, a C library compiled from the sources inside the crate."
+        License = "BSD-3-Clause"; Source = "https://opus-codec.org"
+        Text = "crate:opus\COPYING"
+    },
+    @{
+        Crate = "webview2-com-sys"; Checked = "0.39.1"; Name = "Microsoft Edge WebView2 SDK 1.0.3800.47"
+        What = "WebView2LoaderStatic.lib, the WebView2 loader, linked from the crate."
+        License = "the WebView2 SDK license (BSD-style)"
+        Source = "https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3800.47"
+        Text = "scripts\notices\WebView2-SDK-LICENSE.txt"
+    }
+)
+$problems = New-Object System.Collections.Generic.List[string]
+function Read-NoticeText([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        $problems.Add("license text not found: $path")
+        return ""
+    }
+    return ([System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $path).Path)).TrimEnd()
+}
+function Add-Component($name, $license, $source, $lines, $textName, $body) {
+    [void]$text.AppendLine("-" * 60)
+    [void]$text.AppendLine($name)
+    foreach ($line in $lines) { [void]$text.AppendLine($line) }
+    [void]$text.AppendLine("License: $license")
+    [void]$text.AppendLine("Source: $source")
+    if ($body) {
+        [void]$text.AppendLine("")
+        [void]$text.AppendLine("--- $textName ---")
+        [void]$text.AppendLine($body)
+    }
+    [void]$text.AppendLine("")
+}
+function Add-Heading($title) {
+    [void]$text.AppendLine("=" * 60)
+    [void]$text.AppendLine($title)
+    [void]$text.AppendLine("=" * 60)
+    [void]$text.AppendLine("")
+}
+
 $text = New-Object System.Text.StringBuilder
 [void]$text.AppendLine("Third-party software in VoiceBro $version")
 [void]$text.AppendLine("=" * 60)
 [void]$text.AppendLine("")
-[void]$text.AppendLine("VoiceBro itself is under the MIT License (see LICENSE). voicebro.exe is built from")
-[void]$text.AppendLine("the $($crates.Count) Rust crates below. Each is listed with its version, its license and,")
-[void]$text.AppendLine("where the crate ships them, the texts of its license and notice files.")
+[void]$text.AppendLine("VoiceBro itself is under the MIT License (see LICENSE). This file lists the")
+[void]$text.AppendLine("third-party software in it and around it:")
 [void]$text.AppendLine("")
+[void]$text.AppendLine("  1. the $($crates.Count) Rust crates voicebro.exe is built from;")
+[void]$text.AppendLine("  2. the native libraries compiled or linked into voicebro.exe from inside them;")
+[void]$text.AppendLine("  3. the installer's own components;")
+[void]$text.AppendLine("  4. what VoiceBro downloads only after you agree;")
+[void]$text.AppendLine("  5. what VoiceBro needs but does not ship.")
+[void]$text.AppendLine("")
+[void]$text.AppendLine("Each is listed with its version, its license and, where there is one, the full")
+[void]$text.AppendLine("text of its license and notice files.")
+[void]$text.AppendLine("")
+Add-Heading "1. Rust crates built into voicebro.exe"
 foreach ($crate in $crates) {
     [void]$text.AppendLine("-" * 60)
     [void]$text.AppendLine("$($crate["name"]) $($crate["version"])")
@@ -66,10 +126,37 @@ foreach ($crate in $crates) {
     }
     [void]$text.AppendLine("")
 }
-[void]$text.AppendLine("=" * 60)
-[void]$text.AppendLine("Downloaded only after you agree in the window (Settings > Assistant > Download)")
-[void]$text.AppendLine("=" * 60)
-[void]$text.AppendLine("")
+
+Add-Heading "2. Native libraries inside the crates, built into voicebro.exe"
+foreach ($entry in $native) {
+    $crate = $crates | Where-Object { $_["name"] -eq $entry.Crate } | Select-Object -First 1
+    if (-not $crate) { continue }
+    if ($crate["version"] -ne $entry.Checked) {
+        $problems.Add("$($entry.Crate) is $($crate["version"]) in the build, but its entry was checked for $($entry.Checked): find out which library it bundles now and where its license text is, then update the entry")
+        continue
+    }
+    $path = if ($entry.Text.StartsWith("crate:")) {
+        Join-Path (Split-Path $crate["manifest_path"]) $entry.Text.Substring(6)
+    } else {
+        $entry.Text
+    }
+    Add-Component $entry.Name $entry.License $entry.Source @($entry.What, "Comes with: $($entry.Crate) $($crate["version"])") (Split-Path -Leaf $path) (Read-NoticeText $path)
+}
+$ring = $crates | Where-Object { $_["name"] -eq "ring" } | Select-Object -First 1
+if ($ring) {
+    [void]$text.AppendLine("-" * 60)
+    [void]$text.AppendLine("ring $($ring["version"]) also contains C and assembly code derived from BoringSSL and")
+    [void]$text.AppendLine("OpenSSL. Its LICENSE, LICENSE-BoringSSL and LICENSE-other-bits, listed with the crate")
+    [void]$text.AppendLine("in section 1, cover that code.")
+    [void]$text.AppendLine("")
+}
+
+Add-Heading "3. The installer (VoiceBro_${version}_x64-setup.exe)"
+Add-Component "NSIS 3.13 (Nullsoft Scriptable Install System)" "zlib/libpng; the bzip2 and LZMA compression modules under the terms in its COPYING" "https://nsis.sourceforge.io" @("The installer's program, its plug-ins and its LZMA decompression.") "COPYING" (Read-NoticeText "scripts\notices\NSIS-COPYING.txt")
+Add-Component "nsis_tauri_utils 0.5.3" "MIT OR Apache-2.0" "https://github.com/tauri-apps/nsis-tauri-utils" @("Tauri's NSIS plug-in.") "LICENSE_MIT" (Read-NoticeText "scripts\notices\nsis_tauri_utils-LICENSE_MIT.txt")
+Add-Component "Microsoft Edge WebView2 Runtime" "Microsoft's license terms for the WebView2 Runtime" "https://developer.microsoft.com/microsoft-edge/webview2/" @("Not part of VoiceBro's files. When the runtime is missing, the installer downloads", "Microsoft's installer for it (MicrosoftEdgeWebview2Setup.exe) from go.microsoft.com", "and runs it.") "" ""
+
+Add-Heading "4. Downloaded only after you agree in the window (Settings > Assistant > Download)"
 [void]$text.AppendLine("Vosk 0.3.45 (libvosk.dll and its runtime DLLs)")
 [void]$text.AppendLine("License: Apache-2.0")
 [void]$text.AppendLine("Source: https://github.com/alphacep/vosk-api")
@@ -79,6 +166,19 @@ foreach ($crate in $crates) {
 [void]$text.AppendLine("Source: https://alphacephei.com/vosk/models")
 [void]$text.AppendLine("")
 [void]$text.AppendLine("Models you put into the models folder yourself carry their own licenses.")
+[void]$text.AppendLine("")
+
+Add-Heading "5. Needed but not shipped"
+[void]$text.AppendLine("Codex CLI (OpenAI)")
+[void]$text.AppendLine("License: Apache-2.0")
+[void]$text.AppendLine("Source: https://github.com/openai/codex")
+[void]$text.AppendLine("You install it yourself, or from VoiceBro's Status tab through winget (package")
+[void]$text.AppendLine("OpenAI.Codex). VoiceBro starts it and talks to it; it does not ship or change it.")
+
+if ($problems.Count -gt 0) {
+    foreach ($problem in $problems) { Write-Error "third-party-notices: $problem" -ErrorAction Continue }
+    exit 1
+}
 
 New-Item -ItemType Directory -Force $Out | Out-Null
 $path = Join-Path (Resolve-Path $Out) "THIRD-PARTY-NOTICES.txt"
