@@ -857,7 +857,17 @@ is built on it.
   voicebro-desktop -e normal --target x86_64-pc-windows-msvc` (the metadata's resolve
   graph is not used: it unifies the whole workspace's features, dev dependencies included),
   each with version, license, source and the `LICENSE*`, `COPYING*`, `NOTICE*` files from
-  its package folder, then Vosk and the two catalog models as downloaded components.
+  its package folder. Five numbered sections: (1) those crates; (2) native libraries that
+  crates build or link in under licenses of their own: Opus 1.5 from `libopus_sys` (text
+  `opus\COPYING` inside the crate) and the WebView2 loader from `webview2-com-sys` (WebView2
+  SDK 1.0.3800.47; text kept in `scripts\notices\`), plus a line that `ring`'s own
+  `LICENSE-*` files cover its BoringSSL code; (3) the installer: NSIS 3.13 and Tauri's
+  `nsis_tauri_utils` 0.5.3 with texts kept in `scripts\notices\`, and the WebView2 Runtime
+  installer it downloads when the runtime is missing; (4) Vosk and the two catalog models,
+  downloaded after the OK; (5) the Codex CLI, needed but not shipped. Each native entry is
+  pinned to the crate version it was checked for: another version, or a missing kept text,
+  stops the script with an error and no file is written. A Tauri CLI update can change the
+  NSIS and plug-in versions; check them in `tauri-bundler`'s `nsis/mod.rs` when it does.
 - Code signing is not set up; `bundle.windows.signCommand` or a certificate thumbprint can
   be added later without changing the rest.
 
