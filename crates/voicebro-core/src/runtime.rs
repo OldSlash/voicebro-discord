@@ -619,7 +619,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(on_disk.session.idle_timeout_seconds, 120);
-        // The session section changed, so the wake manager reports its state first.
+        // The session section changed, so the wake manager reports its state first. With
+        // no Vosk files in the scratch folder that is the download it waits for, and its
+        // log line.
         let mut saw_settings_changed = false;
         while let Ok(event) = events.try_recv() {
             match event {
@@ -627,11 +629,14 @@ mod tests {
                 AppEvent::Wake(status) => assert!(
                     matches!(
                         status.state,
-                        crate::wake::WakeState::Off | crate::wake::WakeState::NoPhrases
+                        crate::wake::WakeState::Off
+                            | crate::wake::WakeState::NoPhrases
+                            | crate::wake::WakeState::NeedsDownload { .. }
                     ),
                     "{:?}",
                     status.state
                 ),
+                AppEvent::Log { line } => assert!(line.starts_with("wake word:"), "{line}"),
                 other => panic!("unexpected event {other:?}"),
             }
         }

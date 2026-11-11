@@ -211,7 +211,7 @@
                 <label class="wide"><span class="field-name">Deactivation phrases<span class="model-name" data-model-name></span></span><textarea id="deactivation-phrases" rows="2" spellcheck="false" data-path="wake.phrases" data-phrases="deactivation" data-kind="list"></textarea><small class="field-help">Of the wake model chosen below. Ends the session at once and cuts off the current answer. Avoid words that come up in normal game talk. Applies at once. Empty by default.</small><small class="field-message" data-for="deactivation-phrases"></small></label>
                 <label>Auto-stop after no input, seconds<input id="idle-timeout" type="number" min="0" max="3600" step="1" data-path="session.idle_timeout_seconds" data-kind="number"><small class="field-help">0 = only the deactivation phrase ends a session; otherwise 5 to 3600. The assistant's own answer does not count as silence. Applies at once, to the running session too. Default: 60.</small><small class="field-message" data-for="idle-timeout"></small></label>
                 <label>Wake engine<select id="wake-engine" data-path="wake.engine" data-kind="string"></select><small class="field-help">The offline recognizer that listens for the phrases on this PC; Vosk is the only one today. Applies at once (the engine reloads).</small><small class="field-message" data-for="wake-engine"></small></label>
-                <label class="wide">Wake model<select id="wake-model" data-path="wake.model" data-kind="string"></select><small class="field-help">The recognizer's language; the phrases above belong to the model chosen here, and each model keeps its own. A model that is not on this PC yet is downloaded only after you press Download below. Other languages: extract a small Vosk model from alphacephei.com/vosk/models into the models folder and restart VoiceBro; use the small models, the large ones load slowly and take gigabytes of memory. Applies at once. Default: English (US).</small><small class="field-message" data-for="wake-model"></small></label>
+                <label class="wide">Wake model<select id="wake-model" data-path="wake.model" data-kind="string"></select><small class="field-help">The recognizer's language; the phrases above belong to the model chosen here, and each model keeps its own. A model that is not on this PC yet is downloaded only after you agree: choosing one asks first, and nothing is fetched until you press Download. Other languages: extract a small Vosk model from alphacephei.com/vosk/models into the models folder and restart VoiceBro; use the small models, the large ones load slowly and take gigabytes of memory. Applies at once. Default: English (US).</small><small class="field-message" data-for="wake-model"></small></label>
                 <div class="wide wake-model-tools">
                   <div class="wake-download" id="wake-download" hidden>
                     <p id="wake-download-text"></p>
@@ -302,6 +302,20 @@
         </div>
       </footer>
     </div>
+
+    <dialog class="install-dialog" id="wake-install" aria-labelledby="wake-install-title" aria-describedby="wake-install-text">
+      <h2 id="wake-install-title">The wake word is not installed</h2>
+      <p id="wake-install-text"></p>
+      <ul id="wake-install-items"></ul>
+      <p class="install-total" id="wake-install-total"></p>
+      <p class="install-progress" id="wake-install-progress" role="status" hidden></p>
+      <p class="install-error" id="wake-install-error" role="alert" hidden></p>
+      <p class="install-note" id="wake-install-note"></p>
+      <div class="install-actions">
+        <button type="button" class="button" id="wake-install-secondary">Not now</button>
+        <button type="button" class="button primary" id="wake-install-primary">Download</button>
+      </div>
+    </dialog>
     <script src="main.js"></script>
   </body>
 </html>

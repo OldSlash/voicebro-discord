@@ -21,7 +21,9 @@
 ## Features
 
 - **Hands-free.** An offline wake word starts a session, so you never leave the game.
-  English and Russian are built in; other languages are one download away.
+  Ten languages to choose from (English, Russian, Czech, Dutch, French, German, Italian,
+  Polish, Portuguese, Spanish), each downloaded only after you agree; any other Vosk model
+  can be added by hand.
 - **A real voice.** ChatGPT's voice through the official Codex CLI, with your own ChatGPT
   account. No API key.
 - **Looks things up.** Questions that need research go to Codex, which can search the web,
@@ -154,7 +156,7 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing code.
 | [songbird](https://github.com/serenity-rs/songbird) and [davey](https://github.com/Snazzah/davey) | Discord voice, with Discord's end-to-end encryption (DAVE). | ISC; MIT |
 | [Opus](https://opus-codec.org), through [opus2](https://github.com/cijiugechu/opus2) | Encodes and decodes the voice. The C library is compiled into the app. | BSD-3-Clause; MIT or Apache-2.0 |
 | [webrtc-rs](https://github.com/webrtc-rs/webrtc) | The voice call to ChatGPT. | MIT or Apache-2.0 |
-| [Vosk](https://alphacephei.com/vosk/) | The offline wake word. Downloaded with its models after you agree. | Apache-2.0 |
+| [Vosk](https://alphacephei.com/vosk/) | The offline wake word. Downloaded with the model of your language after you agree. | Apache-2.0; the Czech model MIT |
 | [Codex CLI](https://github.com/openai/codex) | The assistant: the ChatGPT sign-in, the voice call and the web search. Installed separately. | Apache-2.0 |
 | [NSIS](https://nsis.sourceforge.io) | The installer. | zlib/libpng |
 

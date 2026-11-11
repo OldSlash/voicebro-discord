@@ -118,8 +118,10 @@ impl SettingsStore {
 }
 
 /// Version 1 kept one pair of phrase lists for whatever model was selected, and its only
-/// model was the Russian one. Moves the lists under `wake.phrases.<model>`, writes the
-/// Russian model into a document that names none, and removes the old fields.
+/// model was the Russian one, so the model it names says nothing about the user's choice.
+/// With phrases, moves the lists under `wake.phrases.<model>` (the Russian model when the
+/// document names none) so they keep working. Without phrases, selects the default model
+/// of a new file, English. Removes the old fields either way.
 pub fn migrate_v1(document: &mut Value) {
     let Some(root) = document.as_object_mut() else {
         return;
@@ -130,6 +132,18 @@ pub fn migrate_v1(document: &mut Value) {
     let Some(wake) = wake.as_object_mut() else {
         return;
     };
+    let take_list = |wake: &mut serde_json::Map<String, Value>, key: &str| {
+        wake.remove(key)
+            .filter(|list| list.as_array().is_some_and(|items| !items.is_empty()))
+    };
+    let activation = take_list(wake, "activation_phrases");
+    let deactivation = take_list(wake, "deactivation_phrases");
+    if activation.is_none() && deactivation.is_none() {
+        let default = crate::wake::catalog::default_entry().id;
+        wake.insert("model".to_owned(), Value::String(default.to_owned()));
+        log::info!("settings: a version-1 file without wake phrases now selects {default}");
+        return;
+    }
     let model = match wake.get("model").and_then(Value::as_str) {
         Some(model) => model.to_owned(),
         None => {
@@ -138,15 +152,6 @@ pub fn migrate_v1(document: &mut Value) {
             model
         }
     };
-    let take_list = |wake: &mut serde_json::Map<String, Value>, key: &str| {
-        wake.remove(key)
-            .filter(|list| list.as_array().is_some_and(|items| !items.is_empty()))
-    };
-    let activation = take_list(wake, "activation_phrases");
-    let deactivation = take_list(wake, "deactivation_phrases");
-    if activation.is_none() && deactivation.is_none() {
-        return;
-    }
     let phrases = wake
         .entry("phrases")
         .or_insert_with(|| Value::Object(Default::default()));
@@ -218,22 +223,70 @@ mod tests {
     }
 
     #[test]
-    fn version_1_without_phrases_keeps_its_model_and_has_none() {
+    fn version_1_without_phrases_selects_english() {
         let dir = tempfile::tempdir().unwrap();
         let store = store_in(&dir);
-        std::fs::write(store.path(), r#"{ "version": 1, "session": {} }"#).unwrap();
-        let loaded = store.load().unwrap().unwrap();
-        assert_eq!(loaded.wake.model, RUSSIAN_SMALL, "the default of version 1");
-        assert!(loaded.wake.phrases.is_empty());
+        for document in [
+            r#"{ "version": 1, "session": {} }"#,
+            r#"{ "version": 1, "wake": { "model": "vosk-model-small-ru-0.22" } }"#,
+            r#"{ "version": 1, "wake": { "model": "vosk-model-small-ru-0.22",
+                 "activation_phrases": [], "deactivation_phrases": [] } }"#,
+        ] {
+            std::fs::write(store.path(), document).unwrap();
+            let loaded = store.load().unwrap().unwrap();
+            assert_eq!(
+                loaded.wake.model, "vosk-model-small-en-us-0.15",
+                "{document}"
+            );
+            assert!(loaded.wake.phrases.is_empty(), "{document}");
+            store.save(&loaded).unwrap();
+            let text = std::fs::read_to_string(store.path()).unwrap();
+            assert!(!text.contains("activation_phrases"), "{text}");
+            assert!(!text.contains("vosk-model-small-ru-0.22"), "{text}");
+        }
+    }
 
+    /// The file the 0.1.0 build wrote on 2026-11-09: its defaults (commit `8b42a5e`), which
+    /// the user's later install picked up with the Russian model selected.
+    #[test]
+    fn the_0_1_0_defaults_load_with_english_and_keep_everything_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(&dir);
         std::fs::write(
             store.path(),
-            r#"{ "version": 1, "wake": { "model": "vosk-model-small-ru-0.22", "activation_phrases": [] } }"#,
+            include_str!("../../testdata/settings-v1-0.1.0.json"),
+        )
+        .unwrap();
+        let loaded = store.load().unwrap().unwrap();
+        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.wake.engine, "vosk");
+        assert_eq!(loaded.wake.model, "vosk-model-small-en-us-0.15");
+        assert!(loaded.wake.phrases.is_empty());
+        // The file's own values stay, also where today's defaults differ (the voice).
+        assert_eq!(loaded.session.mode, crate::settings::SessionMode::WakeWord);
+        assert_eq!(loaded.session.idle_timeout_seconds, 60);
+        assert!(loaded.session.earcons);
+        assert_eq!(loaded.session.earcon_volume, 0.18);
+        assert_eq!(loaded.assistant.engine, "codex");
+        assert_eq!(loaded.codex.voice, "juniper");
+        assert!(loaded.codex.instructions.is_empty());
+        assert_eq!(loaded.hotkey.mute, "Ctrl+Alt+M");
+        assert!(loaded.validate().is_ok(), "{:?}", loaded.validate());
+    }
+
+    #[test]
+    fn version_1_with_only_deactivation_phrases_keeps_the_russian_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(&dir);
+        std::fs::write(
+            store.path(),
+            r#"{ "version": 1, "wake": { "model": "vosk-model-small-ru-0.22",
+                 "activation_phrases": [], "deactivation_phrases": ["отбой"] } }"#,
         )
         .unwrap();
         let loaded = store.load().unwrap().unwrap();
         assert_eq!(loaded.wake.model, RUSSIAN_SMALL);
-        assert!(loaded.wake.phrases.is_empty(), "empty lists make no entry");
+        assert_eq!(loaded.wake.selected_phrases().deactivation, ["отбой"]);
     }
 
     #[test]

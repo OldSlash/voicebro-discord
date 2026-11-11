@@ -138,19 +138,43 @@ mod tests {
         assert!(parse_recognition("garbage", true).text.is_empty());
     }
 
+    /// A 16-bit mono WAV as the recognizer hears it: 16 kHz files as they are, 48 kHz files
+    /// (the Codex voice's recordings) through the app's own 48 → 16 kHz downsampler, fed as
+    /// stereo the way Discord audio reaches it.
     fn wav_samples(path: &str) -> Vec<i16> {
         let bytes = std::fs::read(path).expect("wav readable");
+        let format = bytes
+            .windows(4)
+            .position(|window| window == b"fmt ")
+            .map(|index| index + 8)
+            .expect("wav has a fmt chunk");
+        let u16_at = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        let channels = u16_at(format + 2);
+        let rate = u32::from_le_bytes(bytes[format + 4..format + 8].try_into().unwrap());
+        let bits = u16_at(format + 14);
+        assert!(
+            channels == 1 && bits == 16,
+            "{path}: want 16-bit mono, got {channels} channels at {bits} bits"
+        );
         let data = bytes
             .windows(4)
             .position(|window| window == b"data")
             .map(|index| index + 8)
             .expect("wav has a data chunk");
-        bytes[data..]
+        let mono: Vec<i16> = bytes[data..]
             .as_chunks::<2>()
             .0
             .iter()
             .map(|pair| i16::from_le_bytes(*pair))
-            .collect()
+            .collect();
+        match rate {
+            16_000 => mono,
+            48_000 => {
+                let stereo: Vec<i16> = mono.iter().flat_map(|&sample| [sample, sample]).collect();
+                crate::audio::dsp::StereoDownsampler::new(3).process(&stereo)
+            }
+            other => panic!("{path}: want 16 or 48 kHz, got {other} Hz"),
+        }
     }
 
     fn phrase_set_from_env() -> PhraseSet {
@@ -169,9 +193,96 @@ mod tests {
         }
     }
 
+    /// Per catalog model: a greeting of its language and the corpus test's own phrases.
+    /// The catalog carries no phrases; these belong to the tests.
+    const CATALOG_WORDS: &[(&str, &[&str])] = &[
+        (
+            "vosk-model-small-en-us-0.15",
+            &["hello", "hey bro", "brother", "goodbye"],
+        ),
+        ("vosk-model-small-ru-0.22", &["привет", "братан", "отбой"]),
+        (
+            "vosk-model-small-cs-0.4-rhasspy",
+            &["ahoj", "ahoj kámo", "konec"],
+        ),
+        (
+            "vosk-model-small-nl-0.22",
+            &["hallo", "hallo maat", "tot ziens"],
+        ),
+        (
+            "vosk-model-small-fr-0.22",
+            &["bonjour", "salut pote", "au revoir"],
+        ),
+        (
+            "vosk-model-small-de-0.15",
+            &["hallo", "hallo kumpel", "tschüss"],
+        ),
+        (
+            "vosk-model-small-it-0.22",
+            &["ciao", "ciao amico", "arrivederci"],
+        ),
+        (
+            "vosk-model-small-pl-0.22",
+            &["cześć", "cześć stary", "do widzenia"],
+        ),
+        ("vosk-model-small-pt-0.3", &["olá", "olá amigo", "tchau"]),
+        ("vosk-model-small-es-0.42", &["hola", "hola amigo", "adiós"]),
+    ];
+
+    /// Loads every catalog model from `VOICEBRO_VOSK_DIR` through the real library when
+    /// `VOICEBRO_WAKE_CATALOG=1` is set too, and checks that each knows the words above.
+    /// Prints the load time and the unknown words of every model, then fails on any.
+    #[test]
+    fn catalog_models_load_when_enabled() {
+        let (Ok(base), Ok("1")) = (
+            std::env::var("VOICEBRO_VOSK_DIR"),
+            std::env::var("VOICEBRO_WAKE_CATALOG").as_deref(),
+        ) else {
+            return;
+        };
+        let base = PathBuf::from(base);
+        let mut failures = Vec::new();
+        for entry in crate::wake::catalog::entries() {
+            let words = CATALOG_WORDS
+                .iter()
+                .find(|(id, _)| *id == entry.id)
+                .map(|(_, words)| *words)
+                .unwrap_or_else(|| panic!("no test words for {}", entry.id));
+            let started = std::time::Instant::now();
+            let model = match VoskEngine.load(&base, &base.join(entry.asset.directory)) {
+                Ok(model) => model,
+                Err(error) => {
+                    eprintln!("{}: does not load: {error}", entry.id);
+                    failures.push(format!("{} does not load", entry.id));
+                    continue;
+                }
+            };
+            let loaded = started.elapsed();
+            let unknown: Vec<&str> = words
+                .iter()
+                .flat_map(|phrase| phrase.split_whitespace())
+                .filter(|word| model.knows_word(word) != Some(true))
+                .collect();
+            eprintln!(
+                "{}: loaded in {} ms; unknown words: {unknown:?}",
+                entry.id,
+                loaded.as_millis()
+            );
+            if !unknown.is_empty() {
+                failures.push(format!("{} does not know {unknown:?}", entry.id));
+            }
+            // A vocabulary that "knows" nonsense would make the check above meaningless.
+            if model.knows_word("zzqxvkw") != Some(false) {
+                failures.push(format!("{} claims to know a nonsense word", entry.id));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
     /// Loads the real library and model when `VOICEBRO_VOSK_DIR` points at the assets
     /// directory. `VOICEBRO_WAKE_PHRASES` gives the phrases ("a, b | c").
-    /// `VOICEBRO_WAKE_WAV` (16 kHz mono 16-bit PCM) must trigger an activation, or with
+    /// WAVs are 16-bit mono at 16 kHz, or at 48 kHz through the app's downsampler.
+    /// `VOICEBRO_WAKE_WAV` must trigger an activation, or with
     /// `VOICEBRO_WAKE_EXPECT=none` must not. `VOICEBRO_WAKE_SEQUENCES="a.wav=Deactivate;b.wav=Activate"`
     /// checks the last kind confirmed per file and that no activation follows a
     /// deactivation. `VOICEBRO_WAKE_NOISE=<amplitude>` adds steady noise with no trailing
