@@ -9,9 +9,11 @@ pub mod store;
 use crate::wake::catalog;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 
-/// The schema version this build writes.
-pub const CURRENT_VERSION: u32 = 1;
+/// The schema version this build writes. Version 2 keeps the wake phrases per model
+/// (`wake.phrases`); see [`store::migrate_v1`].
+pub const CURRENT_VERSION: u32 = 2;
 
 pub const DEFAULT_MUTE_HOTKEY: &str = "Ctrl+Alt+M";
 
@@ -170,10 +172,10 @@ impl Default for AudioSettings {
 pub struct WakeSettings {
     /// Engine id from the catalog (`vosk`).
     pub engine: String,
-    /// Model id from the catalog.
+    /// A catalog model id, or `local:<folder>` for a model in the models folder.
     pub model: String,
-    pub activation_phrases: Vec<String>,
-    pub deactivation_phrases: Vec<String>,
+    /// The phrases of each model, keyed by model id. Only the selected model's are used.
+    pub phrases: BTreeMap<String, ModelPhrases>,
 }
 
 impl Default for WakeSettings {
@@ -184,10 +186,39 @@ impl Default for WakeSettings {
         Self {
             engine: model.engine.to_owned(),
             model: model.id.to_owned(),
-            activation_phrases: Vec::new(),
-            deactivation_phrases: Vec::new(),
+            phrases: BTreeMap::new(),
         }
     }
+}
+
+impl WakeSettings {
+    /// The phrases of the selected model; empty when it has none yet.
+    pub fn selected_phrases(&self) -> ModelPhrases {
+        self.phrases.get(&self.model).cloned().unwrap_or_default()
+    }
+}
+
+/// One model's activation and deactivation phrases, as the user entered them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelPhrases {
+    pub activation: Vec<String>,
+    pub deactivation: Vec<String>,
+}
+
+/// The prefix of a model found in the models folder, followed by its folder name.
+pub const LOCAL_MODEL_PREFIX: &str = "local:";
+
+/// The folder name of a `local:` model id, when the id is one and the name is a plain
+/// folder name (no separators, no `..`, no drive colon).
+pub fn local_model_folder(id: &str) -> Option<&str> {
+    let folder = id.strip_prefix(LOCAL_MODEL_PREFIX)?;
+    let plain = !folder.trim().is_empty()
+        && folder.trim() == folder
+        && !folder.contains(['/', '\\', ':'])
+        && folder != "."
+        && !folder.contains("..");
+    plain.then_some(folder)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,35 +386,52 @@ impl Settings {
         }
 
         // Empty lists are allowed: they are the starting state, and the wake engine shows
-        // them as "no phrases configured" rather than the save being refused.
-        let activation = normalize_phrases(&self.wake.activation_phrases);
-        let deactivation = normalize_phrases(&self.wake.deactivation_phrases);
-        if let Some(shared) = activation
-            .iter()
-            .find(|phrase| deactivation.contains(phrase))
-        {
-            return Err(invalid(
-                "wake.deactivation_phrases",
-                format!("«{shared}» is in both the activation and the deactivation list"),
-            ));
+        // them as "no phrases configured" rather than the save being refused. The same
+        // phrase may belong to two models; only one model's lists must not overlap.
+        for (model, lists) in &self.wake.phrases {
+            let activation = normalize_phrases(&lists.activation);
+            let deactivation = normalize_phrases(&lists.deactivation);
+            if let Some(shared) = activation
+                .iter()
+                .find(|phrase| deactivation.contains(phrase))
+            {
+                return Err(invalid(
+                    &format!("wake.phrases.{model}.deactivation"),
+                    format!(
+                        "«{shared}» is in both the activation and the deactivation list of «{model}»"
+                    ),
+                ));
+            }
         }
-        match catalog::find(&self.wake.model) {
-            None => {
+        let model = self.wake.model.as_str();
+        let model_engine = match catalog::find(model) {
+            Some(entry) => entry.engine,
+            None if local_model_folder(model).is_some() => catalog::VOSK_ENGINE,
+            None if model.starts_with(LOCAL_MODEL_PREFIX) => {
                 return Err(invalid(
                     "wake.model",
-                    format!("«{}» is not in the model catalog", self.wake.model),
-                ))
-            }
-            Some(entry) if entry.engine != self.wake.engine => {
-                return Err(invalid(
-                    "wake.engine",
                     format!(
-                        "model «{}» belongs to engine «{}», not «{}»",
-                        entry.id, entry.engine, self.wake.engine
+                        "«{model}» is not a plain folder name of the models folder (no \\, /, : or ..)"
                     ),
                 ))
             }
-            Some(_) => {}
+            None => {
+                return Err(invalid(
+                    "wake.model",
+                    format!(
+                        "«{model}» is neither in the model catalog nor a {LOCAL_MODEL_PREFIX}<folder> model"
+                    ),
+                ))
+            }
+        };
+        if model_engine != self.wake.engine {
+            return Err(invalid(
+                "wake.engine",
+                format!(
+                    "model «{model}» belongs to engine «{model_engine}», not «{}»",
+                    self.wake.engine
+                ),
+            ));
         }
 
         if self.assistant.engine != "codex" {
@@ -614,15 +662,108 @@ mod tests {
         assert_eq!(back["hotkey"]["mute"], DEFAULT_MUTE_HOTKEY);
     }
 
+    fn phrases(activation: &[&str], deactivation: &[&str]) -> ModelPhrases {
+        ModelPhrases {
+            activation: activation.iter().map(|p| (*p).to_owned()).collect(),
+            deactivation: deactivation.iter().map(|p| (*p).to_owned()).collect(),
+        }
+    }
+
+    const ENGLISH: &str = "vosk-model-small-en-us-0.15";
+
     #[test]
-    fn overlapping_phrases_are_rejected_with_both_lists_named() {
+    fn overlapping_phrases_of_one_model_are_rejected_with_the_model_and_both_lists_named() {
         let mut settings = Settings::default();
-        settings.wake.activation_phrases = vec!["alpha".to_owned(), "beta".to_owned()];
-        settings.wake.deactivation_phrases = vec![" BETA ".to_owned()];
+        settings.wake.phrases.insert(
+            catalog::RUSSIAN_SMALL.to_owned(),
+            phrases(&["alpha", "beta"], &[" BETA "]),
+        );
         let error = settings.validate().unwrap_err();
-        assert_eq!(error.field, "wake.deactivation_phrases");
+        assert_eq!(
+            error.field,
+            format!("wake.phrases.{}.deactivation", catalog::RUSSIAN_SMALL)
+        );
         assert!(error.message.contains("beta"), "{}", error.message);
         assert!(error.message.contains("activation"), "{}", error.message);
+        assert!(
+            error.message.contains(catalog::RUSSIAN_SMALL),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn the_same_phrase_for_two_models_is_valid() {
+        let mut settings = Settings::default();
+        settings
+            .wake
+            .phrases
+            .insert(ENGLISH.to_owned(), phrases(&["bro"], &["goodbye"]));
+        settings
+            .wake
+            .phrases
+            .insert(catalog::RUSSIAN_SMALL.to_owned(), phrases(&["bro"], &[]));
+        settings.validate().expect("one phrase in two models");
+    }
+
+    #[test]
+    fn a_patch_to_one_model_leaves_the_other_untouched() {
+        let mut settings = Settings::default();
+        settings.wake.phrases.insert(
+            catalog::RUSSIAN_SMALL.to_owned(),
+            phrases(&["братан"], &["спасибо братан"]),
+        );
+        let patched = settings
+            .with_patch(&json!({ "wake": { "phrases": { ENGLISH: { "activation": ["bro"] } } } }))
+            .unwrap();
+        patched.validate().unwrap();
+        assert_eq!(patched.wake.phrases[ENGLISH], phrases(&["bro"], &[]));
+        assert_eq!(
+            patched.wake.phrases[catalog::RUSSIAN_SMALL],
+            settings.wake.phrases[catalog::RUSSIAN_SMALL]
+        );
+        assert_eq!(settings.changed_sections(&patched), vec!["wake"]);
+    }
+
+    #[test]
+    fn the_selected_model_without_an_entry_has_no_phrases() {
+        let mut settings = Settings::default();
+        settings
+            .wake
+            .phrases
+            .insert(catalog::RUSSIAN_SMALL.to_owned(), phrases(&["братан"], &[]));
+        assert_eq!(settings.wake.model, ENGLISH);
+        assert_eq!(settings.wake.selected_phrases(), ModelPhrases::default());
+        settings.wake.model = catalog::RUSSIAN_SMALL.to_owned();
+        assert_eq!(settings.wake.selected_phrases().activation, ["братан"]);
+    }
+
+    #[test]
+    fn local_model_ids_are_plain_folder_names() {
+        let mut settings = Settings::default();
+        settings.wake.model = "local:vosk-model-small-de-0.15".to_owned();
+        settings.validate().expect("a plain folder name is valid");
+        assert_eq!(
+            local_model_folder(&settings.wake.model),
+            Some("vosk-model-small-de-0.15")
+        );
+        for bad in [
+            "local:",
+            "local: ",
+            "local:a/b",
+            "local:a\\b",
+            "local:..",
+            "local:x..y",
+            "local:C:x",
+            "local:.",
+        ] {
+            settings.wake.model = bad.to_owned();
+            let error = settings.validate().unwrap_err();
+            assert_eq!(error.field, "wake.model", "{bad}");
+        }
+        settings.wake.model = "local:vosk-model-small-de-0.15".to_owned();
+        settings.wake.engine = "sherpa".to_owned();
+        assert_eq!(settings.validate().unwrap_err().field, "wake.engine");
     }
 
     #[test]
@@ -641,8 +782,8 @@ mod tests {
     #[test]
     fn phrase_lists_start_empty_and_that_is_valid() {
         let settings = Settings::default();
-        assert!(settings.wake.activation_phrases.is_empty());
-        assert!(settings.wake.deactivation_phrases.is_empty());
+        assert!(settings.wake.phrases.is_empty());
+        assert_eq!(settings.wake.selected_phrases(), ModelPhrases::default());
         settings
             .validate()
             .expect("empty lists are the starting state");

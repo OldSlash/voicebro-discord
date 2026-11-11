@@ -4,9 +4,10 @@
 
 pub mod ffi;
 
-use super::catalog::{Asset, ModelEntry};
+use super::catalog::Asset;
 use super::{
-    LoadedModel, Recognition, SpeechRecognizer, WakeEngine, WakeError, Word, RECOGNIZER_SAMPLE_RATE,
+    LoadedModel, ModelSource, Recognition, SpeechRecognizer, WakeEngine, WakeError, Word,
+    RECOGNIZER_SAMPLE_RATE,
 };
 use ffi::{Model, Recognizer, VoskApi};
 use std::path::Path;
@@ -29,19 +30,18 @@ impl WakeEngine for VoskEngine {
         super::catalog::VOSK_ENGINE
     }
 
-    fn assets(&self, model: &ModelEntry) -> Vec<Asset> {
-        vec![LIBRARY, model.asset]
+    fn assets(&self, model: &ModelSource) -> Vec<Asset> {
+        match model {
+            ModelSource::Catalog(entry) => vec![LIBRARY, entry.asset],
+            ModelSource::Local { .. } => vec![LIBRARY],
+        }
     }
 
-    fn load(
-        &self,
-        assets_dir: &Path,
-        model: &ModelEntry,
-    ) -> Result<Box<dyn LoadedModel>, WakeError> {
+    fn load(&self, assets_dir: &Path, model_dir: &Path) -> Result<Box<dyn LoadedModel>, WakeError> {
         let library = assets_dir.join(LIBRARY.directory).join(LIBRARY.marker);
         let api = Arc::new(VoskApi::load(&library)?);
         api.set_log_level(-1);
-        let model = Model::load(api, &assets_dir.join(model.asset.directory))?;
+        let model = Model::load(api, model_dir)?;
         Ok(Box::new(VoskModel { model }))
     }
 }
@@ -182,8 +182,19 @@ mod tests {
             return;
         };
         let base = PathBuf::from(base);
-        let entry = crate::wake::catalog::default_entry();
-        let model = VoskEngine.load(&base, entry).expect("model loads");
+        let model_folder = std::env::var("VOICEBRO_WAKE_MODEL")
+            .ok()
+            .filter(|folder| !folder.trim().is_empty())
+            .unwrap_or_else(|| {
+                crate::wake::catalog::default_entry()
+                    .asset
+                    .directory
+                    .to_owned()
+            });
+        eprintln!("corpus model: {model_folder}");
+        let model = VoskEngine
+            .load(&base, &base.join(&model_folder))
+            .expect("model loads");
         let phrases = phrase_set_from_env();
         assert!(
             !phrases.is_empty(),

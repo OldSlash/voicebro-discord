@@ -222,6 +222,7 @@ impl Runtime {
         let registry = RelayRegistry::default();
         let wake = WakeManager::with_default_engines(
             crate::paths::assets_dir(&data_dir),
+            crate::paths::models_dir(&data_dir),
             events.clone(),
             Arc::new(registry.clone()),
         );
@@ -287,6 +288,7 @@ impl Runtime {
             GateSettings::from_settings(&self.settings());
         self.host.registry.gains().apply(&self.settings().audio);
         crate::wake::assets::cleanup_partial(&crate::paths::assets_dir(&self.data_dir));
+        self.wake.scan_local_models();
         self.wake.configure(&self.settings());
         // Nothing of the assistant runs yet: its process starts at the first /join.
         self.assistant.configure(&self.settings());

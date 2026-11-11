@@ -27,7 +27,7 @@ Fixed constraints that shape the architecture:
 | Rust, Tauri 2, Windows first | One native process plus WebView2 for the settings UI. The core never depends on the UI. |
 | Low CPU and memory while idle | Heavy things (speech model, assistant process, call transport) are loaded only while their feature is on, and unloaded when it is off. |
 | Steady 20 ms audio | Pacing loops run on dedicated OS threads with `std::thread::sleep`. Tokio timers are never used for pacing. |
-| Users install nothing but the app | No Node, Python or build tools at runtime. Native libraries and models are downloaded on first use with pinned SHA-256. |
+| Users install nothing but the app | No Node, Python or build tools at runtime. Native libraries and models are downloaded on first use with pinned SHA-256, and only after the user agrees in the window to what, from where and how much. |
 | Replaceable engines | Wake-word recognition and the assistant sit behind traits. Only one implementation of each exists today (Vosk, Codex app-server). |
 | Diagnosable in the field | A file log in every build, including release. The recognizer's own results are logged. The status shows measured values only. |
 | Secrets stay out of files | The Discord token lives in the Windows Credential Manager, never in the settings file or the UI snapshot. |
@@ -49,7 +49,7 @@ voicebro-discord/
         audio/                 frame types, queues, resamplers, earcons, output source, Opus output
         discord/               serenity + songbird adapter, slash commands, member panel, the leg toward Discord
         gate.rs                session gate: mute, wake session state machine, pre-roll
-        wake/                  wake-word engine trait, phrase spotter, model catalog, Vosk
+        wake/                  wake-word engine trait, phrase spotter, model catalog, local models, Vosk
         assistant/             assistant trait and the Codex implementation
         settings/              schema, file store, secret store
         events.rs              AppEvent and the broadcast bus
@@ -315,11 +315,14 @@ pub trait LoadedModel: Send + Sync {
     fn knows_word(&self, word: &str) -> Option<bool>; // None: engine cannot tell
 }
 
-/// An engine: how to fetch its assets and load a model from the catalog.
+/// Where a model comes from: the catalog (downloaded by the app) or the models folder.
+pub enum ModelSource { Catalog(&'static ModelEntry), Local { folder: String } }
+
+/// An engine: which archives it downloads for a model, and how it loads a model directory.
 pub trait WakeEngine: Send + Sync {
     fn id(&self) -> &'static str;                 // "vosk"
-    fn assets(&self, model: &ModelEntry) -> Vec<Asset>;  // library + model, pinned SHA-256
-    fn load(&self, assets_dir: &Path, model: &ModelEntry) -> Result<Box<dyn LoadedModel>, WakeError>;
+    fn assets(&self, model: &ModelSource) -> Vec<Asset>;  // library (+ the catalog model's archive), pinned SHA-256
+    fn load(&self, assets_dir: &Path, model_dir: &Path) -> Result<Box<dyn LoadedModel>, WakeError>;
 }
 
 pub struct Recognition { pub text: String, pub is_final: bool, pub words: Vec<Word> }
@@ -337,12 +340,22 @@ pub trait WakeFeed: Send + Sync {
 
 - **`WakeManager`** owns the engines, the assets directory and the worker. `configure(settings)`
   is called at start and whenever the `session` or `wake` section changes: it stops the
-  engine outside wake-word mode (`Off`), stops it when both phrase lists are empty
-  (`NoPhrases`), sends new phrases to the running worker when only the phrases changed, and
-  otherwise downloads, loads and starts on a thread of its own (`Downloading {label,
-  percent}` → `Loading` → `Ready`, or `Error {message}`). Every transition is published as
-  `AppEvent::Wake(WakeStatus)` and visible in `Status.wake`. The manager implements
-  `WakeFeed`; `feed` drops when the worker's queue is full and counts the drop.
+  engine outside wake-word mode (`Off`), stops it when both phrase lists of the selected
+  model are empty (`NoPhrases`), sends new phrases to the running worker when only the
+  phrases changed, and otherwise loads and starts on a thread of its own (`Loading` →
+  `Ready`, or `Error {message}`). When files of the engine or the model are missing, the
+  loader asks first: it publishes `NeedsDownload {items}` (label, host, bytes of each
+  missing archive), requests nothing from the network and ends. `WakeManager::download()`
+  (the window's Download button, command `wake_download`) records the consent for that
+  engine and model in memory and runs `configure` again with the last settings, which then
+  downloads (`Downloading {label, percent}`) and loads. The consent is not stored: files on
+  disk need none, and after a restart with files still missing the question comes back.
+  Every transition is published as `AppEvent::Wake(WakeStatus)` and visible in
+  `Status.wake`. The manager implements `WakeFeed`; `feed` drops when the worker's queue is
+  full and counts the drop.
+- **Model list** (`WakeManager::models`, command `wake_models`): the catalog entries with
+  whether each is downloaded and its size, then the local models. Sizes shown anywhere are
+  decimal megabytes from the bytes (`wake::megabytes`).
 
 - **`PhraseSpotter`** is engine-independent. One recognizer per speaker, one detector per
   phrase kind (activation, deactivation), whole-word matching on open-vocabulary text. A
@@ -360,7 +373,17 @@ pub trait WakeFeed: Send + Sync {
   carries no phrases: the activation and deactivation phrases are the user's, live in the
   settings file and start empty; the wake engine shows "no phrases configured" until the
   user enters them.
-  Today: `vosk-model-small-ru-0.22` plus the Vosk 0.3.45 Windows library.
+  Today: `vosk-model-small-en-us-0.15` (the default of a new settings file) and
+  `vosk-model-small-ru-0.22`, plus the Vosk 0.3.45 Windows library.
+- **Local models** (`local.rs`): `models\` in the data directory holds Vosk models the user
+  extracted for other languages. `WakeManager::scan_local_models` creates the folder and
+  lists it once at start (a new folder needs a restart): every subfolder with
+  `am\final.mdl` and `conf\mfcc.conf` is a model with the id `local:<folder>` and the
+  language from a Vosk folder name (`vosk-model-small-de-0.15` → `de`); other folders, and
+  names that cannot be an id, are skipped with a log line. `ModelSource::from_id` resolves a
+  settings id (catalog first); a local model needs only the Vosk library, its directory is
+  `models\<folder>`, and a missing folder is the engine's error, so its phrases stay stored.
+  The app never downloads, changes or deletes anything in `models\`.
 - **Asset store** (`assets.rs`): downloads with the system `curl.exe` to a `.part` name,
   verifies the SHA-256 (a mismatch deletes the file and extracts nothing), renames, extracts
   with the system `tar.exe`, checks the marker file, and cleans up `.part` files at start.
@@ -569,7 +592,7 @@ pub struct Settings {
     pub discord: DiscordSettings,          // guild_id (an older auto_connect is ignored and dropped at the next save)
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
-    pub wake: WakeSettings,                // engine id, model id (catalog), activation_phrases, deactivation_phrases
+    pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation, deactivation } }
     pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off
     pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default), handoff_mode: items (default) | commentary | bem_tags | thinking
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
@@ -584,8 +607,15 @@ recognizes; the code ships none.
 
 - Stored as JSON at `settings.json` next to the executable. Written to a temp file and
   renamed over the old one. Unknown fields are kept; missing fields take defaults.
-- `Settings::validate()` is the only validator (phrase lists must not overlap, timeout
-  range, catalog id exists, shortcut parses). `Runtime::apply(settings)` diffs against the
+- Schema version 2 keeps the wake phrases per model: `wake.phrases` maps a model id to its
+  `activation` and `deactivation` lists, and only the selected model's lists are spotted.
+  Loading a version-1 file runs `store::migrate_v1` on the JSON first: its
+  `activation_phrases` and `deactivation_phrases` move under the model the file names (or
+  `vosk-model-small-ru-0.22`, the only model of version 1, which is then written into
+  `wake.model`), and the old fields are removed. The next save writes version 2.
+- `Settings::validate()` is the only validator (one model's phrase lists must not overlap,
+  timeout range, the model is a catalog id or `local:<plain folder name>` of the engine,
+  shortcut parses). `Runtime::apply(settings)` diffs against the
   current settings and reconfigures only the subsystems whose section changed.
 - Adding a setting means: a field with a default, its validation, its `apply` effect, and its
   UI control. Nothing else.
@@ -595,7 +625,8 @@ recognizes; the code ships none.
   the log. Codex's own ChatGPT sign-in is stored by Codex itself (`~/.codex`), not by the app.
 - The app is portable: its data directory is the folder the executable runs from
   (`VOICEBRO_DATA_DIR` overrides it for tests). It holds `settings.json`, `logs\`, `assets\`
-  (Vosk library and models), `codex-workspace\` (the empty, read-only cwd for Codex
+  (the Vosk library and the catalog models the app downloaded), `models\` (Vosk models the
+  user added, only read), `codex-workspace\` (the empty, read-only cwd for Codex
   threads) and `webview-data\` (the window's WebView2 data, about 11 MB). Nothing is written
   under the user profile; builds before change `ui-layout-port` left a
   `%LOCALAPPDATA%\com.voicebro.desktop` folder (WebView2 data) that the user may delete.
@@ -688,7 +719,17 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     value line where a slider has its percentage, so a row of a switch and a slider lines
     up. Two controls may share a `data-path` (the Performance tab's switch and the
     Diagnostics card): a save from one fills the other at once. Lists: the wake engine
-    and model come from `wake_models` (the catalog); the Codex model, reasoning effort and
+    and model come from `wake_models` (the catalog with its download state, then the local
+    models), each model labelled "<language> — <name> · downloaded | to download, N MB |
+    models folder" and listed again when a download ends. The two phrase fields carry
+    `data-phrases` (activation, deactivation) instead of a fixed path: they read and save
+    `wake.phrases.<selected model>.<list>`, built as a key array because model ids contain
+    dots, show the selected model's name in their labels, and are filled again from the
+    stored settings when another model is saved. Under the wake model control, the
+    download notice renders from `status.wake.state`: `needs_download` lists each file with
+    its size and site and a Download button (`wake_download`), `downloading` shows the
+    progress, and an error after a download shows the message with the button again; next
+    to it "Open models folder" (`open_models_folder`). The Codex model, reasoning effort and
     voice are selects filled from `capabilities` when the engine has them and text inputs
     with a datalist otherwise; the effort list follows the chosen model. The Codex card's
     "Answer handoff" list (`codex.handoff_mode`) offers Conversation items (recommended),
