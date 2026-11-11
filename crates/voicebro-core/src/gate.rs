@@ -433,7 +433,7 @@ impl RelayGate {
             if frame.peak() >= VOICE_PEAK_THRESHOLD {
                 let event = self.latency.lock().expect("latency lock").speech(now);
                 if let Some(event) = event {
-                    log::info!("{}", latency::log_line(self.guild, &event));
+                    crate::detail!("latency", "{}", latency::log_line(self.guild, &event));
                 }
             }
             // Live and replayed frames alike; the pre-roll and the wake feed keep the

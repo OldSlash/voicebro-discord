@@ -22,39 +22,49 @@ use voicebro_core::status::{ConnectionErrors, HotkeyStatus};
 use voicebro_core::{paths, secrets, AppEvent, EventBus, Runtime, Settings, Status};
 
 const BUILD_STAMP: &str = env!("VOICEBRO_BUILD_STAMP");
-const LOG_FILE_LIMIT: u128 = 4_000_000;
-const LOG_FILES_KEPT: usize = 2;
-/// Third-party crates that log a lot at Info; they stay at Warn.
-const CHATTY_CRATES: &[&str] = &[
-    "serenity",
-    "songbird",
-    "tracing",
-    "hyper",
-    "hyper_util",
-    "h2",
-    "rustls",
-    "webrtc",
-    "rtc",
-    "reqwest",
-    "tungstenite",
-    "tokio_tungstenite",
-    "tao",
-    "wry",
-];
-/// Modules quieter still: songbird's receive task warns about every RTCP packet it cannot
-/// decrypt (about 700 lines in 2.5 minutes of a DAVE call), which carries no action.
-const QUIET_MODULES: &[&str] = &["songbird::driver::tasks::udp_rx"];
+/// The file log rotates at 1 MB and keeps one archived file: at most about 2 MB.
+const LOG_FILE_LIMIT: u128 = 1_000_000;
+const LOG_FILES_KEPT: usize = 1;
+/// This app's own log targets; every other crate logs at Warn and above.
+const APP_TARGETS: &[&str] = &["voicebro", "voicebro_core", "voicebro_desktop", "detail"];
+/// songbird's receive task logs an error for every packet it cannot decode; the window
+/// keeps them, the release file does not.
+const RECEIVE_TASK: &str = "songbird::driver::tasks::udp_rx";
+/// `diagnostics.verbose_log`: detail lines and third-party warnings go to the file too.
+static VERBOSE_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Every per-module level the log uses, most specific last.
+fn is_app_target(target: &str) -> bool {
+    APP_TARGETS.iter().any(|name| {
+        target == *name
+            || target
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with("::"))
+    })
+}
+
+/// Whether a record that passed the levels also goes to the file. A debug build and the
+/// verbose log write everything; otherwise the file keeps this app's event lines and
+/// third-party errors, without detail lines and the receive task's per-packet errors.
+fn keep_in_file(target: &str, level: log::Level, debug: bool, verbose: bool) -> bool {
+    if debug || verbose {
+        return true;
+    }
+    if target.starts_with(voicebro_core::DETAIL_TARGET_PREFIX) {
+        return false;
+    }
+    if is_app_target(target) {
+        return true;
+    }
+    level <= log::Level::Error && !target.starts_with(RECEIVE_TASK)
+}
+/// The levels on top of the global Warn: this app at Info, songbird's receive task at
+/// Error (it warns about every RTCP packet it cannot decrypt, about 700 lines in 2.5
+/// minutes of a DAVE call, which carries no action).
 fn log_levels() -> Vec<(&'static str, log::LevelFilter)> {
-    CHATTY_CRATES
+    APP_TARGETS
         .iter()
-        .map(|name| (*name, log::LevelFilter::Warn))
-        .chain(
-            QUIET_MODULES
-                .iter()
-                .map(|name| (*name, log::LevelFilter::Error)),
-        )
+        .map(|name| (*name, log::LevelFilter::Info))
+        .chain(std::iter::once((RECEIVE_TASK, log::LevelFilter::Error)))
         .collect()
 }
 
@@ -78,6 +88,27 @@ struct AppState {
 
 /// Starts or stops the memory reader so that it runs exactly while `diagnostics.memory`
 /// is on. Called at start-up and after every settings change.
+/// Follows `diagnostics.verbose_log`: the file filter reads the flag on every record.
+fn apply_verbose_log(state: &AppState) {
+    set_verbose_log(state.runtime.settings().diagnostics.verbose_log);
+}
+
+/// Returns whether the value changed; logs the change.
+fn set_verbose_log(on: bool) -> bool {
+    let was = VERBOSE_LOG.swap(on, std::sync::atomic::Ordering::Relaxed);
+    if was != on {
+        log::info!(
+            "verbose log {}",
+            if on {
+                "on: detail lines go to the file too"
+            } else {
+                "off"
+            }
+        );
+    }
+    was != on
+}
+
 fn apply_memory_reader(state: &AppState) {
     let wanted = state.runtime.settings().diagnostics.memory;
     let mut reader = state.memory_reader.lock().expect("memory reader lock");
@@ -324,7 +355,9 @@ fn build_main_window(app: &tauri::App, data_dir: &std::path::Path) -> tauri::Res
     Ok(())
 }
 
-/// The file, the window's ring and, in debug builds, stdout: one level table for all three.
+/// The file, the window's ring and, in debug builds, stdout: one level table for all three,
+/// and on the file a filter that leaves out detail lines and third-party warnings in a
+/// release build unless the verbose log is on.
 fn log_plugin(
     data_dir: &std::path::Path,
     ring: Arc<LogRing>,
@@ -337,6 +370,14 @@ fn log_plugin(
         Target::new(TargetKind::Folder {
             path: paths::logs_dir(data_dir),
             file_name: Some("voicebro".to_owned()),
+        })
+        .filter(|metadata| {
+            keep_in_file(
+                metadata.target(),
+                metadata.level(),
+                cfg!(debug_assertions),
+                VERBOSE_LOG.load(std::sync::atomic::Ordering::Relaxed),
+            )
         }),
         Target::new(TargetKind::Dispatch(window)),
     ];
@@ -345,7 +386,7 @@ fn log_plugin(
     }
     let mut builder = tauri_plugin_log::Builder::new()
         .targets(targets)
-        .level(log::LevelFilter::Info)
+        .level(log::LevelFilter::Warn)
         .max_file_size(LOG_FILE_LIMIT)
         .rotation_strategy(RotationStrategy::KeepSome(LOG_FILES_KEPT))
         .timezone_strategy(TimezoneStrategy::UseLocal);
@@ -432,6 +473,7 @@ fn main() {
             }
             apply_hotkey(app.handle(), &app.state::<AppState>());
             apply_memory_reader(&app.state::<AppState>());
+            apply_verbose_log(&app.state::<AppState>());
 
             // Forward every core event to the webview as one Tauri event, and re-register
             // the hotkey and the memory reader when the settings change.
@@ -450,6 +492,7 @@ fn main() {
                                     apply_hotkey(&app_handle, &state);
                                 }
                                 apply_memory_reader(&state);
+                                apply_verbose_log(&state);
                             }
                             if let Err(error) = app_handle.emit("app-event", &event) {
                                 log::warn!("event bridge: {error}");
@@ -504,18 +547,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn songbird_receive_warnings_are_filtered_and_its_errors_kept() {
+    fn the_app_logs_at_info_and_songbirds_receive_task_at_error() {
         let levels = log_levels();
         let udp_rx = levels
             .iter()
             .find(|(name, _)| *name == "songbird::driver::tasks::udp_rx")
             .expect("the receive task has its own level");
         assert_eq!(udp_rx.1, log::LevelFilter::Error);
-        let songbird = levels.iter().find(|(name, _)| *name == "songbird").unwrap();
-        assert_eq!(
-            songbird.1,
-            log::LevelFilter::Warn,
-            "the rest of songbird stays at Warn"
+        for app in ["voicebro", "voicebro_core", "voicebro_desktop", "detail"] {
+            let level = levels.iter().find(|(name, _)| *name == app).unwrap();
+            assert_eq!(level.1, log::LevelFilter::Info, "{app}");
+        }
+        assert!(
+            !levels.iter().any(|(name, _)| name.starts_with("rtc")),
+            "every other crate, the WebRTC sub-crates included, stays at the global Warn"
         );
+    }
+
+    #[test]
+    fn the_release_file_keeps_events_and_errors_only() {
+        use log::Level::{Error, Info, Warn};
+        let release = |target, level| keep_in_file(target, level, false, false);
+        assert!(release("voicebro_core::runtime", Info), "an app event line");
+        assert!(release("voicebro", Info), "the shell's own lines");
+        assert!(release("voicebro_core::events", Warn));
+        assert!(!release("detail::wake", Info), "a detail line");
+        assert!(!release("rtc_ice::agent", Warn), "a third-party warning");
+        assert!(
+            !release("rtc::peer_connection::handler", Warn),
+            "a third-party warning"
+        );
+        assert!(release("serenity::gateway", Error), "a third-party error");
+        assert!(
+            !release("songbird::driver::tasks::udp_rx::ssrc_state", Error),
+            "the receive task's per-packet errors"
+        );
+        assert!(
+            !release("voicebrother::x", Info),
+            "a prefix is not an app target"
+        );
+        for target in [
+            "detail::wake",
+            "rtc_ice::agent",
+            "songbird::driver::tasks::udp_rx",
+        ] {
+            assert!(keep_in_file(target, Warn, false, true), "verbose: {target}");
+            assert!(keep_in_file(target, Warn, true, false), "debug: {target}");
+        }
+    }
+
+    #[test]
+    fn the_verbose_switch_flips_the_flag_the_file_filter_reads() {
+        assert!(set_verbose_log(true), "off to on is a change");
+        assert!(VERBOSE_LOG.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!set_verbose_log(true), "on again is none");
+        assert!(set_verbose_log(false));
+        assert!(!VERBOSE_LOG.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

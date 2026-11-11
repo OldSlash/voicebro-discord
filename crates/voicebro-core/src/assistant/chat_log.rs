@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// Entries kept in memory.
@@ -31,6 +31,9 @@ pub struct ChatLog {
     sequence: AtomicU64,
     events: EventBus,
     dir: PathBuf,
+    /// `assistant.save_chat_history`: append each entry to today's file. Off until the
+    /// settings say otherwise.
+    save: AtomicBool,
 }
 
 impl ChatLog {
@@ -40,11 +43,30 @@ impl ChatLog {
             sequence: AtomicU64::new(1),
             events,
             dir: logs_dir,
+            save: AtomicBool::new(false),
         }
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Follows `assistant.save_chat_history`; takes effect with the next entry.
+    pub fn set_saving(&self, on: bool) {
+        if self.save.swap(on, Ordering::Relaxed) != on {
+            log::info!(
+                "chat history {}",
+                if on {
+                    "saved to logs\\codex-chat-<date>.log from now on"
+                } else {
+                    "not saved to disk"
+                }
+            );
+        }
+    }
+
+    pub fn is_saving(&self) -> bool {
+        self.save.load(Ordering::Relaxed)
     }
 
     pub fn entries(&self) -> Vec<ChatEntry> {
@@ -56,7 +78,8 @@ impl ChatLog {
             .collect()
     }
 
-    /// Adds a line: kept in memory, pushed to the UI, appended to today's file.
+    /// Adds a line: kept in memory and pushed to the UI; appended to today's file only
+    /// while saving the chat history is on.
     pub fn push(&self, guild: u64, kind: &'static str, who: Option<&str>, text: &str) {
         let text = text.trim();
         if text.is_empty() {
@@ -78,11 +101,15 @@ impl ChatLog {
                 entries.pop_front();
             }
         }
-        log::info!(
+        crate::detail!(
+            "chat",
             "[chat:{guild}] {kind}{}: {text}",
             who.map(|w| format!(" {w}")).unwrap_or_default()
         );
         self.events.publish(AppEvent::Chat(Box::new(entry)));
+        if !self.is_saving() {
+            return;
+        }
         let speaker = who.map(|who| format!(" {who}:")).unwrap_or_default();
         let line = format!(
             "{} [{guild}] {kind}{speaker} {}\n",
@@ -206,6 +233,7 @@ mod tests {
         let events = EventBus::new(1024);
         let mut receiver = events.subscribe();
         let log = ChatLog::new(events, dir.path().join("logs"));
+        log.set_saving(true);
         log.push(7, "user", Some("Alex"), "  hello  ");
         log.push(7, "system", None, "");
         for index in 0..MAX_ENTRIES + 5 {
@@ -237,5 +265,38 @@ mod tests {
         );
         let text = std::fs::read_to_string(file.path()).unwrap();
         assert!(text.contains("[7] user Alex: hello"));
+    }
+
+    #[test]
+    fn nothing_is_written_while_saving_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        let events = EventBus::new(16);
+        let mut receiver = events.subscribe();
+        let log = ChatLog::new(events, logs.clone());
+        assert!(!log.is_saving(), "off until the settings say otherwise");
+        log.push(7, "user", Some("Alex"), "hello");
+        assert_eq!(log.entries().len(), 1, "kept in memory");
+        assert!(
+            matches!(receiver.try_recv(), Ok(AppEvent::Chat(_))),
+            "published"
+        );
+        assert!(!logs.exists(), "no chat file, not even the folder");
+
+        log.set_saving(true);
+        log.push(7, "assistant", None, "hi");
+        let files: Vec<_> = std::fs::read_dir(&logs).unwrap().flatten().collect();
+        assert_eq!(files.len(), 1);
+        let text = std::fs::read_to_string(files[0].path()).unwrap();
+        assert!(text.contains("assistant hi"), "{text}");
+        assert!(
+            !text.contains("hello"),
+            "the entry from before stays unsaved"
+        );
+
+        log.set_saving(false);
+        log.push(7, "user", Some("Alex"), "bye");
+        let after = std::fs::read_to_string(files[0].path()).unwrap();
+        assert_eq!(after, text, "nothing more is written");
     }
 }

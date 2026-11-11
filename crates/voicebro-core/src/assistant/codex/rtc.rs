@@ -340,7 +340,8 @@ impl RtcCall {
             None => (DepthEstimator::with_prior(), "initial"),
         };
         let jitter = Arc::new(JitterBuffer::with_estimator(true, estimator));
-        log::info!(
+        crate::detail!(
+            "rtc",
             "[rtc] call opens with a voice buffer of {} ms ({start})",
             jitter.depth_ms()
         );
@@ -369,7 +370,7 @@ impl RtcCall {
             let jitter = Arc::clone(&jitter);
             handle.spawn(async move {
                 while let Some(track) = tracks.recv().await {
-                    log::info!("[rtc] remote track; receiving the assistant's voice");
+                    crate::detail!("rtc", "[rtc] remote track; receiving the assistant's voice");
                     let closed = Arc::clone(&closed);
                     let jitter = Arc::clone(&jitter);
                     tokio::spawn(read_remote_track(track, jitter, closed));
@@ -494,7 +495,7 @@ impl RtcCall {
     pub async fn close(&self) {
         if !self.closed.swap(true, Ordering::AcqRel) {
             let counters = self.counters();
-            log::info!("[rtc] {}", counters.log_line(self.report.guild));
+            crate::detail!("rtc", "[rtc] {}", counters.log_line(self.report.guild));
             *self.report.last.lock().expect("call report lock") = Some(counters);
             *self.report.learned.lock().expect("call report lock") = Some(self.jitter.learned());
             self.output.detach_provider();

@@ -256,7 +256,7 @@ impl Worker {
                         self.dispatch(&mut quiet_until, guild, ssrc, hit);
                     }
                     if let Some(text) = state.take_heard() {
-                        log::info!("[wake] {guild}/{ssrc} heard: {text}");
+                        crate::detail!("wake", "[wake] {guild}/{ssrc} heard: {text}");
                     }
                 }
                 Ok(WakeMessage::SetPhrases(phrases)) => {
@@ -272,7 +272,7 @@ impl Worker {
                     self.dispatch(&mut quiet_until, *guild, *ssrc, hit);
                 }
                 if let Some(text) = state.take_heard() {
-                    log::info!("[wake] {guild}/{ssrc} heard: {text}");
+                    crate::detail!("wake", "[wake] {guild}/{ssrc} heard: {text}");
                 }
             }
             if now.saturating_duration_since(last_drop_report) >= DROP_REPORT_INTERVAL {

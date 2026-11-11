@@ -181,7 +181,8 @@ pub(crate) async fn join_voice(
             .map(|connection| delivery::host_of(&connection.endpoint).to_owned());
         (call.play_only_input(input), endpoint)
     };
-    log::info!(
+    crate::detail!(
+        "delivery",
         "{}",
         delivery::join_line(guild.get(), delivery.server().or(endpoint).as_deref())
     );
@@ -257,7 +258,8 @@ async fn leave_voice_locked(shared: &Arc<Shared>, guild: GuildId) -> bool {
     session.output.close();
     let _ = tokio::time::timeout(Duration::from_millis(200), session.track_ended.notified()).await;
     let _ = session.track.stop();
-    log::info!(
+    crate::detail!(
+        "delivery",
         "{}",
         delivery::leave_line(guild.get(), &session.delivery.counters())
     );

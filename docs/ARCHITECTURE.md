@@ -29,7 +29,7 @@ Fixed constraints that shape the architecture:
 | Steady 20 ms audio | Pacing loops run on dedicated OS threads with `std::thread::sleep`. Tokio timers are never used for pacing. |
 | Users install nothing but the app | No Node, Python or build tools at runtime. Native libraries and models are downloaded on first use with pinned SHA-256, and only after the user agrees in the window to what, from where and how much. |
 | Replaceable engines | Wake-word recognition and the assistant sit behind traits. Only one implementation of each exists today (Vosk, Codex app-server). |
-| Diagnosable in the field | A file log in every build, including release. The recognizer's own results are logged. The status shows measured values only. |
+| Diagnosable in the field | A file log in every build, including release: small (about 2 MB) and without what people said unless the user turns on the verbose log; the window shows everything, the recognizer's own results included. The status shows measured values only. |
 | Secrets stay out of files | The Discord token lives in the Windows Credential Manager, never in the settings file or the UI snapshot. |
 
 ## 2. Repository layout
@@ -442,7 +442,11 @@ assistant is given, so the app never panics on an unknown engine setting.
   `experimentalApi: true`, request timeouts, a generation counter (thread ids die with the
   process), and automatic decline of every approval, tool call and user-input request.
   Account: `account/read`, `account/login/start` and `account/login/completed`. Models:
-  `model/list` with their reasoning efforts. Voices: `thread/realtime/listVoices`.
+  `model/list` with their reasoning efforts. Voices: `thread/realtime/listVoices`. The
+  status shows the running server's version, or else the found executable's: one
+  `codex --version` per file, cached by its path, size and modification time
+  (`CodexAssistant::executable_version`), so a status read starts no process unless
+  Codex was replaced.
 - `thread.rs`: one ephemeral, read-only thread per guild (`sandbox: read-only`,
   `approvalPolicy: "untrusted"` as in the first version's working code, so the agent's
   server-side tools such as web search run; client-side approval requests are still
@@ -537,8 +541,11 @@ assistant is given, so the app never panics on an unknown engine setting.
   speaker-label mode sends a note only when the speaker changes.
 - `assistant/chat_log.rs` (engine-independent): transcripts, call context, call start and
   end, errors, delegated agent work (`turn/*`, `item/completed`), unwrapped from
-  `<realtime_delegation>`. Kept in memory (bounded at 600), pushed as `AppEvent::Chat`,
-  appended to `logs\codex-chat-YYYY-MM-DD.log`.
+  `<realtime_delegation>`. Kept in memory (bounded at 600) and pushed as `AppEvent::Chat`;
+  appended to `logs\codex-chat-YYYY-MM-DD.log` only while `assistant.save_chat_history` is
+  on (`ChatLog::set_saving`, called from `CodexAssistant::configure`; off by default, so
+  nothing of the chat reaches the disk). Files written earlier are left alone. Each entry
+  is also a detail line (`detail::chat`) of the app log.
 - `session.rs`: the state machine idle → starting → live → stopping. `session_wanted(true)`
   checks the sign-in, ensures the thread, opens the WebRTC call, sends
   `thread/realtime/start` with the history (retried once without it), applies the answer
@@ -593,10 +600,11 @@ pub struct Settings {
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation, deactivation } }
-    pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off
+    pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off, save_chat_history (default false)
     pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default), handoff_mode: items (default) | commentary | bem_tags | thinking
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
     pub ui: UiSettings,                    // theme: dark | darcula | light | intellij (default dark); font_size: 11..=20 (default 13)
+    pub diagnostics: DiagnosticsSettings,  // performance, memory, verbose_log: all default false; read by the window and the desktop shell
     pub extra: Map<String, Value>,         // flattened: unknown fields from a newer version, kept as they are
 }
 ```
@@ -649,10 +657,12 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
   when a saved settings document changes `hotkey.mute`, the previous shortcut unregistered
   first; an empty value registers nothing; toggle only, on the key-down edge; the outcome
   goes to `Runtime::set_hotkey_status` and the status shows `{shortcut, registered, error}`.
-- `tauri-plugin-log` in every build: Info level, chatty crates at Warn, songbird's receive
-  task at Error, local time, 4 MB per file, two old files kept, under the data directory.
-  A second target (`TargetKind::Dispatch`, `log_ring.rs`) gets the same records with the
-  same filters and format, keeps the last 500 lines and emits each as `app-log`; the
+- `tauri-plugin-log` in every build: the app at Info, every other crate at Warn,
+  songbird's receive task at Error, local time, 1 MB per file, one old file kept, under the
+  data directory, with the file filter of section 7 (detail lines only in a debug build or
+  with the verbose log). A second target (`TargetKind::Dispatch`, `log_ring.rs`) gets
+  every record that passes the levels, keeps the last 500 lines and emits each as
+  `app-log`; the
   `log_history` command returns the ring, so the window's log pane shows the whole app log
   (what the recognizer heard, every phrase decision) including what was logged before the
   window loaded. The pane no longer lists `AppEvent::Log` separately.
@@ -706,7 +716,9 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     while `diagnostics.memory` is off the card says the measurement is off and where to
     turn it on, the status bar has no memory item, and the window does not call
     `memory_status`) and the files (data folder, `settings.json`, the Codex CLI path).
-  - Settings has the cards Appearance, Audio, Assistant, Codex, Hotkey and Diagnostics,
+  - Settings has the cards Appearance, Audio, Assistant, Codex (with the "Save chat
+    history" switch, `assistant.save_chat_history`), Hotkey and Diagnostics (Performance
+    monitoring, Memory measurement and Verbose log, `diagnostics.verbose_log`),
     one control per field with its JSON path (`data-path`) and kind (string, number, bool,
     list, percent), and under every control a help line saying what the setting affects,
     when a change applies (at once, from the next call, from the next session, at the next
@@ -870,6 +882,19 @@ Values that worked in the first version. Change them only with a measurement or 
 ## 7. Observability
 
 - `log` facade everywhere in the core; the desktop app installs `tauri-plugin-log`.
+- **What the file keeps.** Levels: the global level is Warn; this app's targets
+  (`voicebro`, `voicebro_core`, `voicebro_desktop`, `detail`) log at Info; songbird's
+  receive task at Error. The window (the `app-log` ring) gets every record that passes
+  the levels. The file target has a filter (`keep_in_file`): in a release build with the
+  verbose log off it keeps this app's event lines and third-party errors, and leaves out
+  the **detail lines** and the receive task's per-packet errors; a debug build, or the
+  verbose log (`diagnostics.verbose_log`, the `VERBOSE_LOG` flag the shell sets at start
+  and on every settings change), writes everything. Detail lines are logged with
+  `detail!("<area>", …)`, target `detail::<area>`: what the recognizer heard
+  (`detail::wake`), the per-turn latency (`detail::latency`), the call's buffer, track and
+  end-of-call counters (`detail::rtc`), the delivery lines (`detail::delivery`), the
+  speaker-to-SSRC mapping (`detail::receive`) and the copy of each chat entry
+  (`detail::chat`). The file rotates at 1 MB and keeps one archived file, about 2 MB.
 - Log the value that was actually used, never the one that was requested and replaced.
 - The wake worker logs what it heard; the UI shows the recognizer's results, not only the
   assistant's transcript.

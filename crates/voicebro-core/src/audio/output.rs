@@ -339,7 +339,7 @@ impl PcmSource {
     pub fn fill_frame(&mut self, out: &mut [f32]) -> bool {
         let filled = self.fill_packet();
         for line in self.latency_lines.drain(..) {
-            log::info!("{line}");
+            crate::detail!("latency", "{line}");
         }
         if !filled {
             return false;
@@ -356,7 +356,7 @@ impl Read for PcmSource {
         if self.pending.is_empty() {
             let filled = self.fill_packet();
             for line in self.latency_lines.drain(..) {
-                log::info!("{line}");
+                crate::detail!("latency", "{line}");
             }
             if !filled {
                 return Ok(0);
