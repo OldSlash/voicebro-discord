@@ -81,6 +81,12 @@ const PROBES: &[Probe] = &[
         run: rtc::call,
     },
     Probe {
+        name: "codex-say",
+        summary: "the Codex voice reads a sentence aloud in its language, for test speech; args: <trigger.wav> <out.wav> <sentence>",
+        needs: "codex signed in with a ChatGPT account; a 48 kHz mono WAV of any short speech as the trigger",
+        run: rtc::say,
+    },
+    Probe {
         name: "credential",
         summary: "write, read, delete a VoiceBro/test credential in the Windows Credential Manager",
         needs: "nothing; args: [--keep] to leave the entry for a reboot check",

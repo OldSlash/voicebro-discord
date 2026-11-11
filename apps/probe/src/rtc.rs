@@ -567,15 +567,74 @@ fn normalize(text: &str) -> String {
         .to_lowercase()
 }
 
+/// The words of a text, lower-cased, without punctuation, for comparing what the voice
+/// said with what it was asked to say.
+fn words_of(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Judges the assistant's transcript (`None` when it said nothing): pass, and a line for
+/// the details.
+type Verdict = dyn Fn(Option<&str>) -> (bool, String);
+
 pub fn call(args: &[String]) -> anyhow::Result<Outcome> {
-    let input = args
-        .first()
-        .ok_or_else(|| anyhow!("usage: probe rtc-call <in.wav> <out.wav>"))?
-        .clone();
-    let output = args
-        .get(1)
-        .ok_or_else(|| anyhow!("usage: probe rtc-call <in.wav> <out.wav>"))?
-        .clone();
+    let usage = || anyhow!("usage: probe rtc-call <in.wav> <out.wav>");
+    let input = args.first().ok_or_else(usage)?.clone();
+    let output = args.get(1).ok_or_else(usage)?.clone();
+    run_call(&input, &output, INSTRUCTIONS, &|text| {
+        let canary = text
+            .map(|text| normalize(text).starts_with(CANARY_WORD))
+            .unwrap_or(false);
+        (
+            canary,
+            format!("canary word at the start of the assistant transcript: {canary}"),
+        )
+    })
+}
+
+/// `codex-say <trigger.wav> <out.wav> <sentence>`: the Codex voice reads the sentence
+/// aloud in its own language and nothing else; its audio goes to `out.wav` (48 kHz mono).
+/// The trigger is any short speech that makes the voice answer. Fails when the voice's
+/// transcript is not the sentence word for word, so a paraphrase never becomes a test file.
+pub fn say(args: &[String]) -> anyhow::Result<Outcome> {
+    let usage = || anyhow!("usage: probe codex-say <trigger.wav> <out.wav> <sentence>");
+    let trigger = args.first().ok_or_else(usage)?.clone();
+    let output = args.get(1).ok_or_else(usage)?.clone();
+    let sentence = args.get(2..).map(|rest| rest.join(" ")).unwrap_or_default();
+    if sentence.trim().is_empty() {
+        return Err(usage());
+    }
+    let instructions = format!(
+        "You read text aloud for a speech test. Whatever you hear, reply only by reading \
+         the following sentence aloud, word for word, in the language it is written in, \
+         with that language's natural pronunciation. Do not translate it, do not add or \
+         leave out any word, and say nothing before or after it. The sentence: {sentence}"
+    );
+    let wanted = words_of(&sentence);
+    run_call(&trigger, &output, &instructions, &move |text| {
+        let said = text.map(words_of).unwrap_or_default();
+        let same = said == wanted;
+        (
+            same,
+            format!(
+                "the voice said the sentence word for word: {same} (wanted {:?}, said {:?})",
+                wanted.join(" "),
+                said.join(" ")
+            ),
+        )
+    })
+}
+
+fn run_call(
+    input: &str,
+    output: &str,
+    instructions: &str,
+    verdict: &Verdict,
+) -> anyhow::Result<Outcome> {
+    let (input, output) = (input.to_owned(), output.to_owned());
     let pcm = read_wav_48k_mono(&input)?;
     let voice = std::env::var("VOICEBRO_PROBE_VOICE").unwrap_or_else(|_| "juniper".to_owned());
     let stun = std::env::var("VOICEBRO_PROBE_STUN").ok();
@@ -595,7 +654,7 @@ pub fn call(args: &[String]) -> anyhow::Result<Outcome> {
         let thread = server
             .request(
                 "thread/start",
-                codex::thread_start_params(&workspace, INSTRUCTIONS),
+                codex::thread_start_params(&workspace, instructions),
             )
             .await?;
         let thread_id = codex::thread_id(&thread)?;
@@ -720,11 +779,11 @@ pub fn call(args: &[String]) -> anyhow::Result<Outcome> {
             "outputModality": "audio",
             "version": "v3",
             "voice": voice,
-            "prompt": INSTRUCTIONS,
+            "prompt": instructions,
             "includeStartupContext": false,
             "voiceSessionId": voice_session_id,
             "initialItems": [
-                { "role": "developer", "text": INSTRUCTIONS }
+                { "role": "developer", "text": instructions }
             ],
             "transport": { "type": "webrtc", "sdp": offer.sdp },
         });
@@ -841,13 +900,8 @@ pub fn call(args: &[String]) -> anyhow::Result<Outcome> {
             .iter()
             .find(|(role, _)| role == "assistant")
             .map(|(_, text)| text.clone());
-        let canary = assistant_text
-            .as_deref()
-            .map(|text| normalize(text).starts_with(CANARY_WORD))
-            .unwrap_or(false);
-        details.push(format!(
-            "canary word at the start of the assistant transcript: {canary}"
-        ));
+        let (answer_ok, verdict_line) = verdict(assistant_text.as_deref());
+        details.push(verdict_line);
         let event_count = event_messages.lock().map(|m| m.len()).unwrap_or(0);
         details.push(format!("oai-events messages received: {event_count}"));
         if let Ok(messages) = event_messages.lock() {
@@ -866,12 +920,35 @@ pub fn call(args: &[String]) -> anyhow::Result<Outcome> {
 
         let has_voice = first_signal.is_some() && samples.len() > SAMPLE_RATE as usize / 2;
         details.push(format!(
-            "criterion: connected={} remote voice={has_voice} quiet after answer={quiet_after_answer} canary={canary}",
+            "criterion: connected={} remote voice={has_voice} quiet after answer={quiet_after_answer} answer={answer_ok}",
             true
         ));
         Ok(Outcome {
-            pass: has_voice && canary,
+            pass: has_voice && answer_ok,
             details,
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::words_of;
+
+    #[test]
+    fn the_sentence_check_ignores_case_and_punctuation_only() {
+        let wanted = words_of("Hallo Kumpel, wie spät ist es in Berlin?");
+        assert_eq!(
+            wanted,
+            ["hallo", "kumpel", "wie", "spät", "ist", "es", "in", "berlin"]
+        );
+        assert_eq!(words_of("hallo kumpel wie SPÄT ist es in Berlin"), wanted);
+        assert_eq!(words_of("Cześć stary, która godzina?")[0], "cześć");
+        // A paraphrase, a translation, an extra or a missing word do not pass.
+        assert_ne!(words_of("Hallo Kumpel, wie spät ist es?"), wanted);
+        assert_ne!(
+            words_of("Hallo, Kumpel! Wie spät ist es jetzt in Berlin?"),
+            wanted
+        );
+        assert_ne!(words_of("Hello buddy, what time is it in Berlin?"), wanted);
+    }
 }
