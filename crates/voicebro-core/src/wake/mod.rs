@@ -241,8 +241,8 @@ pub fn megabytes(bytes: u64) -> u64 {
 /// What a start ended in, when it did not fail.
 enum Started {
     Ready,
-    /// Waiting for the user's OK to download these.
-    NeedsDownload(Vec<DownloadItem>),
+    /// The files were downloaded; with no phrases to spot, nothing was loaded.
+    Installed,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -306,6 +306,9 @@ struct Inner {
     consent: Mutex<Option<(String, String)>>,
     /// The settings of the last `configure`, run again when the user agrees.
     last_settings: Mutex<Option<Settings>>,
+    /// Counts `configure` calls, so a load that ends after newer settings arrived applies
+    /// them instead of keeping what it was started with.
+    generation: AtomicU64,
     starting: AtomicBool,
     enabled: AtomicBool,
     dropped: Arc<AtomicU64>,
@@ -358,6 +361,7 @@ impl WakeManager {
                 running: Mutex::new(None),
                 consent: Mutex::new(None),
                 last_settings: Mutex::new(None),
+                generation: AtomicU64::new(0),
                 starting: AtomicBool::new(false),
                 enabled: AtomicBool::new(false),
                 dropped: Arc::new(AtomicU64::new(0)),
@@ -472,10 +476,13 @@ impl WakeManager {
             .publish(AppEvent::Wake(Box::new(snapshot)));
     }
 
-    /// Starts, reconfigures or stops the engine to match the settings. Loading happens on
-    /// a thread of its own; this returns at once.
+    /// Starts, reconfigures or stops the engine to match the settings. In wake-word mode
+    /// the selected model's files are checked here, before the phrases, so a missing model
+    /// is reported at once, with or without phrases. Downloading and loading happen on a
+    /// thread of its own; this returns at once.
     pub fn configure(&self, settings: &Settings) {
         *self.inner.last_settings.lock().expect("last settings lock") = Some(settings.clone());
+        let generation = self.inner.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let phrases = PhraseSet::from_settings(settings);
         {
             let mut status = self.inner.status.lock().expect("wake status lock");
@@ -489,20 +496,45 @@ impl WakeManager {
             self.set_state(WakeState::Off);
             return;
         }
-        if phrases.is_empty() {
+        let wanted = (settings.wake.engine.clone(), settings.wake.model.clone());
+        // `None` when the files cannot be told now (an unknown model or engine, a missing
+        // local folder): the loader reports that as an error.
+        let missing = self.missing_assets(&wanted.0, &wanted.1);
+        let to_fetch = missing.clone().unwrap_or_default();
+        if !to_fetch.is_empty() && !self.agreed(&wanted) {
+            self.stop();
+            let items: Vec<DownloadItem> = to_fetch.iter().map(DownloadItem::of).collect();
+            self.inner.events.log(format!(
+                "wake word: {} needs a download first ({}); waiting for the OK in the window",
+                wanted.1,
+                items
+                    .iter()
+                    .map(|item| format!(
+                        "{}, {} MB from {}",
+                        item.label,
+                        megabytes(item.bytes),
+                        item.host
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+            self.set_state(WakeState::NeedsDownload { items });
+            return;
+        }
+        if phrases.is_empty() && to_fetch.is_empty() {
             self.stop();
             self.set_state(WakeState::NoPhrases);
             return;
         }
-        let wanted = (settings.wake.engine.clone(), settings.wake.model.clone());
-        let same_model = self
-            .inner
-            .running
-            .lock()
-            .expect("running lock")
-            .as_ref()
-            .map(|running| *running == wanted)
-            .unwrap_or(false);
+        let same_model = to_fetch.is_empty()
+            && self
+                .inner
+                .running
+                .lock()
+                .expect("running lock")
+                .as_ref()
+                .map(|running| *running == wanted)
+                .unwrap_or(false);
         if same_model {
             let sender = self.inner.sender.lock().expect("sender lock").clone();
             if let Some(sender) = sender {
@@ -516,37 +548,36 @@ impl WakeManager {
         }
         self.stop();
         if self.inner.starting.swap(true, Ordering::AcqRel) {
+            // A load is running; it applies these settings when it ends (see below).
             return;
         }
         let manager = self.clone();
         std::thread::Builder::new()
             .name("voicebro-wake-load".to_owned())
             .spawn(move || {
-                let result = manager.start(&wanted.0, &wanted.1, phrases);
+                let result = manager.start(&wanted.0, &wanted.1, phrases, to_fetch);
                 manager.inner.starting.store(false, Ordering::Release);
+                if manager.inner.generation.load(Ordering::Acquire) != generation {
+                    // Newer settings arrived during the download or load: apply them
+                    // rather than publish a state for settings that are gone.
+                    let latest = manager
+                        .inner
+                        .last_settings
+                        .lock()
+                        .expect("last settings lock")
+                        .clone();
+                    if let Some(latest) = latest {
+                        manager.configure(&latest);
+                        return;
+                    }
+                }
                 match result {
                     Ok(Started::Ready) => {
                         *manager.inner.running.lock().expect("running lock") = Some(wanted);
                         manager.inner.enabled.store(true, Ordering::Release);
                         manager.set_state(WakeState::Ready);
                     }
-                    Ok(Started::NeedsDownload(items)) => {
-                        manager.inner.events.log(format!(
-                            "wake word: {} needs a download first ({}); waiting for the OK in the window",
-                            wanted.1,
-                            items
-                                .iter()
-                                .map(|item| format!(
-                                    "{}, {} MB from {}",
-                                    item.label,
-                                    megabytes(item.bytes),
-                                    item.host
-                                ))
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        ));
-                        manager.set_state(WakeState::NeedsDownload { items });
-                    }
+                    Ok(Started::Installed) => manager.set_state(WakeState::NoPhrases),
                     Err(error) => {
                         manager
                             .inner
@@ -561,6 +592,61 @@ impl WakeManager {
             .expect("spawn the wake loader thread");
     }
 
+    /// The engine that loads `source` under the engine id the settings name.
+    fn engine_for(&self, engine_id: &str, source: &ModelSource) -> Option<Arc<dyn WakeEngine>> {
+        self.inner
+            .engines
+            .iter()
+            .find(|engine| engine.id() == engine_id && engine.id() == source.engine())
+            .cloned()
+    }
+
+    /// The selected model's files that are not on disk; `None` when that cannot be told
+    /// (an unknown model or engine, a local folder that is gone).
+    fn missing_assets(&self, engine_id: &str, model_id: &str) -> Option<Vec<Asset>> {
+        let source = ModelSource::from_id(model_id)?;
+        let engine = self.engine_for(engine_id, &source)?;
+        if matches!(source, ModelSource::Local { .. })
+            && !source
+                .directory(&self.inner.assets_dir, &self.inner.models_dir)
+                .is_dir()
+        {
+            return None;
+        }
+        Some(
+            engine
+                .assets(&source)
+                .into_iter()
+                .filter(|asset| !assets::is_installed(&self.inner.assets_dir, asset))
+                .collect(),
+        )
+    }
+
+    fn agreed(&self, wanted: &(String, String)) -> bool {
+        self.inner
+            .consent
+            .lock()
+            .expect("consent lock")
+            .as_ref()
+            .is_some_and(|agreed| agreed == wanted)
+    }
+
+    /// What choosing `model_id` would need to download, without changing anything: the
+    /// engine's library and/or the model, as the install dialog lists them.
+    pub fn requirements(&self, model_id: &str) -> Result<Vec<DownloadItem>, String> {
+        let source = ModelSource::from_id(model_id)
+            .ok_or_else(|| WakeError::UnknownModel(model_id.to_owned()).to_string())?;
+        let engine = self
+            .engine_for(source.engine(), &source)
+            .ok_or_else(|| WakeError::UnknownEngine(source.engine().to_owned()).to_string())?;
+        Ok(engine
+            .assets(&source)
+            .iter()
+            .filter(|asset| !assets::is_installed(&self.inner.assets_dir, asset))
+            .map(DownloadItem::of)
+            .collect())
+    }
+
     pub fn stop(&self) {
         self.inner.enabled.store(false, Ordering::Release);
         let sender = self.inner.sender.lock().expect("sender lock").take();
@@ -570,10 +656,11 @@ impl WakeManager {
         *self.inner.running.lock().expect("running lock") = None;
     }
 
-    /// The user agreed to download what the selected model needs: records the consent for
-    /// that model and starts the engine again with the last settings. Also the retry after
-    /// a failed download (the `Error` state).
-    pub fn download(&self) -> Result<(), String> {
+    /// The user agreed to download what `model_id` needs. Refused unless that is the
+    /// selected model, so a settings change in between never downloads a model the user
+    /// did not agree to. Records the consent for that model and starts the engine again
+    /// with the last settings. Also the retry after a failed download (the `Error` state).
+    pub fn download(&self, model_id: &str) -> Result<(), String> {
         let settings = self
             .inner
             .last_settings
@@ -581,6 +668,12 @@ impl WakeManager {
             .expect("last settings lock")
             .clone()
             .ok_or_else(|| "the wake engine has not been configured yet".to_owned())?;
+        if settings.wake.model != model_id {
+            return Err(format!(
+                "{model_id} is not the selected wake model ({})",
+                settings.wake.model
+            ));
+        }
         if !matches!(
             self.status().state,
             WakeState::NeedsDownload { .. } | WakeState::Error { .. }
@@ -596,41 +689,23 @@ impl WakeManager {
         Ok(())
     }
 
+    /// Downloads `missing` (which `configure` found and the user agreed to), then loads
+    /// the model when there are phrases to spot.
     fn start(
         &self,
         engine_id: &str,
         model_id: &str,
         phrases: PhraseSet,
+        missing: Vec<Asset>,
     ) -> Result<Started, WakeError> {
         let source = ModelSource::from_id(model_id)
             .ok_or_else(|| WakeError::UnknownModel(model_id.to_owned()))?;
         let engine = self
-            .inner
-            .engines
-            .iter()
-            .find(|engine| engine.id() == engine_id && engine.id() == source.engine())
-            .cloned()
+            .engine_for(engine_id, &source)
             .ok_or_else(|| WakeError::UnknownEngine(engine_id.to_owned()))?;
         let model_dir = source.directory(&self.inner.assets_dir, &self.inner.models_dir);
         if matches!(source, ModelSource::Local { .. }) && !model_dir.is_dir() {
             return Err(WakeError::MissingLocalModel(model_dir));
-        }
-        let missing: Vec<Asset> = engine
-            .assets(&source)
-            .into_iter()
-            .filter(|asset| !assets::is_installed(&self.inner.assets_dir, asset))
-            .collect();
-        let agreed = self
-            .inner
-            .consent
-            .lock()
-            .expect("consent lock")
-            .as_ref()
-            .is_some_and(|(engine, model)| engine == engine_id && model == model_id);
-        if !missing.is_empty() && !agreed {
-            return Ok(Started::NeedsDownload(
-                missing.iter().map(DownloadItem::of).collect(),
-            ));
         }
         for asset in missing {
             let events = self.inner.events.clone();
@@ -656,6 +731,9 @@ impl WakeManager {
                 });
             })?;
             events.log(format!("{label} installed"));
+        }
+        if phrases.is_empty() {
+            return Ok(Started::Installed);
         }
         self.set_state(WakeState::Loading);
         let model = engine.load(&self.inner.assets_dir, &model_dir)?;
@@ -969,7 +1047,10 @@ mod tests {
     fn nothing_downloads_until_the_user_agrees() {
         let dir = tempfile::tempdir().unwrap();
         let (manager, fetched) = counting_manager(dir.path());
-        assert!(manager.download().is_err(), "nothing configured yet");
+        assert!(
+            manager.download(catalog::default_entry().id).is_err(),
+            "nothing configured yet"
+        );
         manager.configure(&english_with_phrases());
         let state = wait_for(&manager, |state| {
             matches!(state, WakeState::NeedsDownload { .. })
@@ -997,14 +1078,19 @@ mod tests {
         });
         assert_eq!(fetched.load(Ordering::SeqCst), 0);
 
-        manager.download().expect("waiting for the OK");
+        manager
+            .download(catalog::default_entry().id)
+            .expect("waiting for the OK");
         assert_eq!(
             wait_for(&manager, |state| *state == WakeState::Ready),
             WakeState::Ready
         );
         assert_eq!(fetched.load(Ordering::SeqCst), 1);
         assert!(manager.is_enabled());
-        assert!(manager.download().is_err(), "nothing is waiting any more");
+        assert!(
+            manager.download(catalog::default_entry().id).is_err(),
+            "nothing is waiting any more"
+        );
     }
 
     #[test]
@@ -1036,13 +1122,15 @@ mod tests {
         wait_for(&manager, |state| {
             matches!(state, WakeState::NeedsDownload { .. })
         });
-        manager.download().unwrap();
+        manager.download(catalog::default_entry().id).unwrap();
         let state = wait_for(&manager, |state| matches!(state, WakeState::Error { .. }));
         assert!(
             matches!(&state, WakeState::Error { message } if message.contains("mismatch")),
             "{state:?}"
         );
-        manager.download().expect("a retry after the error");
+        manager
+            .download(catalog::default_entry().id)
+            .expect("a retry after the error");
         assert_eq!(
             wait_for(&manager, |state| *state == WakeState::Ready),
             WakeState::Ready
@@ -1070,14 +1158,229 @@ mod tests {
     }
 
     #[test]
+    fn no_phrases_and_missing_files_ask_for_the_download_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, fetched) = counting_manager(dir.path());
+        manager.configure(&Settings::default());
+        // Checked in `configure` itself: the window sees it right after a save or a start.
+        assert!(
+            matches!(&manager.status().state, WakeState::NeedsDownload { items } if items.len() == 1),
+            "{:?}",
+            manager.status().state
+        );
+        assert_eq!(fetched.load(Ordering::SeqCst), 0);
+        assert!(!manager.is_enabled());
+    }
+
+    #[test]
+    fn no_phrases_and_installed_files_are_no_phrases() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir
+            .path()
+            .join("assets")
+            .join(TEST_ASSET.directory)
+            .join(TEST_ASSET.marker);
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, b"").unwrap();
+        let (manager, fetched) = counting_manager(dir.path());
+        manager.configure(&Settings::default());
+        assert_eq!(manager.status().state, WakeState::NoPhrases);
+        assert_eq!(fetched.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn always_mode_checks_no_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Arc::new(FakeEngine::default());
+        let manager = WakeManager::new(
+            vec![engine.clone()],
+            dir.path().join("assets"),
+            dir.path().join("models"),
+            EventBus::new(8),
+            Arc::new(NoSink),
+        );
+        let mut settings = english_with_phrases();
+        settings.session.mode = SessionMode::Always;
+        manager.configure(&settings);
+        assert_eq!(manager.status().state, WakeState::Off);
+        assert!(engine.asked.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_agreed_download_without_phrases_ends_in_no_phrases() {
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, fetched) = counting_manager(dir.path());
+        manager.configure(&Settings::default());
+        manager
+            .download(catalog::default_entry().id)
+            .expect("waiting for the OK");
+        assert_eq!(
+            wait_for(&manager, |state| *state == WakeState::NoPhrases),
+            WakeState::NoPhrases
+        );
+        assert_eq!(fetched.load(Ordering::SeqCst), 1);
+        assert!(dir
+            .path()
+            .join("assets")
+            .join(TEST_ASSET.directory)
+            .join(TEST_ASSET.marker)
+            .is_file());
+        assert!(!manager.is_enabled(), "nothing to spot, nothing loaded");
+    }
+
+    /// A "vosk" engine that needs the catalog archive of the model and no library.
+    struct CatalogAssetEngine;
+    impl WakeEngine for CatalogAssetEngine {
+        fn id(&self) -> &'static str {
+            catalog::VOSK_ENGINE
+        }
+        fn assets(&self, model: &ModelSource) -> Vec<Asset> {
+            match model {
+                ModelSource::Catalog(entry) => vec![entry.asset],
+                ModelSource::Local { .. } => Vec::new(),
+            }
+        }
+        fn load(&self, _: &Path, _: &Path) -> Result<Box<dyn LoadedModel>, WakeError> {
+            Ok(Box::new(FakeModel))
+        }
+    }
+
+    #[test]
+    fn agreeing_for_one_model_downloads_no_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let fetched = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&fetched);
+        let fetch: Arc<Fetch> = Arc::new(move |asset: &Asset, assets_dir: &Path, _| {
+            log.lock().unwrap().push(asset.directory.to_owned());
+            let marker = assets_dir.join(asset.directory).join(asset.marker);
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(marker, b"").unwrap();
+            Ok(())
+        });
+        let manager = WakeManager::with_fetch(
+            vec![Arc::new(CatalogAssetEngine)],
+            fetch,
+            dir.path().join("assets"),
+            dir.path().join("models"),
+            EventBus::new(64),
+            Arc::new(NoSink),
+        );
+        let (german, french) = ("vosk-model-small-de-0.15", "vosk-model-small-fr-0.22");
+        let mut settings = Settings::default();
+        settings.wake.model = german.to_owned();
+        manager.configure(&settings);
+        assert!(
+            manager.download(french).is_err(),
+            "French is not the selected model"
+        );
+        manager.download(german).expect("German waits for the OK");
+        wait_for(&manager, |state| *state == WakeState::NoPhrases);
+        assert_eq!(*fetched.lock().unwrap(), [german]);
+
+        settings.wake.model = french.to_owned();
+        manager.configure(&settings);
+        let WakeState::NeedsDownload { items } = manager.status().state else {
+            panic!("{:?}", manager.status().state);
+        };
+        assert_eq!(items[0].label, "Vosk French model");
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            *fetched.lock().unwrap(),
+            [german],
+            "no French without its OK"
+        );
+    }
+
+    #[test]
+    fn requirements_list_what_a_choice_would_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets_dir = dir.path().join("assets");
+        let models = dir.path().join("models");
+        let manager = WakeManager::with_default_engines(
+            assets_dir.clone(),
+            models.clone(),
+            EventBus::new(8),
+            Arc::new(NoSink),
+        );
+        let labels = |model: &str| -> Vec<String> {
+            manager
+                .requirements(model)
+                .unwrap()
+                .into_iter()
+                .map(|item| item.label)
+                .collect()
+        };
+        let german = "vosk-model-small-de-0.15";
+        assert_eq!(labels(german), ["Vosk library", "Vosk German model"]);
+        assert_eq!(
+            manager.requirements(german).unwrap()[0],
+            DownloadItem {
+                label: "Vosk library".to_owned(),
+                host: "github.com".to_owned(),
+                bytes: vosk::LIBRARY.size,
+            }
+        );
+
+        for sub in ["am", "conf"] {
+            std::fs::create_dir_all(models.join("vosk-model-small-ca-0.4").join(sub)).unwrap();
+        }
+        assert_eq!(labels("local:vosk-model-small-ca-0.4"), ["Vosk library"]);
+
+        let library = assets_dir
+            .join(vosk::LIBRARY.directory)
+            .join(vosk::LIBRARY.marker);
+        std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+        std::fs::write(&library, b"").unwrap();
+        assert_eq!(labels(german), ["Vosk German model"]);
+        assert!(labels("local:vosk-model-small-ca-0.4").is_empty());
+
+        assert!(manager.requirements("vosk-model-nope").is_err());
+        assert!(manager.requirements("local:../x").is_err());
+    }
+
+    #[test]
+    fn newer_settings_during_a_download_are_applied_when_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let gate = Mutex::new(gate);
+        let fetch: Arc<Fetch> = Arc::new(move |asset: &Asset, assets_dir: &Path, _| {
+            gate.lock().unwrap().recv().unwrap();
+            let marker = assets_dir.join(asset.directory).join(asset.marker);
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(marker, b"").unwrap();
+            Ok(())
+        });
+        let manager = WakeManager::with_fetch(
+            vec![Arc::new(OneAssetEngine)],
+            fetch,
+            dir.path().join("assets"),
+            dir.path().join("models"),
+            EventBus::new(64),
+            Arc::new(NoSink),
+        );
+        manager.configure(&Settings::default());
+        manager.download(catalog::default_entry().id).unwrap();
+        // While the download waits, the user switches to always listening.
+        let mut always = Settings::default();
+        always.session.mode = SessionMode::Always;
+        manager.configure(&always);
+        release.send(()).unwrap();
+        assert_eq!(
+            wait_for(&manager, |state| *state == WakeState::Off),
+            WakeState::Off,
+            "the newer settings win over the finished download"
+        );
+    }
+
+    #[test]
     fn the_model_list_has_the_catalog_with_its_state_and_the_local_models() {
         let dir = tempfile::tempdir().unwrap();
         let models = dir.path().join("models");
         for sub in ["am", "conf"] {
-            std::fs::create_dir_all(models.join("vosk-model-small-de-0.15").join(sub)).unwrap();
+            std::fs::create_dir_all(models.join("vosk-model-small-ca-0.4").join(sub)).unwrap();
         }
-        std::fs::write(models.join("vosk-model-small-de-0.15/am/final.mdl"), b"").unwrap();
-        std::fs::write(models.join("vosk-model-small-de-0.15/conf/mfcc.conf"), b"").unwrap();
+        std::fs::write(models.join("vosk-model-small-ca-0.4/am/final.mdl"), b"").unwrap();
+        std::fs::write(models.join("vosk-model-small-ca-0.4/conf/mfcc.conf"), b"").unwrap();
         let russian = catalog::find(catalog::RUSSIAN_SMALL).unwrap();
         let marker = dir
             .path()
@@ -1099,16 +1402,23 @@ mod tests {
             .iter()
             .map(|m| (m.id.as_str(), m.source, m.installed, m.language.as_str()))
             .collect();
+        assert_eq!(summary.len(), catalog::entries().len() + 1);
         assert_eq!(
-            summary,
-            vec![
+            summary[..2],
+            [
                 ("vosk-model-small-en-us-0.15", "catalog", false, "en-US"),
                 ("vosk-model-small-ru-0.22", "catalog", true, "ru"),
-                ("local:vosk-model-small-de-0.15", "local", true, "de"),
             ]
         );
+        assert!(summary[2..catalog::entries().len()]
+            .iter()
+            .all(|(_, source, installed, _)| *source == "catalog" && !installed));
+        assert_eq!(
+            summary.last(),
+            Some(&("local:vosk-model-small-ca-0.4", "local", true, "ca"))
+        );
         assert_eq!(list[0].bytes, 41_205_931);
-        assert_eq!(list[2].bytes, 0);
+        assert_eq!(list.last().unwrap().bytes, 0);
     }
 
     #[test]

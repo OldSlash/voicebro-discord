@@ -203,10 +203,19 @@ fn wake_models(state: State<'_, AppState>) -> Vec<voicebro_core::wake::ModelInfo
     state.runtime.wake().models()
 }
 
-/// The user agreed to download what the selected wake model needs.
+/// The user agreed to download what `model`, the selected wake model, needs.
 #[tauri::command]
-fn wake_download(state: State<'_, AppState>) -> Result<(), String> {
-    state.runtime.wake().download()
+fn wake_download(state: State<'_, AppState>, model: String) -> Result<(), String> {
+    state.runtime.wake().download(&model)
+}
+
+/// What choosing `model` would need to download, for the install dialog.
+#[tauri::command]
+fn wake_requirements(
+    state: State<'_, AppState>,
+    model: String,
+) -> Result<Vec<voicebro_core::wake::DownloadItem>, String> {
+    state.runtime.wake().requirements(&model)
 }
 
 /// Opens the models folder, where the user puts Vosk models for other languages.
@@ -602,6 +611,7 @@ fn main() {
             capabilities,
             wake_models,
             wake_download,
+            wake_requirements,
             chat_log,
             log_history,
             system_status,

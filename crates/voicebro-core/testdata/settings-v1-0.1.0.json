@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "discord": {
+    "auto_connect": true
+  },
+  "session": {
+    "mode": "wake_word",
+    "idle_timeout_seconds": 60,
+    "earcons": true,
+    "earcon_volume": 0.18
+  },
+  "wake": {
+    "engine": "vosk",
+    "model": "vosk-model-small-ru-0.22",
+    "activation_phrases": [],
+    "deactivation_phrases": []
+  },
+  "assistant": {
+    "engine": "codex",
+    "speaker_labels": "start"
+  },
+  "codex": {
+    "executable": "",
+    "model": "",
+    "reasoning_effort": "",
+    "voice": "juniper",
+    "instructions": ""
+  },
+  "hotkey": {
+    "mute": "Ctrl+Alt+M"
+  }
+}
