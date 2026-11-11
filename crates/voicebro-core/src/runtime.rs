@@ -387,19 +387,15 @@ impl Runtime {
                 "codex" => self.assistant.configure(&settings),
                 // Nothing in the core reads the section: the window and the desktop shell
                 // act on it themselves from the settings change event.
-                "diagnostics" => log::info!(
-                    "settings: performance monitoring {}, memory measurement {}",
-                    if settings.diagnostics.performance {
-                        "on"
-                    } else {
-                        "off"
-                    },
-                    if settings.diagnostics.memory {
-                        "on"
-                    } else {
-                        "off"
-                    }
-                ),
+                "diagnostics" => {
+                    let on = |value: bool| if value { "on" } else { "off" };
+                    log::info!(
+                        "settings: performance monitoring {}, memory measurement {}, verbose log {}",
+                        on(settings.diagnostics.performance),
+                        on(settings.diagnostics.memory),
+                        on(settings.diagnostics.verbose_log)
+                    );
+                }
                 _ => {}
             }
         }

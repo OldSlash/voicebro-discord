@@ -66,6 +66,9 @@ pub struct DiagnosticsSettings {
     /// The desktop shell reads the private working set of the app's processes every 3 s
     /// for the status bar and the System tab.
     pub memory: bool,
+    /// The file log also gets the detail lines (what the recognizer heard, latency, call
+    /// counters, chat copies) and third-party warnings; read by the desktop shell.
+    pub verbose_log: bool,
 }
 
 /// The window's themes, as in the first version.
@@ -237,6 +240,9 @@ pub enum SpeakerLabels {
 pub struct AssistantSettings {
     pub engine: String,
     pub speaker_labels: SpeakerLabels,
+    /// Every chat entry is also appended to `logs\codex-chat-<date>.log`. Off by default:
+    /// nothing of the chat is written to disk.
+    pub save_chat_history: bool,
 }
 
 impl Default for AssistantSettings {
@@ -244,6 +250,7 @@ impl Default for AssistantSettings {
         Self {
             engine: "codex".to_owned(),
             speaker_labels: SpeakerLabels::Start,
+            save_chat_history: false,
         }
     }
 }
@@ -585,7 +592,7 @@ mod tests {
         let written = serde_json::to_value(&older).unwrap();
         assert_eq!(
             written["diagnostics"],
-            json!({ "performance": false, "memory": false }),
+            json!({ "performance": false, "memory": false, "verbose_log": false }),
             "the next save writes the section"
         );
 
@@ -602,6 +609,40 @@ mod tests {
                 .is_err(),
             "a string is not a switch"
         );
+    }
+
+    #[test]
+    fn the_log_switches_default_to_off_and_change_only_their_own_section() {
+        let older: Settings =
+            serde_json::from_str(r#"{ "version": 2, "diagnostics": { "memory": true }, "assistant": { "engine": "codex" } }"#)
+                .unwrap();
+        assert!(!older.diagnostics.verbose_log && !older.assistant.save_chat_history);
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(
+            written["diagnostics"]["verbose_log"], false,
+            "written by the next save"
+        );
+        assert_eq!(written["assistant"]["save_chat_history"], false);
+
+        let verbose = older
+            .with_patch(&json!({ "diagnostics": { "verbose_log": true } }))
+            .unwrap();
+        verbose.validate().unwrap();
+        assert!(verbose.diagnostics.verbose_log);
+        assert_eq!(older.changed_sections(&verbose), vec!["diagnostics"]);
+
+        let history = older
+            .with_patch(&json!({ "assistant": { "save_chat_history": true } }))
+            .unwrap();
+        assert!(history.assistant.save_chat_history);
+        assert_eq!(older.changed_sections(&history), vec!["assistant"]);
+
+        assert!(older
+            .with_patch(&json!({ "assistant": { "save_chat_history": "yes" } }))
+            .is_err());
+        assert!(older
+            .with_patch(&json!({ "diagnostics": { "verbose_log": 1 } }))
+            .is_err());
     }
 
     #[test]

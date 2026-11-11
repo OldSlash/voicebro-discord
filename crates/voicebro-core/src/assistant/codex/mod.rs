@@ -109,6 +109,18 @@ struct Inner {
     stop_epoch: AtomicU64,
     /// When the last ChatGPT sign-in was started, until its server reports completion.
     sign_in_started: Mutex<Option<Instant>>,
+    /// The version of the executable found last, keyed by its path, size and modification
+    /// time, so a status read starts no `codex --version` unless the file changed.
+    version_cache: Mutex<Option<VersionCache>>,
+}
+
+/// One `codex --version` answer and the file it came from.
+#[derive(Clone, PartialEq)]
+struct VersionCache {
+    path: PathBuf,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+    version: Option<String>,
 }
 
 #[derive(Clone)]
@@ -146,8 +158,30 @@ impl CodexAssistant {
                 preparing: AtomicUsize::new(0),
                 stop_epoch: AtomicU64::new(0),
                 sign_in_started: Mutex::new(None),
+                version_cache: Mutex::new(None),
             }),
         }
+    }
+
+    /// The version of `path`, from the cache while the file is the same one, otherwise
+    /// from one `codex --version` run.
+    fn executable_version(&self, path: &std::path::Path) -> Option<String> {
+        let metadata = std::fs::metadata(path).ok()?;
+        let (size, modified) = (metadata.len(), metadata.modified().ok());
+        let mut cache = self.inner.version_cache.lock().expect("version cache lock");
+        if let Some(cached) = cache.as_ref() {
+            if cached.path == path && cached.size == size && cached.modified == modified {
+                return cached.version.clone();
+            }
+        }
+        let version = codex_version(path);
+        *cache = Some(VersionCache {
+            path: path.to_path_buf(),
+            size,
+            modified,
+            version: version.clone(),
+        });
+        version
     }
 
     /// The app-server if it is running; never starts it.
@@ -618,7 +652,11 @@ impl Assistant for CodexAssistant {
         let version = server
             .as_ref()
             .and_then(|server| server.version.clone())
-            .or_else(|| executable.as_ref().and_then(|path| codex_version(path)));
+            .or_else(|| {
+                executable
+                    .as_ref()
+                    .and_then(|path| self.executable_version(path))
+            });
         let account = self.inner.account.lock().expect("account lock").clone();
         let error = self
             .inner
@@ -680,6 +718,9 @@ impl Assistant for CodexAssistant {
     }
 
     fn configure(&self, settings: &Settings) {
+        self.inner
+            .chat
+            .set_saving(settings.assistant.save_chat_history);
         let next = CodexConfig::from_settings(settings);
         let mut config = self.inner.config.write().expect("codex config lock");
         if *config != next {
@@ -729,6 +770,62 @@ mod tests {
             dir,
             &settings,
         )
+    }
+
+    /// A `codex.cmd` that answers `--version` and counts its runs in `runs.txt`.
+    fn counting_codex(dir: &std::path::Path, version: &str) -> std::path::PathBuf {
+        let path = dir.join("codex.cmd");
+        std::fs::write(
+            &path,
+            format!("@echo off\r\necho run>>\"%~dp0runs.txt\"\r\necho codex-cli {version}\r\n"),
+        )
+        .unwrap();
+        path
+    }
+
+    fn runs(dir: &std::path::Path) -> usize {
+        std::fs::read_to_string(dir.join("runs.txt"))
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_status_read_runs_codex_version_only_for_a_new_file() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let fake = counting_codex(dir.path(), "9.9.9");
+        let assistant = assistant_with(&runtime, dir.path(), &fake.display().to_string());
+        for _ in 0..10 {
+            assert_eq!(
+                assistant.status().version.as_deref(),
+                Some("codex-cli 9.9.9")
+            );
+        }
+        assert_eq!(runs(dir.path()), 1, "ten status reads, one run");
+
+        counting_codex(dir.path(), "10.0.0-new");
+        assert_eq!(
+            assistant.status().version.as_deref(),
+            Some("codex-cli 10.0.0-new")
+        );
+        assert_eq!(runs(dir.path()), 2, "the replaced file is read once more");
+
+        let missing = assistant_with(&runtime, dir.path(), "Z:/nowhere/codex.exe");
+        assert_eq!(missing.status().version, None);
+        assert_eq!(runs(dir.path()), 2, "nothing runs without an executable");
+    }
+
+    #[test]
+    fn the_chat_history_switch_reaches_the_chat_log() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let assistant = assistant_with(&runtime, dir.path(), "Z:/nowhere/codex.exe");
+        let mut settings = Settings::default();
+        assistant.configure(&settings);
+        assert!(!assistant.chat_log().is_saving());
+        settings.assistant.save_chat_history = true;
+        assistant.configure(&settings);
+        assert!(assistant.chat_log().is_saving());
     }
 
     #[test]

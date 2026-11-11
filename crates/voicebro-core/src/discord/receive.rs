@@ -66,9 +66,10 @@ impl ReceiveHandler {
             .unwrap_or_default();
         if let Some(name) = super::speakers::sole_person(&participants) {
             if self.directory.remember(ssrc, name.to_owned()) {
-                self.shared.log(format!(
+                crate::detail!(
+                    "receive",
                     "Speaker: {name} (ssrc {ssrc}), assigned as the only person in the channel"
-                ));
+                );
                 self.shared
                     .host
                     .set_speaker_name(self.guild.get(), ssrc, name);
@@ -122,7 +123,7 @@ impl VoiceEventHandler for ReceiveHandler {
                 match name {
                     Some(name) => {
                         if self.directory.remember(ssrc, name.clone()) {
-                            self.shared.log(format!("Speaker: {name} (ssrc {ssrc})"));
+                            crate::detail!("receive", "Speaker: {name} (ssrc {ssrc})");
                             self.shared
                                 .host
                                 .set_speaker_name(self.guild.get(), ssrc, &name);
