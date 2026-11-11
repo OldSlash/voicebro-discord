@@ -9,6 +9,7 @@
   <a href="https://github.com/OldSlash/voicebro-discord/releases/latest">Download</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/user-guide.md">User guide</a> ·
+  <a href="#limitations">Limitations</a> ·
   <a href="#building-from-source">Building from source</a> ·
   <a href="#license">License</a>
 </p>
@@ -69,6 +70,20 @@ Get the latest version from [Releases](https://github.com/OldSlash/voicebro-disc
 The [user guide](docs/user-guide.md) covers each step in detail, as well as other
 languages, settings, privacy, updating, uninstalling and troubleshooting.
 
+## Limitations
+
+- **The voice comes only from OpenAI's Codex.** VoiceBro has no voice engine of its own:
+  the assistant listens and speaks through the Codex CLI with your ChatGPT sign-in. Without
+  Codex, a ChatGPT account with access to it and a connection to OpenAI, the assistant
+  cannot answer. Only the wake word works offline.
+- **The voice needs a low ping to the Discord voice server.** VoiceBro sends the
+  assistant's voice to Discord from the PC it runs on, so it works best when that PC has a
+  low ping to the voice channel's server. At a very high ping, around 300 ms or more, the
+  voice can stutter in places. We saw it ourselves: at a ping of about 30 ms the voice was
+  clean, at 300–380 ms it broke up. How much other setups are affected is not known yet.
+  If you hear it, set the channel's **Region Override** (**Edit Channel → Overview**) to a
+  region close to the PC that runs VoiceBro.
+
 ## Building from source
 
 VoiceBro is written in Rust with [Tauri 2](https://v2.tauri.app). It builds on Windows.
@@ -81,12 +96,17 @@ VoiceBro is written in Rust with [Tauri 2](https://v2.tauri.app). It builds on W
 | [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) | 2022 | The **Desktop development with C++** workload, which brings MSVC, a Windows SDK and CMake. |
 | [Tauri CLI](https://v2.tauri.app/reference/cli/) | 2.x | Only for the installer: `cargo install tauri-cli --version "^2" --locked` |
 
-Opus is built with CMake. The Build Tools install CMake but do not put it on `PATH`; do that
-in the PowerShell session you build from:
+The voice codec, [Opus](https://opus-codec.org), is a C library that is compiled from source
+during the build, with CMake. The build finds CMake on `PATH`, or by itself inside a full
+Visual Studio. Pick one of these:
 
-```powershell
-$env:PATH += ";C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
-```
+- **Developer PowerShell for VS 2022** (recommended). Open it from the Start menu and run the
+  commands below in it. It puts the compiler and the CMake that came with the Build Tools on
+  `PATH`, so there is nothing else to install.
+- **CMake on its own.** `winget install Kitware.CMake` installs it for all users and adds it
+  to `PATH`; it asks for administrator rights. After that, any new PowerShell window works.
+- **Visual Studio 2022 Community** with the same workload instead of the Build Tools. The
+  build then finds its CMake without `PATH`.
 
 ### Build, test and run
 
@@ -124,19 +144,31 @@ This writes a test installer, the portable zip and their checksums to
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing code.
 
+## Built with
+
+| Component | What it does in VoiceBro | License |
+|---|---|---|
+| [Tauri 2](https://v2.tauri.app) and Microsoft [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) | The window. WebView2's loader is built in; the runtime comes with Windows or the installer. | Apache-2.0 or MIT; WebView2 SDK: Microsoft's BSD-style license |
+| [tokio](https://tokio.rs) | Runs the app's network and background work. | MIT |
+| [serenity](https://github.com/serenity-rs/serenity) | The Discord bot: connection and slash commands. | ISC |
+| [songbird](https://github.com/serenity-rs/songbird) and [davey](https://github.com/Snazzah/davey) | Discord voice, with Discord's end-to-end encryption (DAVE). | ISC; MIT |
+| [Opus](https://opus-codec.org), through [opus2](https://github.com/cijiugechu/opus2) | Encodes and decodes the voice. The C library is compiled into the app. | BSD-3-Clause; MIT or Apache-2.0 |
+| [webrtc-rs](https://github.com/webrtc-rs/webrtc) | The voice call to ChatGPT. | MIT or Apache-2.0 |
+| [Vosk](https://alphacephei.com/vosk/) | The offline wake word. Downloaded with its models after you agree. | Apache-2.0 |
+| [Codex CLI](https://github.com/openai/codex) | The assistant: the ChatGPT sign-in, the voice call and the web search. Installed separately. | Apache-2.0 |
+| [NSIS](https://nsis.sourceforge.io) | The installer. | zlib/libpng |
+
+These are the main parts. `THIRD-PARTY-NOTICES.txt`, which comes with the installer and the
+zip, lists everything with the full license texts: every Rust crate in `voicebro.exe`, the
+native libraries inside them, the installer's components, what is downloaded after your OK
+and what VoiceBro needs but does not ship. `scripts\third-party-notices.ps1` writes it.
+
 ## License
 
 VoiceBro is released under the [MIT License](LICENSE).
 Copyright (c) 2026 Aleksandr Bogdanov.
 
-It builds on other open-source work:
-
-- The Rust crates compiled into `voicebro.exe` are listed with their licenses in
-  `THIRD-PARTY-NOTICES.txt`, which comes with every release (`scripts\third-party-notices.ps1`
-  writes it).
-- The [Vosk](https://github.com/alphacep/vosk-api) speech recognizer and its models
-  (Apache-2.0) are downloaded by the app, and only after you agree.
-- [Codex CLI](https://github.com/openai/codex) (Apache-2.0) is installed separately and stays
-  under its own license.
+The third-party software it is built with keeps its own licenses; see
+[Built with](#built-with).
 
 VoiceBro is an independent project and is not affiliated with Discord or OpenAI.
