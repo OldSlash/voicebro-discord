@@ -5,10 +5,10 @@
 ### Requirement: Every setting is editable
 Every field of the settings document SHALL have a control, split between the Settings and
 Config tabs as in the first version. The Settings tab: Appearance (theme, font size); Audio
-(input and output gain, earcons and volume); Assistant (session mode, idle timeout, wake
-engine, wake model, activation phrases, deactivation phrases); Codex (model, reasoning
-effort, voice, instructions, speaker labels, save chat history); Hotkey (mute); Diagnostics
-(performance monitoring, memory measurement, verbose log).
+(both gains, earcons and their volume); Assistant (session mode, idle timeout, wake engine
+and model, activation and deactivation phrases); Codex (model, reasoning effort, voice,
+instructions, speaker labels, save chat history); Hotkey (mute); Diagnostics (performance
+monitoring, memory measurement, verbose log).
 
 #### Scenario: Field for each setting
 - **WHEN** the Settings and Config tabs are opened
