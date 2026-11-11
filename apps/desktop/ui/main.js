@@ -810,6 +810,7 @@
     setText("status-mute", status.muted ? "muted" : "not muted");
     $("mute-toggle").textContent = status.muted ? "Unmute GPT" : "Mute GPT";
     setText("status-codex", assistant.summary || "—");
+    renderCodexSetup(assistant);
     const calls = assistant.calls || [];
     setText("status-call", calls.length
       ? calls.map((call) => `${call.state}${call.connected ? ", connected" : ""}${call.last_error ? `, error: ${call.last_error}` : ""}`).join("; ")
@@ -1223,6 +1224,7 @@
   $("codex-check").addEventListener("click", async () => {
     try {
       const account = await invoke("codex_check");
+      accountSaysSignedOut = !account.signed_in;
       $("status-feedback").textContent = account.signed_in
         ? `Codex is signed in (${account.kind || "account"}).`
         : "Codex is not signed in; press Sign in to Codex.";
@@ -1230,6 +1232,86 @@
       $("status-feedback").textContent = `Codex check failed: ${error}`;
     }
     await loadCapabilities();
+    await refresh();
+  });
+
+  // ---------- Codex setup: the install offer while Codex is missing, then the sign-in ----------
+  let codexInstall = null; // codex_install_info: winget, package, sizes, state
+  let justInstalled = false; // winget ended with 0 in this window: sign-in is next
+  let accountSaysSignedOut = false; // the last Check read no account
+  async function loadCodexInstall() {
+    if (!invoke) return;
+    try {
+      codexInstall = await invoke("codex_install_info");
+    } catch (error) {
+      appendLog(`codex_install_info failed: ${error}`);
+    }
+  }
+  function renderCodexSetup(assistant) {
+    const box = $("codex-setup");
+    const text = $("codex-setup-text");
+    const ways = $("codex-setup-ways");
+    const button = $("codex-install");
+    const showWays = (lines) => {
+      ways.innerHTML = "";
+      for (const line of lines) {
+        const item = document.createElement("li");
+        item.textContent = line;
+        ways.appendChild(item);
+      }
+    };
+    if (assistant.signed_in) {
+      justInstalled = false;
+      accountSaysSignedOut = false;
+    }
+    if (!assistant.executable) {
+      if (!codexInstall) {
+        box.hidden = true;
+        return;
+      }
+      box.hidden = false;
+      const state = codexInstall.state || { kind: "idle" };
+      if (!codexInstall.winget) {
+        text.textContent = "Codex CLI is not installed, and winget (the Windows Package Manager) is not on this PC. Install Codex another way, then come back:";
+        showWays([
+          "With Node.js: npm install -g @openai/codex",
+          "Or download Codex from github.com/openai/codex/releases and set the path of codex.exe in Config → Codex executable",
+        ]);
+        button.hidden = true;
+        return;
+      }
+      showWays([]);
+      button.hidden = false;
+      button.disabled = state.kind === "running";
+      if (state.kind === "running") {
+        text.textContent = "Installing Codex in the console window… Answer winget there if it asks; the window closes after you press a key.";
+      } else if (state.kind === "finished" && state.code !== 0) {
+        text.textContent = `winget ended with code ${state.code}; the console window showed why. Codex CLI is still not installed.`;
+      } else if (state.kind === "failed") {
+        text.textContent = `The install did not start: ${state.message}`;
+      } else {
+        text.textContent = `Codex CLI is not installed; the assistant needs it. Install Codex runs winget (the Windows Package Manager) in a console window you can see: package ${codexInstall.package} from ${codexInstall.source}, about ${codexInstall.download_mb} MB to download and ${codexInstall.disk_mb} MB on disk. Nothing is installed until you press the button.`;
+      }
+      return;
+    }
+    if (!assistant.signed_in && (justInstalled || accountSaysSignedOut || assistant.summary === "not signed in")) {
+      box.hidden = false;
+      text.textContent = `Codex is installed${assistant.version ? ` (${assistant.version})` : ""}. Next: Sign in to Codex (opens the ChatGPT sign-in in your browser). If you signed in to Codex before, press Check Codex.`;
+      showWays([]);
+      button.hidden = true;
+      return;
+    }
+    box.hidden = true;
+  }
+  $("codex-install").addEventListener("click", async () => {
+    if (!invoke) return;
+    $("codex-install").disabled = true;
+    try {
+      await invoke("codex_install");
+    } catch (error) {
+      $("status-feedback").textContent = `Install Codex: ${error}`;
+    }
+    await loadCodexInstall();
     await refresh();
   });
   $("status-refresh").addEventListener("click", () => {
@@ -1269,8 +1351,14 @@
             refresh();
             break;
           case "assistant":
-            refresh();
+            loadCodexInstall().then(refresh);
             loadCapabilities();
+            break;
+          // The console with winget closed: its final state, then the finder looks again.
+          case "codex_install":
+            if (codexInstall) codexInstall.state = payload.state;
+            if (payload.state?.kind === "finished" && payload.state.code === 0) justInstalled = true;
+            refresh();
             break;
           default:
             refresh();
@@ -1278,6 +1366,7 @@
       });
     }
     await refreshSystem();
+    await loadCodexInstall();
     try {
       wakeModels = await invoke("wake_models");
     } catch (error) {

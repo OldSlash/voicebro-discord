@@ -31,6 +31,9 @@
   };
   let tokenSet = true;
   let muted = false;
+  // Codex as the status reports it, and the install offer: `__mock.setCodex(...)` switches.
+  let codex = { installed: true, signedIn: true, accountRead: true, winget: true, nextExitCode: 0 };
+  let install = { kind: "idle" };
   let capabilities = {
     models: [
       { id: "model-a", display_name: "Model A", description: "", reasoning_efforts: ["low", "medium", "high"], default_reasoning_effort: "medium", is_default: true },
@@ -250,9 +253,15 @@
         output: { gain: settings.audio.output_gain, peak: 0, clips: 0 },
       },
       assistant: {
-        engine: "codex", summary: "signed in (chatgpt)", signed_in: true, account_type: "chatgpt",
-        email: null, plan: "plus", executable: "C:\\codex\\codex.exe", version: "codex-cli 0.167.0",
-        running: true, error: null, model_in_use: null, reasoning_effort_in_use: null,
+        engine: "codex",
+        summary: !codex.installed
+          ? "codex not found: press Install Codex on the Status tab, or set the path of codex.exe in Config"
+          : codex.signedIn ? "signed in (chatgpt)" : codex.accountRead ? "not signed in" : "codex found; it starts at /join",
+        signed_in: codex.installed && codex.signedIn, account_type: codex.installed && codex.signedIn ? "chatgpt" : null,
+        email: null, plan: "plus",
+        executable: codex.installed ? "C:\\Users\\me\\AppData\\Local\\Microsoft\\WinGet\\Links\\codex.exe" : null,
+        version: codex.installed ? "codex-cli 0.167.0" : null,
+        running: codex.installed, error: null, model_in_use: null, reasoning_effort_in_use: null,
         calls: [{
           guild_id: "1091401169441656933", state: "live", connected: true, audio: (advanceCall(), clone(callAudio)),
           thread_id: "mock-thread", last_user_text: null, last_assistant_text: null, last_error: null,
@@ -304,7 +313,28 @@
     toggle_mute: () => (muted = !muted),
     discord_connect: () => {},
     discord_disconnect: () => {},
-    codex_check: () => ({ signed_in: true, kind: "chatgpt", email: null, plan: "plus" }),
+    codex_check: () => {
+      codex.accountRead = true;
+      return { signed_in: codex.signedIn, kind: codex.signedIn ? "chatgpt" : null, email: null, plan: codex.signedIn ? "plus" : null };
+    },
+    codex_install_info: () => ({
+      winget: codex.winget, package: "OpenAI.Codex", source: "OpenAI's GitHub releases (github.com/openai/codex)",
+      download_mb: 200, disk_mb: 370, state: clone(install),
+    }),
+    // The console runs for 1.5 s; exit code 0 installs Codex (signed out), anything else not.
+    codex_install: () => {
+      if (install.kind === "running") throw "an install is already running in its console window";
+      install = { kind: "running" };
+      setTimeout(() => {
+        install = { kind: "finished", code: codex.nextExitCode };
+        if (codex.nextExitCode === 0) {
+          codex.installed = true;
+          codex.signedIn = false;
+          codex.accountRead = false;
+        }
+        emit("app-event", { event: "codex_install", state: clone(install) });
+      }, 1500);
+    },
     codex_sign_in: () => "https://chatgpt.com/mock",
     codex_models: () => clone(capabilities.models),
     open_log_folder: () => "C:\\VoiceBro\\logs",
@@ -362,6 +392,14 @@
     // The share of received packets the call conceals from now on (0.03 = 3 %).
     setLoss(rate) {
       lossRate = rate;
+    },
+    // Codex: `setCodex({ installed, signedIn, accountRead, winget, nextExitCode })` changes
+    // what the status reports and what the next Install Codex ends with; the install state
+    // goes back to idle.
+    setCodex(changes) {
+      Object.assign(codex, changes);
+      install = { kind: "idle" };
+      emit("app-event", { event: "assistant" });
     },
     // The wake engine: `wakeState()` as the status reports it; `failNextDownload()` makes
     // the next Download stop at 40 % with a hash error; `resetDownloads()` puts the English
