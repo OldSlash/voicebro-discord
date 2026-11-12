@@ -907,8 +907,10 @@ is built on it.
   last page, no license page. `LICENSE` (as `LICENSE.txt`) and
   `THIRD-PARTY-NOTICES.txt` are installed next to `voicebro.exe` as resources.
 - **Icon:** `bundle.icon` names `icons/icon.ico`, and that one file is the program's icon
-  resource (embedded by `tauri-build`), the default window icon (`generate_context!` takes
-  its largest entry; the main window sets none of its own) and, through
+  resource (embedded by `tauri-build` as group `#32512`), the default window icon (on
+  Windows Tauri 2.12 compiles no image into the binary: `generate_context!` calls
+  `default_window_icon_from_app_icon_resource`, which loads `#32512` at run time at the
+  system's large icon size; the main window sets none of its own) and, through
   `bundle.windows.nsis.installerIcon` and `uninstallerIcon` (without them NSIS uses its own
   default icon), the installer's and uninstaller's icon; the shortcuts show the program's.
   Tauri hands the window icon to tao, which sets only `ICON_SMALL`: the title bar shows it,
@@ -919,11 +921,16 @@ is built on it.
   macOS, iOS, Android and Store images are not used. The source's fully transparent pixels
   hold the edge colour instead of black, so a scaler without premultiplied alpha draws no
   dark rim. The image is the project author's (made with ChatGPT) and ships under the
-  project's license, with no third-party notice.
+  project's license, with no third-party notice. The Windows shell caches an executable's
+  icon by its path, and an update writes the new `voicebro.exe` over the old one, so
+  `NSIS_HOOK_POSTINSTALL` sends `SHChangeNotify` twice after every install:
+  `SHCNE_UPDATEITEM` for `$INSTDIR\voicebro.exe` and `SHCNE_ASSOCCHANGED`, both flushed.
+  Without them Explorer, the shortcuts and the taskbar keep the icon of the earlier build.
 - **Update and uninstall:** an install over an older one replaces only the bundled files.
-  `apps/desktop/installer-hooks.nsh` defines `NSIS_HOOK_POSTUNINSTALL`: only when "Delete
-  the application data" is checked and not in update mode, it removes `logs`, `assets`,
-  `models`, `codex-workspace`, `webview-data`, `settings.json`, runs
+  `apps/desktop/installer-hooks.nsh` defines `NSIS_HOOK_POSTINSTALL` (the installer
+  language for the uninstaller, the icon notice above) and `NSIS_HOOK_POSTUNINSTALL`:
+  only when "Delete the application data" is checked and not in update mode, it removes
+  `logs`, `assets`, `models`, `codex-workspace`, `webview-data`, `settings.json`, runs
   `cmdkey /delete:VoiceBro/discord_token`, and removes the then empty install folder.
   Tauri's own deletion of `%APPDATA%` / `%LOCALAPPDATA%\com.voicebro.desktop` stays.
 - **Release script** `scripts\build-release.ps1`: checks that `tauri.conf.json` and
