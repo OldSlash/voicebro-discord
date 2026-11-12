@@ -27,6 +27,8 @@
         "languages": ["English", "Russian"],
         "displayLanguageSelector": false,
         "startMenuFolder": "VoiceBro",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
         "installerHooks": "installer-hooks.nsh"
       }
     }

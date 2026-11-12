@@ -58,6 +58,7 @@ voicebro-discord/
     desktop/                   the Tauri app (what `src-tauri` is in a plain Tauri project)
       Cargo.toml, build.rs, windows-app-manifest.xml, tauri.conf.json, capabilities/
       installer-hooks.nsh      the NSIS uninstall hook (section 4.10)
+      icons/                   app-icon.png, the 1024 px source, and icon.ico generated from it (section 4.10)
       src/                     commands, event bridge to the webview, global hotkey, lifecycle
       ui/                      static HTML/CSS/JS, no bundler, `withGlobalTauri: true`
     probe/                     headless dev binary: live probes and self-tests, not shipped
@@ -872,6 +873,20 @@ is built on it.
   language without a selector, a `VoiceBro` Start menu folder, the desktop shortcut on the
   last page, no license page. `LICENSE` (as `LICENSE.txt`) and
   `THIRD-PARTY-NOTICES.txt` are installed next to `voicebro.exe` as resources.
+- **Icon:** `bundle.icon` names `icons/icon.ico`, and that one file is the program's icon
+  resource (embedded by `tauri-build`), the default window icon (`generate_context!` takes
+  its largest entry; the main window sets none of its own) and, through
+  `bundle.windows.nsis.installerIcon` and `uninstallerIcon` (without them NSIS uses its own
+  default icon), the installer's and uninstaller's icon; the shortcuts show the program's.
+  Tauri hands the window icon to tao, which sets only `ICON_SMALL`: the title bar shows it,
+  and the taskbar button, with no `ICON_BIG`, falls back to that icon or the program's
+  resource. The file holds 16, 24, 32, 48, 64 and 256 px, PNG-compressed, generated from
+  the kept source `icons/app-icon.png` (1024 px) by `cargo tauri icon icons\app-icon.png
+  -o <scratch folder>` run in `apps/desktop`; only `icon.ico` of that output is kept, the
+  macOS, iOS, Android and Store images are not used. The source's fully transparent pixels
+  hold the edge colour instead of black, so a scaler without premultiplied alpha draws no
+  dark rim. The image is the project author's (made with ChatGPT) and ships under the
+  project's license, with no third-party notice.
 - **Update and uninstall:** an install over an older one replaces only the bundled files.
   `apps/desktop/installer-hooks.nsh` defines `NSIS_HOOK_POSTUNINSTALL`: only when "Delete
   the application data" is checked and not in update mode, it removes `logs`, `assets`,
