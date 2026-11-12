@@ -7,7 +7,7 @@
 
 ## 2. Codex chat tab (spec `assistant-chat-log`)
 
-- [x] 2.1 Port the first version's chat view (label map, rows, highlights, filters, Copy, Open log folder, Auto-scroll, 600-row cap) into the Codex chat tab; verify with the `ui-dev` mock emitting one entry of each kind: every label appears as specified, the agent-work filter hides task, agent, reasoning and tool rows, Copy yields one line per shown row (labels Alex, Context → GPT, GPT, Task → Codex, Codex thinking, Codex tool, Codex, Call, Error; with agent work off 7 rows and 7 copied lines; GPT and Task → Codex highlighted)
+- [x] 2.1 Build the chat view (label map, rows, highlights, filters, Copy, Open log folder, Auto-scroll, 600-row cap) into the Codex chat tab; verify with the `ui-dev` mock emitting one entry of each kind: every label appears as specified, the agent-work filter hides task, agent, reasoning and tool rows, Copy yields one line per shown row (labels Alex, Context → GPT, GPT, Task → Codex, Codex thinking, Codex tool, Codex, Call, Error; with agent work off 7 rows and 7 copied lines; GPT and Task → Codex highlighted)
 - [x] 2.2 Check live entries with the gated Codex live test running against the app's event bus (or the running app with a scratch data dir and the user's session): rows appear within a second and nothing is printed as raw JSON in the Console; verify by the test output or the user's session log (the live call test subscribes to the bus like the window's bridge: 13 chat entries were sent as 13 `chat` events, each once, with its own kind; events are published when an entry is recorded, so the delay is the bridge's; the Console in the mock held no raw event JSON. In this run the agent's acknowledgement came before its web search, so the order was Task → Codex, Codex, Codex tool; a real session in the window is the user's step)
 
 ## 3. Console tab (spec `app-console`)
@@ -22,6 +22,6 @@
 ## Workflow follow-up
 
 - Checkpoint commits per task group on `change/chat-and-console-tabs`, with the user's OK.
-- The user compares both tabs with the first version's screenshots.
+- The user checks both tabs in the window.
 - Merged into `main` with `--no-ff --log`, in chain order, once the app works end to end and
   the user says so; the change is archived in the same step.

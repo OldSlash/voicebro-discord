@@ -570,7 +570,7 @@
     await refresh();
   });
 
-  // ---------- Codex chat (ported from the first version's chat view) ----------
+  // ---------- Codex chat ----------
   const chatLog = $("chat-log");
   const CHAT_LIMIT = 600;
   const CHAT_KIND_LABELS = {

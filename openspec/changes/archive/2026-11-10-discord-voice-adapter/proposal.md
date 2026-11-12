@@ -10,9 +10,9 @@ change (wake word, gate, Codex) plugs into the frames and events this one produc
 
 ## What Changes
 
-- `voicebro-core::audio`: fixed 48 kHz stereo 20 ms frames, the `dsp.rs` resamplers ported
-  from v1, bounded drop-oldest queues, the output queue with jitter buffer, flush epoch,
-  mute and earcons, and the `PcmSource` songbird reads; `AudioPorts` for the assistant.
+- `voicebro-core::audio`: fixed 48 kHz stereo 20 ms frames, the `dsp.rs` resamplers, bounded
+  drop-oldest queues, the output queue with jitter buffer, flush epoch, mute and earcons, and
+  the `PcmSource` songbird reads; `AudioPorts` for the assistant.
 - `voicebro-core::discord`: the serenity client with songbird (`receive`, decode to 48 kHz
   stereo), slash commands `/join`, `/leave`, `/status`, the speaker directory (SSRC to
   display name) that outlives the call, the participant list, the member panel with a

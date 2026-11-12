@@ -15,8 +15,8 @@ async runtime of its own: the desktop passes a tokio `Handle`.
 
 **Goals:**
 
-- The bot connects, joins, hears speakers separately and plays a track, with the lifetimes
-  that the first version got wrong fixed.
+- The bot connects, joins, hears speakers separately and plays a track, with correct
+  lifetimes for its handlers and tracks.
 - The frames and events the gate, the wake engine and the assistant will consume exist and
   are tested.
 
@@ -29,9 +29,8 @@ async runtime of its own: the desktop passes a tokio `Handle`.
 
 ## Decisions
 
-**D1. `audio/` is written new from the architecture, `dsp.rs` is copied.** The queues,
-output source and earcons are small and written new; the resamplers are ours and
-tested. Alternative: port `audio.rs`. Rejected by the reuse policy.
+**D1. `audio/` is written from the architecture.** The queues, output source, earcons and
+the `dsp.rs` resamplers are small; each comes with its tests.
 
 **D2. The receive path mixes into reusable buffers and pushes `Frame`s.** `Frame` is a fixed
 `[i16; 1920]` boxed once per queue slot; the tick handler fills a scratch `Vec<i32>`, clamps
@@ -44,7 +43,7 @@ skipped on read. `close()` sets a flag so the next `read` returns 0.
 
 **D4. The output track is created once per join and closed on leave.** `/leave` calls
 `OutputHandle::close()`, waits up to 200 ms for the `End` event, then `Songbird::remove`.
-Alternative: `leave`. Rejected: it keeps handlers and tracks (v1 defect).
+Alternative: `leave`. Rejected: it keeps handlers and tracks.
 
 **D5. Join order is enforced by one function.** `join_voice(guild, channel)` does, in this
 order: `get_or_insert`, `add_global_event(SpeakingStateUpdate)`,

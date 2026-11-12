@@ -2,8 +2,8 @@
 
 ## Context
 
-See proposal.md and `docs/NEXT-CHANGES.md` section 1 for the evidence. The relevant code
-today (`crates/voicebro-core/src/assistant/codex/rtc.rs`):
+See proposal.md for the evidence. The relevant code today
+(`crates/voicebro-core/src/assistant/codex/rtc.rs`):
 
 - Send: the gate pushes 20 ms stereo frames into a drop-oldest channel of 4 frames from
   songbird's tick, which runs on a tokio task (p99 interval about 32 ms on Windows). A
@@ -12,22 +12,19 @@ today (`crates/voicebro-core/src/assistant/codex/rtc.rs`):
 - Receive: `read_remote_track` decodes each RTP packet as it arrives and pushes 20 ms frames
   into `OutputHandle` (8 frames, drop-oldest), which songbird reads through `PcmSource`
   with its own 3 to 8 frame jitter target.
-- The first version did neither by hand: an AudioWorklet FIFO played every frame in order
-  into the browser's WebRTC stack, and the browser's NetEQ handled jitter, reordering and
-  loss before the audio came back as a steady stream.
-- The rewrite spec (`REWRITE-SPEC.md` 4.4) lists `approvalPolicy: never`; the first
-  version's working code uses `untrusted` (`codex.rs` line 1906). The agent searched the
-  web 48 times in 99 tasks there and never here.
+- In a browser's WebRTC stack the sender feeds every frame in order and NetEQ handles
+  jitter, reordering and loss before the audio comes back as a steady stream; this app has
+  to do both itself.
+- The thread starts with `approvalPolicy: never`; with it the agent never searched the web.
 
 ## Goals / Non-Goals
 
 **Goals:** no lost or reordered audio between the gate and the call on a clean network;
 steady playout of the answer under jitter and small loss; counters that show which of the
-two directions misbehaves; the first version's agent behaviour.
+two directions misbehaves; an agent that searches the web.
 
-**Non-Goals:** echo cancellation or noise suppression (the first version turned the
-browser's off too); changing the gate, the wake engine or the session rules; gains
-(change `audio-gain-settings`).
+**Non-Goals:** echo cancellation or noise suppression; changing the gate, the wake engine or
+the session rules; gains (change `audio-gain-settings`).
 
 ## Decisions
 
@@ -77,16 +74,15 @@ re-run to confirm the cost stays far below the 20 ms budget. The bitrate is comp
 32 and 48 kbit/s on the live call test by transcript fidelity; the lowest that matches the
 spoken text is kept.
 
-**D5. Approval policy and tools as in the first version.** `thread/start` sends
+**D5. Approval policy and tools.** `thread/start` sends
 `approvalPolicy: "untrusted"`; the declines for client-side requests stay as they are. Web
 search is a server-side tool of the agent and is not touched. The live call test gets a
 delegated question about current facts and checks the chat log for a `webSearch` item.
 
 **D6. Voice "server default".** An empty `codex.voice` is valid and means "send no voice";
 the Settings voice list gets a "(server default)" entry; the log line at call start names
-the voice used or "server default". New settings files start with the server default (what
-the first version effectively used, since it omitted its configured `cedar`); existing
-settings keep their voice.
+the voice used or "server default". New settings files start with the server default;
+existing settings keep their voice.
 
 **D7. Log noise.** The log plugin sets `songbird::driver::tasks::udp_rx` to Error: its
 `RTCP decryption failed` warnings (about 700 in 2.5 minutes) carry no action. The Opus
@@ -105,10 +101,8 @@ one line when a call ends. Change `performance-statistics` shows them.
 - [Concealment on a stream that paused on purpose] → only sequence gaps are concealed, and
   never more than 5 frames in a row.
 - [`untrusted` lets the agent run harmless read-only commands without asking] → the shell
-  tool stays disabled (`--disable shell_tool`) and the sandbox stays read-only, as in the
-  first version.
+  tool stays disabled (`--disable shell_tool`) and the sandbox stays read-only.
 
 ## Migration Plan
 
-No settings migration. Rollback is reverting the branch; the first version stays available
-as the reference.
+No settings migration. Rollback is reverting the branch.

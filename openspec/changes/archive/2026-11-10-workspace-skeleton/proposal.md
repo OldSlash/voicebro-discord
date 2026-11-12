@@ -5,9 +5,9 @@
 Every later change (Discord adapter, wake engine, gate, Codex assistant, UI) needs the same
 foundation: a Cargo workspace with a core crate that has no Tauri dependency, a desktop app
 that starts, logs to a file in every build, keeps settings in one schema and the Discord
-token in the Windows Credential Manager. The first version grew this piecemeal and paid for
-it: a setting touched seven places, the token sat in plain JSON, release builds wrote no
-log, and the installed build could not be told from the previous one. This change lays the
+token in the Windows Credential Manager. Built piecemeal, this foundation goes wrong in known
+ways: a setting that touches seven places, a token in plain JSON, release builds that write
+no log, an installed build that cannot be told from the previous one. This change lays the
 foundation once, as `docs/ARCHITECTURE.md` describes it, before any feature is built on it.
 
 ## What Changes

@@ -30,7 +30,7 @@ See proposal.md for the motivation. What the code does today:
 
 Constraints: the form state stays apart from the status (change `settings-form-behavior`);
 no bundler, no framework; the core never depends on the UI and never on Tauri; settings
-apply without a restart; the first version's layout is the reference for the Settings tab.
+apply without a restart.
 
 ## Goals / Non-Goals
 
@@ -61,14 +61,14 @@ to "Changes save automatically." The "Saving…" state keeps its border class on
 (`is-saving`, muted border), no text. `small.field-message` stays in every label for the
 validation error only; the two `p.field-message` of the Appearance card move inside their
 labels like everywhere else. *Alternative:* a fixed-height line under every field.
-Rejected: 18 px of empty space under each of twenty fields, which the first version did not
-have. *Alternative:* a border colour instead of the name colour. Rejected: sliders and
-checkboxes have no border, so the mark would differ by control type.
+Rejected: 18 px of empty space under each of twenty fields. *Alternative:* a border colour
+instead of the name colour. Rejected: sliders and checkboxes have no border, so the mark
+would differ by control type.
 
 **D2. The Earcons switch takes the column layout.** `<label>Earcons<input type="checkbox">
-<small class="field-help">…</small><small class="field-message">…</small></label>`, as the
-first version had it; `.inline-check` and its rules go. The checkbox sits under its name,
-left-aligned, at the same height as the slider next to it. *Alternative:* keep the inline
+<small class="field-help">…</small><small class="field-message">…</small></label>`;
+`.inline-check` and its rules go. The checkbox sits under its name, left-aligned, at the
+same height as the slider next to it. *Alternative:* keep the inline
 layout and stretch the row. Rejected: the name would sit on a different line than the
 neighbouring name.
 
@@ -157,8 +157,8 @@ calls in `window.__mock.calls`, so the poll rate is checkable from the page.
 - [The user looks for the memory number and finds none] → the status bar item is simply
   absent, and the System tab's card says where the switch is; `AGENTS.md` and
   `LOCAL-TESTING.md` say the measuring commands need the switch on.
-- [A validation error still grows its row] → accepted: the message must be readable, it
-  grows only that row, and the first version showed errors the same way.
+- [A validation error still grows its row] → accepted: the message must be readable, and it
+  grows only that row.
 - [The Status tab is slower between events while monitoring is off] → every change the tab
   shows is also an event; 5 s is what the status spec promises.
 - [A reading thread stopped mid-`OpenProcess`] → the stop is checked between readings only;

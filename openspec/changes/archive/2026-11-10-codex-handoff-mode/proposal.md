@@ -9,8 +9,8 @@ questions in four routing modes, report kept uncommitted in
 `docs/HANDOFF-MODES-REPORT.md`) the default routing was the one that misled: twice the
 voice answered with made-up facts before the agent had finished, and once it changed a
 number when retelling. With `codexResponsesAsItems` the retelling kept the agent's facts in
-every call. The first version used the same default routing and had the same problem. The
-user wants the routing to be a setting, defaulting to the mode that tested most accurate.
+every call. The user wants the routing to be a setting, defaulting to the mode that tested
+most accurate.
 
 ## What Changes
 

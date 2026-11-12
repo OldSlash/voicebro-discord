@@ -13,10 +13,10 @@
 
 ## 3. The window (specs `app-window`, `status-view`, `settings-ui`)
 
-- [x] 3.1 Write `index.html` and `styles.css` to the first version's look: the seven tabs, cards, the status bar, the four themes, without the browser parts and the update tile; English strings only; verify the page opened from disk in a browser shows all seven tabs and the status bar, and a search finds no Cyrillic and no "browser" text (checked in the running app through the WebView2 debugging port instead of from disk: a screenshot of every tab; the search finds neither)
-- [x] 3.2 Write `main.js` for this app: tab switching that keeps state, the status bar (connection colour, guilds, voice channels, uptime), the Status tab (guild list and fact tiles with Connect, Disconnect, Mute, Sign in, Check), the System tab; verify against the status snapshot in the running app and side by side with the first version's Status and System screenshots (compared with the first version's markup and styles; the user's screenshots of it were not at hand in this session, so the side-by-side look is the user's check)
+- [x] 3.1 Write `index.html` and `styles.css` for the new layout: the seven tabs, cards, the status bar, the four themes, no update tile; English strings only; verify the page opened from disk in a browser shows all seven tabs and the status bar, and a search finds no Cyrillic and no "browser" text (checked in the running app through the WebView2 debugging port instead of from disk: a screenshot of every tab; the search finds neither)
+- [x] 3.2 Write `main.js` for this app: tab switching that keeps state, the status bar (connection colour, guilds, voice channels, uptime), the Status tab (guild list and fact tiles with Connect, Disconnect, Mute, Sign in, Check), the System tab; verify against the status snapshot in the running app and the layout in proposal.md (checked against the status snapshot and the proposal's layout; how the Status and System tabs look is the user's check)
 - [x] 3.3 The Settings tab cards (Appearance, Audio, Assistant, Codex, Hotkey) and the Config tab (token with help, guild id with help, Codex executable, auto-start badge, Save changes, Reset, stored settings with path, no token in it); appearance applied at once and stored; verify in the running app with a scratch data dir that each field shows its stored value, a theme change survives a restart, and the stored view holds no token (Light at 15 px was saved, the restarted window opened in Light at 15 px; Reset brought an edited executable back; neither `settings.json` nor the view contains a token)
-- [x] 3.4 Placeholders for Console, Codex chat and Performance in the first version's layout (toolbar and empty panel); verify the three tabs render their toolbars (Console and Codex chat already carry the working log and chat; Performance has its toolbar, two chart cards and the tile grid, empty)
+- [x] 3.4 Placeholders for Console, Codex chat and Performance in the new layout (toolbar and empty panel); verify the three tabs render their toolbars (Console and Codex chat already carry the working log and chat; Performance has its toolbar, two chart cards and the tile grid, empty)
 
 ## 4. Docs and checks
 
@@ -26,7 +26,7 @@
 ## Workflow follow-up
 
 - Checkpoint commits per task group on `change/ui-layout-port`, with the user's OK.
-- The user compares the window with the first version and says what differs.
+- The user checks the window against the proposal and says what differs.
 - The old `%LOCALAPPDATA%\com.voicebro.desktop` folder (130 MB) is the user's to delete.
 - Merged into `main` with `--no-ff --log`, in chain order, once the app works end to end and
   the user says so; the change is archived in the same step.

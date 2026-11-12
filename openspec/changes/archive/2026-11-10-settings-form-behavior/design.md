@@ -7,7 +7,7 @@ See proposal.md. In today's `apps/desktop/ui/main.js`, `renderStatus` writes eve
 refills the wake lists; `refresh` runs every 5 s and on every event; `loadLists` empties and
 refills the Codex lists on every assistant event; the only guard is
 `document.activeElement === control`, and for the Codex lists it guards the hidden text
-input. After change `ui-layout-port` the same logic sits in the ported first-version layout.
+input. After change `ui-layout-port` the same logic sits in the seven-tab layout.
 
 ## Goals / Non-Goals
 
@@ -35,7 +35,7 @@ field or Enter), sliders on `change` (release), selects and switches on `change`
 is one `save_settings` patch for that field. Config tab: fields become dirty on input; Save
 changes sends one patch with every dirty field and the token through `set_secret` when one
 was typed; Reset restores the stored values. *Alternative:* a Save button per field.
-Rejected: the user did not know what was saved; the first version saved automatically.
+Rejected: the user did not know what was saved.
 
 **D4. Field state display.** A small status line under each field: "Saving…", "Saved"
 (cleared after 2 s), or the error text (kept until the next successful save of that field).

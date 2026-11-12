@@ -2,7 +2,7 @@
 //! [`RelayRegistry`] holds them and the app-wide mute flag. See `docs/ARCHITECTURE.md` 4.3.
 //!
 //! The gate decides, every 20 ms, whether the channel's mixed frame reaches the assistant:
-//! - **mute** ends the session, as in the first version: the call closes, nothing is sent,
+//! - **mute** ends the session: the call closes, nothing is sent,
 //!   the assistant's voice is discarded and wake phrases are ignored; in always mode the
 //!   unmute starts a new session. The mute and unmute tones play when earcons are on;
 //! - **wake-word mode**: audio flows only after an activation phrase, replayed from the end

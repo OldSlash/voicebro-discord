@@ -2,19 +2,15 @@
 
 ## Context
 
-See proposal.md and `docs/NEXT-CHANGES.md` section 8 (the comparison tables A1 to F2). The
-first version's references: `codex.rs` `start_guild` and `ensure_ready` (join preparation),
-`gate.rs` `wants_session` and `set_muted` (mute ends the session), `audio.rs` `Earcon`
-(four tones), `discord.rs` lines 860 to 940 (mixing by count, the "only person in the
-channel" fallback) and 986 to 1017 (commands in the guild and globally), its Console tab
-(the whole log in the window). This app today: `CodexAssistant::start` runs at
+See proposal.md. The app before this change: `CodexAssistant::start` runs at
 `Runtime::start`; `RelayGate::wants_session` ignores mute; `mix_into` sums and clamps; the
-window's log pane receives only `AppEvent::Log` lines; the recognizer logs with `log::info!`
-only; `discord.auto_connect` gates the start; commands go to the guild or globally.
+window's log pane receives only `AppEvent::Log` lines; the recognizer logs with
+`log::info!` only; `discord.auto_connect` gates the start; commands go to the guild or
+globally.
 
 ## Goals / Non-Goals
 
-**Goals:** the first version's behaviour for each listed item; the user's decision that the
+**Goals:** the behaviour the proposal lists for each item; the user's decision that the
 Codex process starts at `/join`.
 
 **Non-Goals:** the Console tab's design (change `chat-and-console-tabs` builds it on the
@@ -45,12 +41,10 @@ assistant the session is not wanted; `set_muted(false)` plays the unmute tone an
 mode, makes the session wanted again. The gate no longer sends silent frames while muted.
 The registry mute flag and the three mute sources stay as they are.
 
-**D4. Tones.** The first version's `earcon_samples` (`audio.rs` lines 228 to 260, the
-user's own code by `git blame`) is ported as it is, all four tones: mute 660 Hz 90 ms then
-440 Hz 110 ms, unmute the reverse, session start 523.25, 659.25 and 783.99 Hz (70, 70,
-110 ms), session end 659.25 Hz 80 ms then 392 Hz 130 ms. Today's two-note start and end
-tones are replaced by the first version's. The volume setting and the "play while muted"
-rule stay.
+**D4. Tones.** Four tones: mute 660 Hz 90 ms then 440 Hz 110 ms, unmute the reverse,
+session start 523.25, 659.25 and 783.99 Hz (70, 70, 110 ms), session end 659.25 Hz 80 ms
+then 392 Hz 130 ms. They replace today's two-note start and end tones. The volume setting
+and the "play while muted" rule stay.
 
 **D5. Mixing.** `mix_into` divides each summed sample by the number of speakers in the tick
 when there are two or more, in `i32`, before the single clamp; one speaker passes unchanged.
@@ -97,10 +91,9 @@ serenity 0.12.5 source. The private working set before and after is measured wit
 - [A join now waits for the app-server start and the thread, about 2 to 3 s on the first
   join] → the join reply is deferred as it is today; later joins reuse a running process.
 - [Stopping the app-server on the last leave loses the thread] → the history carries over as
-  on a model change; the first version kept the process until exit, the user asked for no
-  idle Codex.
-- [Averaging lowers each voice when two people talk at once] → it is the first version's
-  tested behaviour; the input gain compensates.
+  on a model change; the user asked for no idle Codex.
+- [Averaging lowers each voice when two people talk at once] → it keeps overlapping voices
+  from clipping; the input gain compensates.
 - [Log forwarding at Info could be chatty] → the same filters as the file, and the ring
   buffer bounds memory.
 

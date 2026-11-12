@@ -38,7 +38,7 @@ approach:
 values. A single binary keeps the dependencies that later move into the core (webrtc, opus2,
 songbird, windows-sys) building in one place, and the test WAVs and tokens come from
 environment variables so nothing secret is in the repository. Alternative: scratchpad
-scripts. Rejected: they are lost, and v1 lost its measurement scripts exactly that way.
+scripts. Rejected: they get lost, and with them the way each measurement was made.
 
 **D2. The workspace manifest is created here, minimal.** `Cargo.toml` with
 `members = ["apps/probe"]` and the release profile from the plan. `workspace-skeleton` adds

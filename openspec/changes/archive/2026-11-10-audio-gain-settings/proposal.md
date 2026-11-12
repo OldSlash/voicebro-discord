@@ -2,16 +2,15 @@
 
 ## Why
 
-The first version has two volume controls, "Mic to ChatGPT" and "ChatGPT to Discord"; the
-user runs them at 339 % and 252 %. This app has neither, so the assistant hears the channel
-about 3.4 times quieter than in the first version and its answer plays about 2.5 times
-quieter. The user requires both settings (`docs/NEXT-CHANGES.md`, section 7).
+The app has no volume controls. The user needs the assistant to hear the channel about 3.4
+times louder (339 %) and its answer to play about 2.5 times louder (252 %) than the levels
+the app passes through now, and requires a setting for each direction.
 
 ## What Changes
 
 - A new settings section `audio` with `input_gain` (how loud the assistant hears the
   channel) and `output_gain` (how loud the assistant speaks in the channel), each a
-  multiplier from 0.0 to 4.0, default 1.0, as in the first version.
+  multiplier from 0.0 to 4.0, default 1.0.
 - The input gain scales the frames the session gate sends to the assistant; the wake engine
   keeps the unscaled audio. The output gain scales the assistant's audio on its way to
   Discord; earcons keep their own volume.

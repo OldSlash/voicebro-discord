@@ -174,3 +174,10 @@ The third-party software it is built with keeps its own licenses; see
 [Built with](#built-with).
 
 VoiceBro is an independent project and is not affiliated with Discord or OpenAI.
+
+## Acknowledgements
+
+VoiceBro was inspired by [GPTVoice](https://github.com/mutedvector/gptvoice-discord) by
+[mutedvector](https://github.com/mutedvector) and its idea: talk to ChatGPT's voice in a
+Discord channel directly, through a ChatGPT subscription, unlike the bots that need an API
+key.

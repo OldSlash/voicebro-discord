@@ -3,11 +3,11 @@
 ## MODIFIED Requirements
 
 ### Requirement: Save on change with validation
-On the Settings tab a change SHALL be saved automatically, as in the first version: a text
-field when it loses focus or on Enter, a slider when released, a list or switch when
-changed. On the Config tab changes SHALL be saved with Save changes and discarded with Reset.
-A rejected value SHALL stay in the field with the validation message next to it while the
-stored value stays unchanged; an accepted value SHALL be applied at once.
+On the Settings tab a change SHALL be saved automatically: a text field when it loses focus
+or on Enter, a slider when released, a list or switch when changed. On the Config tab changes
+SHALL be saved with Save changes and discarded with Reset. A rejected value SHALL stay in the
+field with the validation message next to it while the stored value stays unchanged; an
+accepted value SHALL be applied at once.
 
 #### Scenario: Invalid timeout
 - **WHEN** the user enters 3 as the idle timeout and leaves the field

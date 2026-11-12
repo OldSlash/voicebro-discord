@@ -4,7 +4,7 @@
 
 - [x] 1.1 Create the branch `change/memory-measurement` from the tip of `change/performance-statistics`; verify `git log -1` shows the previous tip as parent
 - [x] 1.2 Extend `scripts\measure.ps1`: private working set (performance counter) next to private bytes and working set for the app, its WebView2 and Codex processes, refuse a debug build without `-AllowDebug`, print the build stamp; verify a run against the release build shows the three columns and a run against `target\debug` refuses (the debug run exited with code 2 and the reason)
-- [x] 1.3 Measure the release build three times each in idle always mode and idle wake-word mode, replace the measurement table and the conclusion in `docs/MVP-PLAN.md` (and the wrong sentence about "well above the expected 150–200 MB"), and keep the first version's numbers from 2026-11-09 next to them; verify the plan no longer cites 434 MB as the app's memory (always mode: 4.8 MB for `voicebro.exe`, about 91 to 95 MB with WebView2; wake-word mode: 169.8 to 169.9 MB, about 255 to 259 MB with WebView2; 434 MB is mentioned only as the earlier wrong reading)
+- [x] 1.3 Measure the release build three times each in idle always mode and idle wake-word mode, replace the measurement table and the conclusion in `docs/MVP-PLAN.md` (and the wrong sentence about "well above the expected 150–200 MB"); verify the plan no longer cites 434 MB as the app's memory (always mode: 4.8 MB for `voicebro.exe`, about 91 to 95 MB with WebView2; wake-word mode: 169.8 to 169.9 MB, about 255 to 259 MB with WebView2; 434 MB is mentioned only as the earlier wrong reading)
 
 ## 2. Memory in the window (spec `app-window`)
 

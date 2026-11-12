@@ -43,7 +43,7 @@ pub struct ThreadInfo {
     pub requested: ThreadSettings,
 }
 
-/// `untrusted` as in the first version's working code (its rewrite spec said `never`): the
+/// `untrusted` rather than `never` (with `never` the agent never searched the web): the
 /// agent keeps its server-side tools, web search included, and every approval request that
 /// reaches the app is declined.
 pub fn thread_start_params(workspace: &Path, settings: &ThreadSettings) -> Value {

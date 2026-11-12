@@ -15,7 +15,7 @@ the Discord panel's button SHALL all toggle that same state, and every view SHAL
 - **THEN** the app window, the Discord panel and `/status` all show muted within a second
 
 ### Requirement: What mute silences
-Mute SHALL end the current session and its call, as in the first version: from the moment
+Mute SHALL end the current session and its call: from the moment
 of muting nothing of the channel reaches the assistant, nothing the assistant says reaches
 the channel, queued answer audio is discarded, no voice call stays open, and wake phrases
 are ignored.
@@ -50,7 +50,7 @@ nothing. The status SHALL show the shortcut, whether it is registered, and the e
 - **THEN** mute toggles (verified by the user; the agent cannot do this)
 
 ### Requirement: Mute and unmute tones
-Turning mute on SHALL play the first version's mute tone and turning it off the unmute tone,
+Turning mute on SHALL play the mute tone and turning it off the unmute tone,
 in every voice channel the bot is in, at the earcon volume, when earcons are on; the tones
 SHALL play even though the assistant's output is muted.
 

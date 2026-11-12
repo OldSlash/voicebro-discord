@@ -18,7 +18,7 @@
 ## 3. Agent and voice (spec `codex-assistant`)
 
 - [x] 3.1 Send `approvalPolicy: "untrusted"` in `thread_start_params`; verify the unit test of the parameters and, in the gated live test, a delegated question about current facts produces a `webSearch` entry in the chat log
-- [x] 3.2 Allow an empty `codex.voice` and make it the default for new settings files (the first version's effective behaviour; existing files keep their voice), start the call without a voice field when empty, log "server default", add "(server default)" to the Settings voice list; verify unit tests of validation, of the default and of the start parameters
+- [x] 3.2 Allow an empty `codex.voice` and make it the default for new settings files (existing files keep their voice), start the call without a voice field when empty, log "server default", add "(server default)" to the Settings voice list; verify unit tests of validation, of the default and of the start parameters
 
 ## 4. Log noise
 

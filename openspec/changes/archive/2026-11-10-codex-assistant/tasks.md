@@ -2,8 +2,8 @@
 
 ## 1. App-server and account (spec `codex-assistant`)
 
-- [x] 1.1 Add `assistant/codex/app_server.rs` from the probe's client plus v1's generation counter, timeouts and `find_codex`/`codex.executable`; decline list from the schema; verify unit tests for framing and auto-decline and `VOICEBRO_CODEX_SMOKE=1` live handshake
-- [x] 1.2 Add `assistant/codex/account.rs`: `account/read`, `account/login/start`, `account/login/completed` → `AssistantStatus.account`; `model/list` and `listVoices` → `Capabilities`; verify a live check against the signed-in account that lists 8 models and the v1 voices (the live `check()` ran inside the live call test: signed in, chatgpt, plus; models and voices fetched)
+- [x] 1.1 Add `assistant/codex/app_server.rs` from the probe's client plus a generation counter, timeouts and `find_codex`/`codex.executable`; decline list from the schema; verify unit tests for framing and auto-decline and `VOICEBRO_CODEX_SMOKE=1` live handshake
+- [x] 1.2 Add `assistant/codex/account.rs`: `account/read`, `account/login/start`, `account/login/completed` → `AssistantStatus.account`; `model/list` and `listVoices` → `Capabilities`; verify a live check against the signed-in account that lists 8 models and the `v1` voices (the live `check()` ran inside the live call test: signed in, chatgpt, plus; models and voices fetched)
 - [x] 1.3 Add `assistant/codex/thread.rs`: per-guild read-only ephemeral thread, model and effort, remap on change, fallback with `log_used`; verify a live check that a bogus model falls back and the log names both (unit-tested params and fallback path; the bogus-model live check is covered by `VOICEBRO_CODEX_CALL_WAV` with `codex.model` set in the test settings, not run yet)
 
 ## 2. Call

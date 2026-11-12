@@ -3,10 +3,10 @@
 ## MODIFIED Requirements
 
 ### Requirement: Nothing acts on the computer
-Every thread SHALL be ephemeral with a read-only sandbox and `approvalPolicy: untrusted`, as
-in the first version; every approval, tool call, user-input and elicitation request from the
-server SHALL be declined automatically and logged. The agent's own server-side tools, web
-search included, SHALL stay available.
+Every thread SHALL be ephemeral with a read-only sandbox and `approvalPolicy: untrusted`;
+every approval, tool call, user-input and elicitation request from the server SHALL be
+declined automatically and logged. The agent's own server-side tools, web search included,
+SHALL stay available.
 
 #### Scenario: Agent asks to run a command
 - **WHEN** the delegated agent requests command execution approval

@@ -8,8 +8,8 @@ errors visible, so the user always knows whether the bot is online and why not.
 
 ### Requirement: The bot connects with the stored token
 The app SHALL connect to the Discord gateway with the token from the secret store whenever a
-token is set, at start-up and whenever a token is stored, as in the first version; there is
-no switch to turn this off.
+token is set, at start-up and whenever a token is stored; there is no switch to turn this
+off.
 
 #### Scenario: Start with a stored token
 - **WHEN** the app starts with a token in the secret store
@@ -42,7 +42,7 @@ in error.
 
 ### Requirement: Slash commands are registered where they appear at once
 The app SHALL register `/join`, `/leave` and `/status` globally and, when `discord.guild_id`
-is set, also in that guild, as in the first version.
+is set, also in that guild.
 
 #### Scenario: Guild id set
 - **WHEN** the bot connects with a guild id configured

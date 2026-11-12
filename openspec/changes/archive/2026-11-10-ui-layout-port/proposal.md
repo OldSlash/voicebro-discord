@@ -2,17 +2,15 @@
 
 ## Why
 
-The user judged the window poor and asked for the first version's interface
-(`docs/NEXT-CHANGES.md`, section 3, with six screenshots of it): a tab bar with Console,
+The user judged the window poor and asked for a new interface: a tab bar with Console,
 Codex chat, Status, Performance, System, Settings and Config, cards with two-column forms,
-and a status bar. The first version's window is the reference; this change gives this app the same
-layout, styles and themes, written new.
+and a status bar. This change builds that layout, its styles and four themes.
 
 ## What Changes
 
-- The window gets the first version's structure: tabs **Console, Codex chat, Status,
-  Performance, System, Settings, Config**; cards; a status bar at the bottom with the
-  Discord connection state, the guild count, the voice channel count and the uptime.
+- The window gets a new structure: tabs **Console, Codex chat, Status, Performance,
+  System, Settings, Config**; cards; a status bar at the bottom with the Discord connection
+  state, the guild count, the voice channel count and the uptime.
 - **Status**: the connected guilds on the left; a grid of fact tiles on the right (Discord,
   bot account, voice channel, assistant engine, assistant state, wake word, mute, Codex
   account, call, hotkey), and the actions Connect, Disconnect, Mute, Sign in, Check.
@@ -31,7 +29,7 @@ layout, styles and themes, written new.
   the browser storage, so they stay with the portable app.
 - The WebView2 data folder moves next to the executable; today it writes 130 MB into
   `%LOCALAPPDATA%\com.voicebro.desktop`, against the portability rule.
-- Everything about the ChatGPT browser is left out; all strings are English.
+- All strings are English.
 
 ## Capabilities
 
@@ -48,8 +46,8 @@ layout, styles and themes, written new.
 
 ## Impact
 
-- `apps/desktop/ui/index.html`, `styles.css`, `main.js` written new to the first version's
-  look; `apps/desktop/src/main.rs` (a `system_status` command, the WebView2
+- `apps/desktop/ui/index.html`, `styles.css`, `main.js` written new for this layout;
+  `apps/desktop/src/main.rs` (a `system_status` command, the WebView2
   data directory, the window built in code if the configuration cannot set the folder);
   `crates/voicebro-core/src/settings` (`ui` section).
 - The `frontend-design` skill from `anthropics/skills`, installed locally for the agents.
