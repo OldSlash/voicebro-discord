@@ -290,7 +290,11 @@ impl CodexSession {
         CallStatus {
             guild_id: self.guild.to_string(),
             state: state.realtime.as_str().to_owned(),
-            connected: rtc.is_some_and(|rtc| rtc.is_connected()),
+            connected: rtc.as_ref().is_some_and(|rtc| rtc.is_connected()),
+            opus_codec: rtc
+                .as_ref()
+                .filter(|rtc| !rtc.is_closed())
+                .map(|rtc| rtc.codec().label()),
             audio,
             thread_id: Some(self.thread_id()).filter(|id| !id.is_empty()),
             last_user_text: state.last_user_text.clone(),
@@ -511,16 +515,22 @@ impl CodexSession {
         }
 
         // The peer, track and data channel before the offer.
-        let (rtc, offer) =
-            match RtcCall::open(self.handle.clone(), self.ports.clone(), self.report.clone()).await
-            {
-                Ok(opened) => opened,
-                Err(error) => {
-                    self.lock().realtime = Realtime::Idle;
-                    self.set_error(format!("could not set up the voice call: {error}"));
-                    return;
-                }
-            };
+        let codec = self.config().opus_codec;
+        let (rtc, offer) = match RtcCall::open(
+            self.handle.clone(),
+            self.ports.clone(),
+            self.report.clone(),
+            codec,
+        )
+        .await
+        {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.lock().realtime = Realtime::Idle;
+                self.set_error(format!("could not set up the voice call: {error}"));
+                return;
+            }
+        };
         let previous = self.rtc.lock().expect("rtc lock").replace(Arc::clone(&rtc));
         if let Some(previous) = previous {
             previous.close().await;
@@ -1079,7 +1089,11 @@ mod tests {
             conversation: Arc::new(Mutex::new(Conversation::new(1))),
             learned_depth: Arc::default(),
             workspace: dir.path().to_path_buf(),
-            ports: AudioPorts { input, output },
+            ports: AudioPorts {
+                input,
+                output,
+                failures: crate::audio::codec::CodecFailures::none(),
+            },
             chat: Arc::clone(&chat),
             events: events.clone(),
             errors: Arc::new(ConnectionErrors::new(events)),

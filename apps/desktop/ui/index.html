@@ -253,6 +253,7 @@
                 <label>Performance monitoring <output id="diagnostics-performance-label" for="diagnostics-performance">off</output><input id="diagnostics-performance" type="checkbox" data-path="diagnostics.performance" data-kind="bool"><small class="field-help">Samples the status once a second and keeps five minutes of it for the Performance tab's charts and cards. While on it costs one status read per second and the kept samples in the window. The same switch is on the Performance tab. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-performance"></small></label>
                 <label>Memory measurement <output id="diagnostics-memory-label" for="diagnostics-memory">off</output><input id="diagnostics-memory" type="checkbox" data-path="diagnostics.memory" data-kind="bool"><small class="field-help">Reads the private working set of the app, its WebView2 processes and Codex every 3 seconds for the status bar and the System tab. While on it costs a scan of the process list every 3 seconds. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-memory"></small></label>
                 <label>Verbose log <output id="diagnostics-verbose-log-label" for="diagnostics-verbose-log">off</output><input id="diagnostics-verbose-log" type="checkbox" data-path="diagnostics.verbose_log" data-kind="bool"><small class="field-help">Also writes to the log file what the recognizer heard, the latency and call counters, the chat text and warnings of the libraries, for diagnosing a problem. The Console shows all of it either way. The log folder stays within about 2 MB. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-verbose-log"></small></label>
+                <label class="wide">Opus codec (experiment)<select id="diagnostics-opus-codec" data-path="diagnostics.opus_codec" data-kind="string"><option value="libopus">libopus (C library)</option><option value="opus-rs">opus-rs (Rust)</option></select><small class="field-help">Which Opus implementation encodes and decodes the voice: the assistant's voice toward Discord, your speech toward Codex and its answer, and the people in the channel. libopus is the C library VoiceBro has always used; opus-rs is written in Rust and is being tried as its replacement. Applies at the next /join and the next call; one already running keeps its codec. Default: libopus.</small><small class="field-help" id="opus-codec-in-use">In use: none.</small><small class="field-message" data-for="diagnostics-opus-codec"></small></label>
               </div>
             </div>
             <div class="settings-actions"><span class="form-feedback" id="settings-feedback">Changes save automatically.</span></div>
@@ -326,6 +327,17 @@
       <div class="install-actions">
         <button type="button" class="button" id="wake-install-secondary">Not now</button>
         <button type="button" class="button primary" id="wake-install-primary">Download</button>
+      </div>
+    </dialog>
+    <!-- The bot left a voice channel because the Opus codec failed (change
+         opus-codec-experiment). One dialog lists every failure until OK closes it. -->
+    <dialog class="install-dialog codec-failure-dialog" id="codec-failure" aria-labelledby="codec-failure-title">
+      <h2 id="codec-failure-title">The bot left the voice channel</h2>
+      <ul id="codec-failure-items"></ul>
+      <p class="install-note">Run /join to bring the bot back, or choose libopus in Settings → Diagnostics → Opus codec. The log has the details.</p>
+      <div class="install-actions">
+        <button type="button" class="button" id="codec-failure-log">Open log folder</button>
+        <button type="button" class="button primary" id="codec-failure-ok">OK</button>
       </div>
     </dialog>
     <script src="main.js"></script>

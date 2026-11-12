@@ -3815,6 +3815,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "opus-rs"
+version = "0.1.42"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bafbcaf2ed381cdf68ced4ed8d16517de90ffd7424e36f0b9e45d67fbe30b1f9"
+
+[[package]]
 name = "opus2"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7303,6 +7309,7 @@ dependencies = [
  "chrono",
  "libloading 0.9.0",
  "log",
+ "opus-rs",
  "opus2",
  "rand 0.9.5",
  "rtc",

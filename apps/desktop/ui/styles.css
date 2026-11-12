@@ -355,6 +355,10 @@ textarea.prompt-input { min-height: 80px; line-height: 1.45; }
 .install-progress { font-variant-numeric: tabular-nums; }
 .install-error { color: var(--bad); }
 .install-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+/* The codec failure notice: the same dialog, with the error border. */
+.codec-failure-dialog { border-color: var(--bad); }
+.codec-failure-dialog li + li { margin-top: 6px; }
+.codec-failure-dialog .failure-message { overflow-wrap: anywhere; color: var(--ink-dim); }
 
 /* Downloading the files by hand: in the notice and in the dialog, under the file list. */
 .manual-download { margin: 2px 0 10px; padding-top: 8px; border-top: 1px solid var(--line); }

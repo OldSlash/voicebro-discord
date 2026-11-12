@@ -8,6 +8,7 @@ use crate::audio::opus_out::{self, DeliveryShared};
 use crate::audio::{output_pair, OutputHandle, CHANNELS, SAMPLE_RATE};
 use serenity::all::{ChannelId, GuildId};
 use serenity::async_trait;
+use songbird::driver::{DecodeConfig, DecodeMode, SampleRate};
 use songbird::events::{Event, EventContext, EventHandler as VoiceEventHandler, TrackEvent};
 use songbird::input::RawAdapter;
 use songbird::tracks::{PlayMode, TrackHandle};
@@ -133,17 +134,48 @@ pub(crate) async fn join_voice(
     // The leg toward Discord: its connection and RTCP handlers go in before the join, so
     // the server and our SSRC from `DriverConnect` are not missed.
     let delivery = Arc::new(DeliveryLeg::new(Arc::new(DeliveryShared::default())));
+    // The codec of this join (change `opus-codec-experiment`): with libopus songbird decodes
+    // the speakers as before; with a pure-Rust codec it only decrypts and the receive
+    // handler decodes. songbird takes a config set before `join` for that connection.
+    let codec = shared.host.opus_codec();
+    // Where this join's codec panics go; a new join may report again (design D5).
+    let failures = shared.host.codec_failures(guild.get());
+    let own_decoding = codec.is_pure_rust().then_some(codec);
+    log::info!(
+        "[receive] Opus codec for this join: {} (speakers decoded by {})",
+        codec.label(),
+        if own_decoding.is_some() {
+            "the app"
+        } else {
+            "songbird"
+        }
+    );
     let call = manager.get_or_insert(guild);
     {
         let mut call = call.lock().await;
+        let mut config = call.config().clone();
+        config.decode_mode = if own_decoding.is_some() {
+            DecodeMode::Decrypt
+        } else {
+            DecodeMode::Decode(DecodeConfig::new(
+                songbird::driver::Channels::Stereo,
+                SampleRate::Hz48000,
+            ))
+        };
+        call.set_config(config);
         call.remove_all_global_events();
         call.add_global_event(
             CoreEvent::SpeakingStateUpdate.into(),
-            ReceiveHandler::new(Arc::clone(shared), guild, Arc::clone(&directory)),
+            ReceiveHandler::new(Arc::clone(shared), guild, Arc::clone(&directory), None),
         );
         call.add_global_event(
             CoreEvent::VoiceTick.into(),
-            ReceiveHandler::new(Arc::clone(shared), guild, Arc::clone(&directory)),
+            ReceiveHandler::new(
+                Arc::clone(shared),
+                guild,
+                Arc::clone(&directory),
+                own_decoding.map(|codec| (codec, failures.clone())),
+            ),
         );
         for event in [
             CoreEvent::DriverConnect,
@@ -163,7 +195,8 @@ pub(crate) async fn join_voice(
     // through (change `discord-voice-delivery`); songbird's own PCM path if that track
     // cannot be built.
     let input: songbird::input::Input =
-        match opus_out::live_input(source, Arc::clone(&delivery.shared)) {
+        match opus_out::live_input_reporting(source, Arc::clone(&delivery.shared), codec, failures)
+        {
             Ok(input) => input,
             Err(source) => {
                 log::warn!(
@@ -230,6 +263,7 @@ pub(crate) async fn join_voice(
                 participants: Vec::new(),
                 output: Default::default(),
                 delivery: delivery_counters,
+                opus_codec: codec.label(),
             },
         );
     });

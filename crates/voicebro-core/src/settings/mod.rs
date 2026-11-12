@@ -6,6 +6,7 @@
 
 pub mod store;
 
+use crate::audio::codec::OpusCodec;
 use crate::wake::catalog;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -54,10 +55,10 @@ impl Default for Settings {
 }
 
 /// The measurements built for the tuning work, off by default so that a user who never
-/// opens the Performance tab pays nothing for them. Nothing in the core reads this section:
-/// the window polls and samples by `performance`, and the desktop shell runs its memory
-/// reader by `memory`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// opens the Performance tab pays nothing for them, and the Opus codec experiment. The
+/// window polls and samples by `performance`, and the desktop shell runs its memory reader
+/// by `memory`; the core reads only `opus_codec`, at each join and each call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiagnosticsSettings {
     /// The window samples the status once a second and keeps five minutes of it for the
@@ -69,6 +70,42 @@ pub struct DiagnosticsSettings {
     /// The file log also gets the detail lines (what the recognizer heard, latency, call
     /// counters, chat copies) and third-party warnings; read by the desktop shell.
     pub verbose_log: bool,
+    /// The Opus codec (change `opus-codec-experiment`): `libopus` or `opus-rs`. Read when
+    /// the bot joins a voice channel and when a call opens; a save changes neither a running
+    /// join nor a running call.
+    pub opus_codec: String,
+}
+
+impl Default for DiagnosticsSettings {
+    fn default() -> Self {
+        Self {
+            performance: false,
+            memory: false,
+            verbose_log: false,
+            opus_codec: OpusCodec::default().name().to_owned(),
+        }
+    }
+}
+
+impl DiagnosticsSettings {
+    /// The selected codec; libopus when the field holds no codec (validation keeps that
+    /// from being saved).
+    pub fn codec(&self) -> OpusCodec {
+        OpusCodec::parse(&self.opus_codec).unwrap_or_default()
+    }
+
+    /// For a stored document: a codec this build does not have (`ropus` or `mousiki` from
+    /// a trial build of the four-codec comparison) becomes libopus, so the file loads and
+    /// every later save passes validation. Returns the value it replaced.
+    pub fn replace_unknown_codec(&mut self) -> Option<String> {
+        if OpusCodec::parse(&self.opus_codec).is_some() {
+            return None;
+        }
+        Some(std::mem::replace(
+            &mut self.opus_codec,
+            OpusCodec::default().name().to_owned(),
+        ))
+    }
 }
 
 /// The window's themes.
@@ -461,6 +498,16 @@ impl Settings {
             ));
         }
         validate_shortcut("hotkey.mute", &self.hotkey.mute)?;
+        if OpusCodec::parse(&self.diagnostics.opus_codec).is_none() {
+            return Err(invalid(
+                "diagnostics.opus_codec",
+                format!(
+                    "«{}» is not an Opus codec; use one of {}",
+                    self.diagnostics.opus_codec,
+                    OpusCodec::names()
+                ),
+            ));
+        }
         if !THEMES.contains(&self.ui.theme.as_str()) {
             return Err(invalid(
                 "ui.theme",
@@ -591,7 +638,7 @@ mod tests {
         let written = serde_json::to_value(&older).unwrap();
         assert_eq!(
             written["diagnostics"],
-            json!({ "performance": false, "memory": false, "verbose_log": false }),
+            json!({ "performance": false, "memory": false, "verbose_log": false, "opus_codec": "libopus" }),
             "the next save writes the section"
         );
 
@@ -607,6 +654,65 @@ mod tests {
                 .with_patch(&json!({ "diagnostics": { "performance": "yes" } }))
                 .is_err(),
             "a string is not a switch"
+        );
+    }
+
+    #[test]
+    fn the_opus_codec_takes_two_values_and_defaults_to_libopus() {
+        let older: Settings =
+            serde_json::from_str(r#"{ "version": 2, "diagnostics": { "memory": true } }"#).unwrap();
+        assert_eq!(older.diagnostics.opus_codec, "libopus");
+        assert_eq!(older.diagnostics.codec(), OpusCodec::Libopus);
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(
+            written["diagnostics"]["opus_codec"], "libopus",
+            "the next save writes it"
+        );
+
+        for codec in OpusCodec::ALL {
+            let patched = older
+                .with_patch(&json!({ "diagnostics": { "opus_codec": codec.name() } }))
+                .unwrap();
+            patched
+                .validate()
+                .unwrap_or_else(|e| panic!("{codec}: {e}"));
+            assert_eq!(patched.diagnostics.codec(), codec);
+            if codec != OpusCodec::Libopus {
+                assert_eq!(older.changed_sections(&patched), vec!["diagnostics"]);
+            }
+        }
+
+        // A save that names a codec this build does not have is refused, the removed ones
+        // included; the message lists the two.
+        for name in ["opus2", "ropus", "mousiki"] {
+            let unknown = older
+                .with_patch(&json!({ "diagnostics": { "opus_codec": name } }))
+                .unwrap();
+            let error = unknown.validate().unwrap_err();
+            assert_eq!(error.field, "diagnostics.opus_codec");
+            assert!(
+                error.message.contains("libopus, opus-rs"),
+                "{}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_stored_codec_this_build_lacks_becomes_libopus() {
+        let mut stored: Settings =
+            serde_json::from_str(r#"{ "version": 2, "diagnostics": { "opus_codec": "mousiki" } }"#)
+                .unwrap();
+        assert_eq!(
+            stored.diagnostics.replace_unknown_codec().as_deref(),
+            Some("mousiki")
+        );
+        assert_eq!(stored.diagnostics.opus_codec, "libopus");
+        stored.validate().expect("valid after the replacement");
+        assert_eq!(
+            stored.diagnostics.replace_unknown_codec(),
+            None,
+            "a known codec stays"
         );
     }
 

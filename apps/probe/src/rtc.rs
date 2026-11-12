@@ -260,7 +260,7 @@ fn spawn_track_reader(
     log: mpsc::UnboundedSender<String>,
 ) {
     tokio::spawn(async move {
-        let Ok(mut decoder) = opus2::Decoder::new(SAMPLE_RATE, opus2::Channels::Mono) else {
+        let Ok(mut decoder) = opus::new_decoder() else {
             let _ = log.send("remote decoder could not be created".to_owned());
             return;
         };
@@ -268,7 +268,7 @@ fn spawn_track_reader(
         while let Some(event) = track.poll().await {
             match event {
                 TrackRemoteEvent::OnRtpPacket(packet) => {
-                    let decoded = decoder.decode(&packet.payload, &mut buffer, false);
+                    let decoded = decoder.decode_i16(&packet.payload, &mut buffer, false);
                     let mut sink = sink.lock().expect("remote audio lock");
                     sink.packets += 1;
                     match decoded {
@@ -327,7 +327,7 @@ async fn send_pcm(
     track: &TrackLocalStaticSample,
     ssrc: u32,
     payload_type: PayloadType,
-    encoder: &mut opus2::Encoder,
+    encoder: &mut voicebro_core::audio::codec::VoiceEncoder,
     pcm: &[i16],
 ) -> anyhow::Result<usize> {
     let mut packet = vec![0u8; 4000];
@@ -344,7 +344,9 @@ async fn send_pcm(
             padded.resize(FRAME_SAMPLES, 0);
             &padded
         };
-        let written = encoder.encode(frame, &mut packet).context("opus encode")?;
+        let written = encoder
+            .encode_i16(frame, &mut packet)
+            .context("opus encode")?;
         track
             .sample_writer(ssrc, payload_type)
             .write_sample(&Sample {
@@ -370,12 +372,13 @@ fn drain_log(log: &mut mpsc::UnboundedReceiver<String>, details: &mut Vec<String
 // Loopback: two peers in one process
 // ---------------------------------------------------------------------------------------
 
-pub fn loopback(_args: &[String]) -> anyhow::Result<Outcome> {
+pub fn loopback(args: &[String]) -> anyhow::Result<Outcome> {
+    let codec = opus::use_codec_from(args)?;
     let tokio_runtime = tokio::runtime::Runtime::new()?;
     tokio_runtime.block_on(async {
         let runtime = default_runtime().ok_or_else(|| anyhow!("no webrtc runtime"))?;
         let (log_tx, mut log) = mpsc::unbounded_channel();
-        let mut details = Vec::new();
+        let mut details = vec![format!("codec: {}", codec.label())];
 
         let mut offerer = build_peer("A", runtime.clone(), None, log_tx.clone()).await?;
         let mut answerer = build_peer("B", runtime.clone(), None, log_tx.clone()).await?;
@@ -581,7 +584,9 @@ fn words_of(text: &str) -> Vec<String> {
 type Verdict = dyn Fn(Option<&str>) -> (bool, String);
 
 pub fn call(args: &[String]) -> anyhow::Result<Outcome> {
-    let usage = || anyhow!("usage: probe rtc-call <in.wav> <out.wav>");
+    opus::use_codec_from(args)?;
+    let args = crate::without_codec_arg(args);
+    let usage = || anyhow!("usage: probe rtc-call <in.wav> <out.wav> [--codec <name>]");
     let input = args.first().ok_or_else(usage)?.clone();
     let output = args.get(1).ok_or_else(usage)?.clone();
     run_call(&input, &output, INSTRUCTIONS, &|text| {

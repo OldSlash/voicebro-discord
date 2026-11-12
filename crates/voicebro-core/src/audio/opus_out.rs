@@ -9,6 +9,10 @@
 //! unchanged (passthrough) when the track is the only one playing; [`DeliveryShared`]
 //! counts how often it decoded them instead, which means it refused passthrough.
 
+use crate::audio::codec::{
+    Application, Channels, CodecFailures, CodecPath, EncoderParams, FailureSpell, OpusCodec,
+    VoiceEncoder,
+};
 use crate::audio::output::PcmSource;
 use crate::audio::FRAME_SAMPLES;
 use songbird::input::codecs::{get_codec_registry, get_probe};
@@ -156,25 +160,47 @@ fn forgetting(packets: u64) -> f64 {
     LOSS_FORGETTING_PER_PACKET.powf(packets as f64)
 }
 
-/// The encoder toward Discord: 48 kHz stereo, VOIP, in-band FEC, the expected loss set from
-/// the measurement.
+/// The encoder's parameters toward Discord: 48 kHz stereo, VOIP, 128 kbit/s, complexity
+/// 10, in-band FEC sized for `expected_loss`.
+pub fn discord_params(expected_loss: u8) -> EncoderParams {
+    EncoderParams {
+        channels: Channels::Stereo,
+        application: Application::Voip,
+        bitrate: BITRATE,
+        complexity: COMPLEXITY,
+        inband_fec: true,
+        loss_percent: expected_loss,
+    }
+}
+
+/// The encoder toward Discord ([`discord_params`]) of the codec selected at the join, the
+/// expected loss set from the measurement.
 pub struct DiscordEncoder {
-    encoder: Option<opus2::Encoder>,
+    encoder: Option<VoiceEncoder>,
     out: Vec<u8>,
     expected_loss: u8,
     /// One 20 ms packet of silence, encoded at the start, sent when encoding fails.
     silence: Vec<u8>,
+    spell: FailureSpell,
+    /// Where a panic of the codec is reported (the join's; none in tests).
+    failures: CodecFailures,
 }
 
 impl DiscordEncoder {
-    pub fn new(expected_loss: u8) -> Self {
-        let mut encoder = new_encoder(expected_loss);
+    pub fn new(codec: OpusCodec, expected_loss: u8) -> Self {
+        let mut encoder = match VoiceEncoder::new(codec, discord_params(expected_loss)) {
+            Ok(encoder) => Some(encoder),
+            Err(error) => {
+                log::error!("[delivery] {error}");
+                None
+            }
+        };
         let mut out = vec![0u8; MAX_PACKET_BYTES];
         let silence = encoder
             .as_mut()
             .and_then(|encoder| {
                 let zeros = [0f32; FRAME_SAMPLES];
-                encoder.encode_float(&zeros, &mut out).ok()
+                encoder.encode_f32(&zeros, &mut out).ok()
             })
             .and_then(|written| out.get(..written).map(<[u8]>::to_vec))
             // The Opus silence frame (TOC for 20 ms CELT, no data) if even that failed.
@@ -184,14 +210,27 @@ impl DiscordEncoder {
             out,
             expected_loss,
             silence,
+            spell: FailureSpell::default(),
+            failures: CodecFailures::none(),
         }
+    }
+
+    /// Reports a panic of the codec through `failures` (design D5).
+    pub fn with_failures(mut self, failures: CodecFailures) -> Self {
+        self.failures = failures;
+        self
+    }
+
+    /// The codec in use; `None` when its encoder could not be built.
+    pub fn codec(&self) -> Option<OpusCodec> {
+        self.encoder.as_ref().map(VoiceEncoder::codec)
     }
 
     pub fn set_expected_loss(&mut self, percent: u8) {
         if percent != self.expected_loss {
             self.expected_loss = percent;
             if let Some(encoder) = self.encoder.as_mut() {
-                let _ = encoder.set_packet_loss_perc(i32::from(percent));
+                let _ = encoder.set_loss_percent(percent);
             }
         }
     }
@@ -200,40 +239,61 @@ impl DiscordEncoder {
         self.expected_loss
     }
 
-    /// Encodes one 20 ms frame of f32 stereo; `None` when the encoder fails.
+    /// Encodes one 20 ms frame of f32 stereo; `None` when the encoder fails (the failure
+    /// is logged once per spell).
     pub fn encode(&mut self, pcm: &[f32]) -> Option<&[u8]> {
         let encoder = self.encoder.as_mut()?;
-        let written = encoder.encode_float(pcm, &mut self.out).ok()?;
-        self.out.get(..written)
+        match encoder.encode_f32(pcm, &mut self.out) {
+            Ok(written) => {
+                self.spell.succeeded("delivery");
+                self.out.get(..written)
+            }
+            Err(error) => {
+                self.spell.failed("delivery", &error);
+                self.failures.report(CodecPath::DiscordOut, &error);
+                None
+            }
+        }
     }
 
     /// The silence packet sent in place of a frame that could not be encoded.
     pub fn silence(&self) -> &[u8] {
         &self.silence
     }
+
+    /// Makes the codec panic on the next frame (pure-Rust codecs only).
+    #[cfg(test)]
+    fn panic_next_for_test(&mut self) {
+        if let Some(encoder) = self.encoder.as_mut() {
+            encoder.panic_next_for_test();
+        }
+    }
 }
 
-fn new_encoder(expected_loss: u8) -> Option<opus2::Encoder> {
-    let mut encoder =
-        opus2::Encoder::new(48_000, opus2::Channels::Stereo, opus2::Application::Voip).ok()?;
-    encoder.set_bitrate(opus2::Bitrate::Bits(BITRATE)).ok()?;
-    encoder.set_complexity(COMPLEXITY).ok()?;
-    encoder.set_inband_fec(true).ok()?;
-    encoder
-        .set_packet_loss_perc(i32::from(expected_loss))
-        .ok()?;
-    Some(encoder)
+/// Builds the songbird input that plays `source` as Opus packets encoded by the app with
+/// `codec`. Gives `source` back when songbird cannot describe an Opus track (it always can;
+/// the probe is fixed), so the caller can fall back to songbird's PCM path. A codec panic is
+/// reported nowhere; a join uses [`live_input_reporting`].
+pub fn live_input(
+    source: PcmSource,
+    shared: Arc<DeliveryShared>,
+    codec: OpusCodec,
+) -> Result<Input, PcmSource> {
+    live_input_reporting(source, shared, codec, CodecFailures::none())
 }
 
-/// Builds the songbird input that plays `source` as Opus packets encoded by the app.
-/// Gives `source` back when songbird cannot describe an Opus track (it always can; the
-/// probe is fixed), so the caller can fall back to songbird's PCM path.
-pub fn live_input(source: PcmSource, shared: Arc<DeliveryShared>) -> Result<Input, PcmSource> {
+/// [`live_input`] whose encoder reports a codec panic through `failures`.
+pub fn live_input_reporting(
+    source: PcmSource,
+    shared: Arc<DeliveryShared>,
+    codec: OpusCodec,
+    failures: CodecFailures,
+) -> Result<Input, PcmSource> {
     let Some((track, metadata, decoder)) = opus_track() else {
         return Err(source);
     };
     let track_id = track.id;
-    let format = OpusOutput::new(source, track, Arc::clone(&shared));
+    let format = OpusOutput::new(source, track, Arc::clone(&shared), codec, failures);
     Ok(Input::Live(
         LiveInput::Parsed(Parsed {
             format: Box::new(format),
@@ -300,11 +360,17 @@ struct OpusOutput {
 }
 
 impl OpusOutput {
-    fn new(source: PcmSource, track: Track, shared: Arc<DeliveryShared>) -> Self {
+    fn new(
+        source: PcmSource,
+        track: Track,
+        shared: Arc<DeliveryShared>,
+        codec: OpusCodec,
+        failures: CodecFailures,
+    ) -> Self {
         let (expected, _) = shared.expected_loss_now();
         Self {
             source,
-            encoder: Mutex::new(DiscordEncoder::new(expected)),
+            encoder: Mutex::new(DiscordEncoder::new(codec, expected).with_failures(failures)),
             track,
             shared,
             pcm: vec![0.0; FRAME_SAMPLES],
@@ -493,8 +559,15 @@ mod tests {
 
     #[test]
     fn a_lost_packet_is_rebuilt_from_the_next_ones_fec() {
+        for codec in OpusCodec::ALL {
+            a_lost_packet_is_rebuilt_from_the_next_ones_fec_with(codec);
+        }
+    }
+
+    /// Encoded by `codec`, decoded by libopus as a listener's client does.
+    fn a_lost_packet_is_rebuilt_from_the_next_ones_fec_with(codec: OpusCodec) {
         let pcm = speech_like(60);
-        let mut encoder = DiscordEncoder::new(DEFAULT_EXPECTED_LOSS);
+        let mut encoder = DiscordEncoder::new(codec, DEFAULT_EXPECTED_LOSS);
         let packets: Vec<Vec<u8>> = pcm
             .as_chunks::<FRAME_SAMPLES>()
             .0
@@ -531,16 +604,22 @@ mod tests {
         let concealed = error_energy(&rebuilt(false), &reference);
         let gain_db = 10.0 * (concealed / with_fec.max(1.0)).log10();
         eprintln!(
-            "bitrate {BITRATE}: {average} bytes per packet; lost frame error: FEC {with_fec:.3e}, concealment {concealed:.3e}, FEC better by {gain_db:.1} dB"
+            "{codec}, bitrate {BITRATE}: {average} bytes per packet; lost frame error: FEC {with_fec:.3e}, concealment {concealed:.3e}, FEC better by {gain_db:.1} dB"
         );
         assert!(
             gain_db >= 6.0,
-            "FEC rebuilds the frame far better than concealment"
+            "{codec}: FEC rebuilds the frame far better than concealment"
         );
     }
 
     #[test]
     fn the_output_plays_as_opus_packets_songbird_can_pass_through() {
+        for codec in OpusCodec::ALL {
+            the_output_plays_as_opus_packets_with(codec);
+        }
+    }
+
+    fn the_output_plays_as_opus_packets_with(codec: OpusCodec) {
         let (handle, source) = output_pair();
         let pcm = speech_like(40);
         let frames: Vec<Frame> = pcm
@@ -554,7 +633,7 @@ mod tests {
             .collect();
         let shared = Arc::new(DeliveryShared::default());
         let Ok(Input::Live(LiveInput::Parsed(mut parsed), _)) =
-            live_input(source, Arc::clone(&shared))
+            live_input(source, Arc::clone(&shared), codec)
         else {
             panic!("a parsed live input");
         };
@@ -623,25 +702,34 @@ mod tests {
         let correlation = covariance / (spread(&source_levels, ms) * spread(&decoded_levels, md));
         let level_db = 20.0 * (md / ms).log10();
         eprintln!(
-            "decoded against the source: lag {lag} samples, waveform SNR {snr:.1} dB, loudness correlation {correlation:.3}, level {level_db:+.1} dB"
+            "{codec} decoded by libopus against the source: lag {lag} samples, waveform SNR {snr:.1} dB, loudness correlation {correlation:.3}, level {level_db:+.1} dB"
         );
-        assert!(correlation >= 0.95, "the packets carry the output's sound");
-        assert!(level_db.abs() <= 1.5, "at the output's level");
+        assert!(
+            correlation >= 0.95,
+            "{codec}: the packets carry the output's sound"
+        );
+        assert!(level_db.abs() <= 1.5, "{codec}: at the output's level");
     }
 
     #[test]
     fn songbird_reads_byte_for_byte_what_the_encoder_made() {
+        for codec in OpusCodec::ALL {
+            songbird_reads_byte_for_byte_with(codec);
+        }
+    }
+
+    fn songbird_reads_byte_for_byte_with(codec: OpusCodec) {
         // Two outputs fed the same frames: one read through songbird's parsed input, the
         // other filled and encoded by hand with an encoder of the same settings.
         let (handle, source) = output_pair();
         let (twin_handle, mut twin) = output_pair();
         let shared = Arc::new(DeliveryShared::default());
         let Ok(Input::Live(LiveInput::Parsed(mut parsed), _)) =
-            live_input(source, Arc::clone(&shared))
+            live_input(source, Arc::clone(&shared), codec)
         else {
             panic!("a parsed live input");
         };
-        let mut encoder = DiscordEncoder::new(DEFAULT_EXPECTED_LOSS);
+        let mut encoder = DiscordEncoder::new(codec, DEFAULT_EXPECTED_LOSS);
         let mut pcm = vec![0.0f32; FRAME_SAMPLES];
         let voice = speech_like(30);
         for chunk in voice.as_chunks::<FRAME_SAMPLES>().0 {
@@ -650,7 +738,11 @@ mod tests {
             twin_handle.push(Frame::from_slice(&samples));
             let packet = parsed.format.next_packet().expect("a packet");
             assert!(twin.fill_frame(&mut pcm));
-            assert_eq!(packet.buf(), encoder.encode(&pcm).expect("encodes"));
+            assert_eq!(
+                packet.buf(),
+                encoder.encode(&pcm).expect("encodes"),
+                "{codec}"
+            );
         }
         handle.close();
         assert!(
@@ -684,11 +776,14 @@ mod tests {
             (mean, p99, costs[costs.len() - 1])
         };
 
-        // Ours: songbird's `next_packet` = PCM fill + Opus VOIP with FEC.
+        // Ours: songbird's `next_packet` = PCM fill + Opus VOIP with FEC, by the codec of
+        // `VOICEBRO_OPUS_CODEC` (libopus when unset).
+        let codec = OpusCodec::from_env().expect("VOICEBRO_OPUS_CODEC");
+        eprintln!("codec: {}", codec.label());
         let (handle, source) = output_pair();
         let shared = Arc::new(DeliveryShared::default());
         let Ok(Input::Live(LiveInput::Parsed(mut parsed), _)) =
-            live_input(source, Arc::clone(&shared))
+            live_input(source, Arc::clone(&shared), codec)
         else {
             panic!("a parsed live input");
         };
@@ -742,18 +837,51 @@ mod tests {
 
     #[test]
     fn a_frame_that_cannot_be_encoded_becomes_counted_silence() {
-        let mut encoder = DiscordEncoder::new(DEFAULT_EXPECTED_LOSS);
-        assert_eq!(
-            opus2::packet::get_nb_samples(encoder.silence(), 48_000).unwrap(),
-            FRAME,
-            "the silence packet is 20 ms"
-        );
+        for codec in OpusCodec::ALL {
+            let mut encoder = DiscordEncoder::new(codec, DEFAULT_EXPECTED_LOSS);
+            assert_eq!(encoder.codec(), Some(codec));
+            assert_eq!(
+                opus2::packet::get_nb_samples(encoder.silence(), 48_000).unwrap(),
+                FRAME,
+                "{codec}: the silence packet is 20 ms"
+            );
+            let shared = DeliveryShared::default();
+            // Seven samples are not a frame: the encoder refuses them.
+            let packet = encode_packet(&mut encoder, &[0.0; 7], &shared, 1, 0);
+            assert_eq!(packet.buf(), encoder.silence(), "{codec}");
+            assert_eq!(shared.encode_errors.load(Ordering::Relaxed), 1, "{codec}");
+            assert_eq!(shared.packets_encoded.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[test]
+    fn a_codec_panic_sends_counted_silence_reports_once_and_the_next_frame_is_encoded() {
+        let voice = speech_like(3);
+        let frames: Vec<&[f32]> = voice.chunks(FRAME_SAMPLES).collect();
+        let codec = OpusCodec::OpusRs;
+        let (hub, mut reports) = crate::audio::codec::CodecFailureHub::new();
+        let mut encoder =
+            DiscordEncoder::new(codec, DEFAULT_EXPECTED_LOSS).with_failures(hub.for_guild(5));
         let shared = DeliveryShared::default();
-        // Seven samples are not a frame: the encoder refuses them.
-        let packet = encode_packet(&mut encoder, &[0.0; 7], &shared, 1, 0);
-        assert_eq!(packet.buf(), encoder.silence());
-        assert_eq!(shared.encode_errors.load(Ordering::Relaxed), 1);
-        assert_eq!(shared.packets_encoded.load(Ordering::Relaxed), 1);
+        encoder.panic_next_for_test();
+        let packet = encode_packet(&mut encoder, frames[0], &shared, 1, 0);
+        assert_eq!(packet.buf(), encoder.silence(), "{codec}");
+        assert_eq!(shared.encode_errors.load(Ordering::Relaxed), 1, "{codec}");
+        let report = reports.try_recv().expect("one report");
+        assert_eq!(
+            (report.guild, report.path, report.codec),
+            (5, CodecPath::DiscordOut, codec)
+        );
+        let packet = encode_packet(&mut encoder, frames[1], &shared, 1, FRAME as u64);
+        assert_ne!(packet.buf(), encoder.silence(), "{codec}: a fresh encoder");
+        assert_eq!(shared.encode_errors.load(Ordering::Relaxed), 1, "{codec}");
+        encoder.panic_next_for_test();
+        let _ = encode_packet(&mut encoder, frames[2], &shared, 1, 2 * FRAME as u64);
+        assert!(
+            reports.try_recv().is_err(),
+            "a second panic of the join is not reported"
+        );
+        assert_eq!(shared.packets_encoded.load(Ordering::Relaxed), 3);
     }
 
     #[test]
@@ -761,7 +889,7 @@ mod tests {
         let (_handle, source) = output_pair();
         let shared = Arc::new(DeliveryShared::default());
         let Ok(Input::Live(LiveInput::Parsed(mut parsed), _)) =
-            live_input(source, Arc::clone(&shared))
+            live_input(source, Arc::clone(&shared), OpusCodec::Libopus)
         else {
             panic!("a parsed live input");
         };

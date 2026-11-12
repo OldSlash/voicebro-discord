@@ -652,6 +652,35 @@
       appendLog(`open log folder failed: ${error}`);
     }
   });
+  // The codec failure notice: the bot left a voice channel because the Opus codec failed.
+  // One dialog collects every failure until OK closes it.
+  const failureDialog = $("codec-failure");
+  function showCodecFailure(failure) {
+    const item = document.createElement("li");
+    const codec = document.createElement("strong");
+    codec.textContent = failure.codec;
+    const message = document.createElement("span");
+    message.className = "failure-message";
+    message.textContent = `“${failure.message}”`;
+    item.append(
+      codec,
+      ` failed while ${failure.activity}: `,
+      message,
+      `. The bot left ${failure.channel_name} in ${failure.guild_name}.`,
+    );
+    $("codec-failure-items").append(item);
+    if (!failureDialog.open) failureDialog.showModal();
+  }
+  $("codec-failure-log").addEventListener("click", async () => {
+    try {
+      appendLog(`opened ${await invoke("open_log_folder")}`);
+    } catch (error) {
+      appendLog(`open log folder failed: ${error}`);
+    }
+  });
+  $("codec-failure-ok").addEventListener("click", () => failureDialog.close());
+  failureDialog.addEventListener("close", () => $("codec-failure-items").replaceChildren());
+
   async function loadChat() {
     if (!invoke) return;
     try {
@@ -1049,6 +1078,17 @@
     footer.className = `connection-state ${discord.state || "disconnected"}`;
     $("footer-guilds").textContent = String(discord.guild_count || 0);
     $("footer-voice").textContent = String(channels.length);
+
+    // The Opus codec of each join and call (Settings → Diagnostics); not a form field.
+    const unique = (labels) => [...new Set(labels.filter(Boolean))].join(", ");
+    const joinCodecs = unique(channels.map((channel) => channel.opus_codec));
+    const callCodecs = unique((assistant.calls || []).map((call) => call.opus_codec));
+    setText(
+      "opus-codec-in-use",
+      joinCodecs || callCodecs
+        ? `In use: Discord ${joinCodecs || "none"}; call ${callCodecs || "none"}.`
+        : "In use: none (the bot is in no voice channel).",
+    );
 
     // Status tab.
     renderGuilds(discord);
@@ -1615,6 +1655,10 @@
           case "codex_install":
             if (codexInstall) codexInstall.state = payload.state;
             if (payload.state?.kind === "finished" && payload.state.code === 0) justInstalled = true;
+            refresh();
+            break;
+          case "codec_failure":
+            showCodecFailure(payload);
             refresh();
             break;
           default:

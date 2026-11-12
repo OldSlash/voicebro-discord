@@ -9,11 +9,26 @@
 //! with Opus concealment for up to 60 ms (change `codex-adaptive-playout`).
 
 use super::playout::{DepthEstimator, Playout, FRAME as PLAYOUT_FRAME};
+use crate::audio::codec::{
+    Channels, CodecFailures, CodecPath, FailureSpell, OpusCodec, VoiceDecoder,
+};
 use crate::audio::{Frame, FrameProvider, FRAME_SAMPLES};
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::Instant;
+
+/// The codec a buffer built without one decodes with: libopus in the app (a call always
+/// names its codec), `VOICEBRO_OPUS_CODEC` in the tests and the replay stand.
+#[cfg(not(test))]
+fn default_codec() -> OpusCodec {
+    OpusCodec::Libopus
+}
+
+#[cfg(test)]
+fn default_codec() -> OpusCodec {
+    OpusCodec::from_env().expect("VOICEBRO_OPUS_CODEC")
+}
 
 /// Mono samples per 20 ms at 48 kHz.
 const MONO_FRAME: usize = FRAME_SAMPLES / 2;
@@ -65,7 +80,11 @@ struct Held {
 }
 
 struct State {
-    decoder: Option<opus2::Decoder>,
+    codec: OpusCodec,
+    decoder: Option<VoiceDecoder>,
+    spell: FailureSpell,
+    /// Where a panic of the decoder is reported (the join's; none in tests and the stand).
+    failures: CodecFailures,
     packets: BTreeMap<u64, Held>,
     highest: Option<u64>,
     next_seq: Option<u64>,
@@ -112,11 +131,27 @@ impl JitterBuffer {
     }
 
     /// A buffer whose depth starts from `estimator`: the prior, or what the previous call
-    /// learnt ([`Self::learned`]).
+    /// learnt ([`Self::learned`]). It decodes with libopus; the tests and the replay stand
+    /// take the codec from `VOICEBRO_OPUS_CODEC`.
     pub fn with_estimator(adaptive: bool, estimator: DepthEstimator) -> Self {
+        Self::with_codec(adaptive, estimator, default_codec())
+    }
+
+    /// [`Self::with_estimator`] decoding with `codec`.
+    pub fn with_codec(adaptive: bool, estimator: DepthEstimator, codec: OpusCodec) -> Self {
+        let decoder = match VoiceDecoder::new(codec, Channels::Mono) {
+            Ok(decoder) => Some(decoder),
+            Err(error) => {
+                log::error!("[rtc] {error}");
+                None
+            }
+        };
         Self {
             state: Mutex::new(State {
-                decoder: opus2::Decoder::new(48_000, opus2::Channels::Mono).ok(),
+                codec,
+                decoder,
+                spell: FailureSpell::default(),
+                failures: CodecFailures::none(),
                 packets: BTreeMap::new(),
                 highest: None,
                 next_seq: None,
@@ -132,6 +167,20 @@ impl JitterBuffer {
                 playout: Playout::with_estimator(adaptive, estimator),
                 counters: JitterCounters::default(),
             }),
+        }
+    }
+
+    /// Reports a panic of the decoder through `failures` (design D5).
+    pub fn reporting(self, failures: CodecFailures) -> Self {
+        self.lock().failures = failures;
+        self
+    }
+
+    /// Makes the decoder panic on its next call (opus-rs only).
+    #[cfg(test)]
+    pub(crate) fn panic_next_decode_for_test(&self) {
+        if let Some(decoder) = self.lock().decoder.as_mut() {
+            decoder.panic_next_for_test();
         }
     }
 
@@ -225,20 +274,23 @@ impl State {
         let Some(output) = self.scratch.get_mut(..wanted) else {
             return;
         };
-        let count = match decoder.decode(payload, output, fec) {
+        let count = match decoder.decode_i16(payload, output, fec) {
             Ok(count) => {
+                self.spell.succeeded("rtc");
                 if !fec && !payload.is_empty() {
                     self.last_duration = count.clamp(1, MAX_PACKET_SAMPLES);
                 }
                 count.min(wanted)
             }
-            Err(_) => {
+            Err(error) => {
+                self.spell.failed("rtc", &error);
+                self.failures.report(CodecPath::CallReceive, &error);
                 self.counters.decode_errors += 1;
                 let len = self.last_duration.clamp(1, MAX_PACKET_SAMPLES);
                 match self
                     .scratch
                     .get_mut(..len)
-                    .map(|out| decoder.decode(&[], out, false))
+                    .map(|out| decoder.decode_i16(&[], out, false))
                 {
                     Some(Ok(count)) => count.min(len),
                     _ => {
@@ -407,7 +459,7 @@ impl FrameProvider for JitterBuffer {
         state.bridged_run = 0;
         state.gap_pending = false;
         state.playout.reset();
-        state.decoder = opus2::Decoder::new(48_000, opus2::Channels::Mono).ok();
+        state.decoder = VoiceDecoder::new(state.codec, Channels::Mono).ok();
     }
 
     fn arrival(&self) -> Option<Instant> {
@@ -730,13 +782,14 @@ mod tests {
             .collect()
     }
 
-    /// Decodes `payloads` in order with a fresh decoder, as stereo frames of 20 ms.
+    /// Decodes `payloads` in order with a fresh decoder of the buffers' codec
+    /// (`VOICEBRO_OPUS_CODEC`), as stereo frames of 20 ms.
     fn reference(payloads: &[Bytes]) -> Vec<i16> {
-        let mut decoder = opus2::Decoder::new(48_000, opus2::Channels::Mono).unwrap();
+        let mut decoder = VoiceDecoder::new(default_codec(), Channels::Mono).unwrap();
         let mut buffer = vec![0i16; MAX_PACKET_SAMPLES];
         let mut mono = Vec::new();
         for payload in payloads {
-            let count = decoder.decode(payload, &mut buffer, false).unwrap();
+            let count = decoder.decode_i16(payload, &mut buffer, false).unwrap();
             mono.extend_from_slice(&buffer[..count]);
         }
         mono
@@ -782,6 +835,28 @@ mod tests {
             "decoded as 10, 11, 12, 13"
         );
         assert_eq!(buffer.counters().concealed, 0);
+    }
+
+    #[test]
+    fn a_decoder_panic_conceals_the_frame_and_is_reported_once() {
+        let (hub, mut reports) = crate::audio::codec::CodecFailureHub::new();
+        let buffer = JitterBuffer::with_codec(false, DepthEstimator::new(), OpusCodec::OpusRs)
+            .reporting(hub.for_guild(11));
+        let payloads = packets(4, MONO_FRAME);
+        for seq in 0..4u16 {
+            insert(&buffer, &payloads, seq, MONO_FRAME);
+        }
+        buffer.panic_next_decode_for_test();
+        let played = pull_all(&buffer);
+        assert_eq!(
+            played.len(),
+            4 * MONO_FRAME,
+            "every frame plays, the failed one concealed"
+        );
+        assert_eq!(buffer.counters().decode_errors, 1);
+        let report = reports.try_recv().expect("the panic is reported");
+        assert_eq!((report.guild, report.path), (11, CodecPath::CallReceive));
+        assert!(reports.try_recv().is_err(), "once");
     }
 
     #[test]

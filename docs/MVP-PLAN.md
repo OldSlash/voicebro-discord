@@ -93,7 +93,9 @@ Check at skeleton time that `rust-version` in the manifests matches what the loc
 
 ### Release profile
 
-`opt-level = 3`, `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`, `panic = "abort"`.
+`opt-level = 3`, `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`, `panic = "abort"`
+(since change `opus-codec-experiment`, `panic = "unwind"` with a panic hook that still ends
+the app on any panic outside the Opus codec; `docs/ARCHITECTURE.md` section 8).
 `opt-level = "z"` would save size, but the hot paths (FIR resamplers, mixing, Opus) matter
 more than a few megabytes next to a 45 MB model and a 350 MB Codex binary. The
 real-channel phase compares CPU on the receive path between `3` and `z` once, and the result

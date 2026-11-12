@@ -791,6 +791,7 @@ mod tests {
                 AudioPorts {
                     input: idle,
                     output: output.clone(),
+                    failures: crate::audio::codec::CodecFailures::none(),
                 },
             )
             .unwrap();
@@ -1210,14 +1211,22 @@ mod tests {
     /// The receive-path cost per 20 ms tick with four speakers: mixing, the gate, the
     /// wake downsampler per speaker and the Opus encode of the downmix. Runs only with
     /// `VOICEBRO_BENCH=1`; the number decides the release profile (`cargo test --release`
-    /// with `CARGO_PROFILE_RELEASE_OPT_LEVEL` set to 3 and to z).
+    /// with `CARGO_PROFILE_RELEASE_OPT_LEVEL` set to 3 and to z). The codec of
+    /// `VOICEBRO_OPUS_CODEC` (libopus when unset) encodes toward the call, decodes the
+    /// playout, and, in a second line, decodes the four speakers as the app does with a
+    /// pure-Rust codec (change `opus-codec-experiment`).
     #[test]
     fn receive_path_cost_when_enabled() {
         if std::env::var("VOICEBRO_BENCH").ok().as_deref() != Some("1") {
             return;
         }
+        use crate::audio::codec::{
+            test_signal::Speechlike, Application, Channels, EncoderParams, OpusCodec, VoiceEncoder,
+        };
         use crate::audio::dsp::StereoDownsampler;
         use crate::audio::frame::mix_into;
+        let codec = OpusCodec::from_env().expect("VOICEBRO_OPUS_CODEC");
+        eprintln!("codec: {}", codec.label());
         let rig = rig(SessionMode::Always, None, Duration::ZERO);
         let speakers: Vec<Frame> = (0..4)
             .map(|index| {
@@ -1231,7 +1240,7 @@ mod tests {
             (0..4).map(|_| StereoDownsampler::new(3)).collect();
         // The call's encoder settings, and one jitter-buffer decode per tick for the
         // assistant's voice on the playout side.
-        let mut encoder = crate::assistant::codex::rtc::new_encoder().unwrap();
+        let mut encoder = crate::assistant::codex::rtc::new_encoder(codec).unwrap();
         let jitter = crate::assistant::codex::jitter::JitterBuffer::new();
         let mut played = Frame::silence();
         let mut to_mono = StereoDownsampler::new(1);
@@ -1254,7 +1263,7 @@ mod tests {
                 let _ = downsampler.process(block);
             }
             let mono = to_mono.process(mixed.as_slice());
-            let written = encoder.encode(&mono, &mut packet).unwrap();
+            let written = encoder.encode_i16(&mono, &mut packet).unwrap();
             jitter.insert(
                 tick as u16,
                 (tick as u32).wrapping_mul(960),
@@ -1265,6 +1274,57 @@ mod tests {
         let per_tick = started.elapsed().as_secs_f64() * 1e6 / ticks as f64;
         eprintln!(
             "receive path with 4 speakers plus one playout decode: {per_tick:.1} us per 20 ms tick"
+        );
+
+        // The four speakers decoded by the app: Discord clients' packets (libopus, stereo
+        // VOIP at 64 kbit/s with FEC), one decoder per speaker, as with a pure-Rust codec.
+        let streams: Vec<Vec<Vec<u8>>> = (0..4u64)
+            .map(|seed| {
+                let mut client = VoiceEncoder::new(
+                    OpusCodec::Libopus,
+                    EncoderParams {
+                        channels: Channels::Stereo,
+                        application: Application::Voip,
+                        bitrate: 64_000,
+                        complexity: 10,
+                        inband_fec: true,
+                        loss_percent: 10,
+                    },
+                )
+                .unwrap();
+                let mut signal = Speechlike::new(seed + 1);
+                let mut out = vec![0u8; 4_000];
+                (0..250)
+                    .map(|_| {
+                        let written = client.encode_f32(&signal.stereo_frame(), &mut out).unwrap();
+                        out[..written].to_vec()
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut decoders = crate::discord::speaker_decode::SpeakerDecoders::new(
+            codec,
+            crate::audio::codec::CodecFailures::none(),
+        );
+        let mut costs = Vec::with_capacity(ticks);
+        for tick in 0..ticks {
+            let began = std::time::Instant::now();
+            decoders.begin_tick();
+            for (ssrc, stream) in streams.iter().enumerate() {
+                let packet = &stream[tick % stream.len()];
+                decoders
+                    .decode(ssrc as u32, Some((tick as u16, packet)))
+                    .unwrap();
+            }
+            costs.push(began.elapsed().as_secs_f64() * 1e6);
+            std::hint::black_box(decoders.frame(0));
+        }
+        costs.sort_by(f64::total_cmp);
+        let mean = costs.iter().sum::<f64>() / costs.len() as f64;
+        eprintln!(
+            "decoding 4 speakers in the app: mean {mean:.1} us, p99 {:.1} us, max {:.1} us per 20 ms tick",
+            costs[(costs.len() - 1) * 99 / 100],
+            costs[costs.len() - 1]
         );
     }
 }

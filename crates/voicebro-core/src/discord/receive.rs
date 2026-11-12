@@ -1,7 +1,11 @@
-//! The receive path: every 20 ms songbird hands over the decoded audio of each speaker; this
-//! mixes it in `i32`, clamps once, and gives the mix and the per-speaker frames to the host.
+//! The receive path: every 20 ms songbird hands over each speaker's audio, decoded by
+//! songbird (libopus) or, with a pure-Rust codec selected at the join, as decrypted packets
+//! the app decodes itself ([`super::speaker_decode`]); this mixes it in `i32`, clamps once,
+//! and gives the mix and the per-speaker frames to the host.
 
+use super::speaker_decode::{opus_payload, SpeakerDecoders};
 use super::{Shared, SpeakerDirectory};
+use crate::audio::codec::{CodecFailures, OpusCodec};
 use crate::audio::{frame::mix_into, Frame, FRAME_SAMPLES};
 use serenity::all::GuildId;
 use serenity::async_trait;
@@ -23,13 +27,18 @@ pub(crate) struct ReceiveHandler {
     scratch: Mutex<Scratch>,
     /// Audio sources the "only person in the channel" fallback was tried for.
     fallback_tried: Mutex<HashSet<u32>>,
+    /// The speakers' decoders when the app decodes them itself (songbird in `Decrypt`).
+    decoders: Option<Mutex<SpeakerDecoders>>,
 }
 
 impl ReceiveHandler {
+    /// `own_decoding` is the codec the app decodes the speakers with and where a panic of it
+    /// is reported; `None` when songbird decodes them.
     pub(crate) fn new(
         shared: Arc<Shared>,
         guild: GuildId,
         directory: Arc<SpeakerDirectory>,
+        own_decoding: Option<(OpusCodec, CodecFailures)>,
     ) -> Self {
         Self {
             shared,
@@ -40,6 +49,8 @@ impl ReceiveHandler {
                 mixed: Frame::silence(),
             }),
             fallback_tried: Mutex::new(HashSet::new()),
+            decoders: own_decoding
+                .map(|(codec, failures)| Mutex::new(SpeakerDecoders::new(codec, failures))),
         }
     }
 
@@ -84,9 +95,30 @@ impl VoiceEventHandler for ReceiveHandler {
         match ctx {
             EventContext::VoiceTick(tick) => {
                 self.shared.ticks.fetch_add(1, Ordering::Relaxed);
+                let mut own = self
+                    .decoders
+                    .as_ref()
+                    .map(|decoders| decoders.lock().expect("speaker decoders lock"));
+                if let Some(decoders) = own.as_mut() {
+                    decoders.begin_tick();
+                    for (ssrc, data) in &tick.speaking {
+                        let packet = data.packet.as_ref().and_then(|rtp| {
+                            let sequence: u16 = rtp.rtp().get_sequence().into();
+                            opus_payload(&rtp.packet, rtp.payload_offset, rtp.payload_end_pad)
+                                .map(|payload| (sequence, payload))
+                        });
+                        if decoders.decode(*ssrc, packet).is_err() {
+                            self.shared.decode_errors.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
                 let mut speakers: Vec<(u32, &[i16])> = Vec::with_capacity(tick.speaking.len());
                 for (ssrc, data) in &tick.speaking {
-                    let Some(pcm) = data.decoded_voice.as_deref() else {
+                    let pcm = match own.as_ref() {
+                        Some(decoders) => decoders.frame(*ssrc),
+                        None => data.decoded_voice.as_deref(),
+                    };
+                    let Some(pcm) = pcm else {
                         continue;
                     };
                     if pcm.len() != FRAME_SAMPLES {

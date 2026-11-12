@@ -43,6 +43,20 @@ pub enum AppEvent {
         percent: u8,
         error: Option<String>,
     },
+    /// The bot left a voice channel because the Opus codec panicked (change
+    /// `opus-codec-experiment`): the window's notice.
+    CodecFailure {
+        guild_name: String,
+        channel_name: String,
+        /// `discord-out`, `receive`, `call-send` or `call-receive`.
+        path: String,
+        /// What the codec was doing, for the user.
+        activity: String,
+        /// Name and version, as `opus-rs 0.1.42`.
+        codec: String,
+        /// The panic's message.
+        message: String,
+    },
 }
 
 #[derive(Clone)]

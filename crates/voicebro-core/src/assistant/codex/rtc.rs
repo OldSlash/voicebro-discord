@@ -7,6 +7,10 @@
 use super::jitter::JitterBuffer;
 use super::pacing::{Pick, SendPacer};
 use super::playout::DepthEstimator;
+use crate::audio::codec::{
+    Application, Channels, CodecError, CodecFailures, CodecPath, EncoderParams, FailureSpell,
+    OpusCodec, VoiceEncoder,
+};
 use crate::audio::dsp::StereoDownsampler;
 use crate::audio::{AudioPorts, Frame, FrameProvider, FrameReceiver, OutputHandle};
 use bytes::Bytes;
@@ -44,12 +48,14 @@ const GATHER_TIMEOUT: Duration = Duration::from_secs(2);
 /// Encoder settings toward the call (design D4).
 const ENCODER_COMPLEXITY: i32 = 10;
 const ENCODER_BITRATE: i32 = 32_000;
-const ENCODER_EXPECTED_LOSS: i32 = 5;
+const ENCODER_EXPECTED_LOSS: u8 = 5;
 
 /// One call's audio counters, both directions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CallAudioCounters {
     pub frames_sent: u64,
+    /// Frames the codec failed on, sent as silence packets.
+    pub encode_errors: u64,
     /// Frames dropped before the send thread took them (more than 100 ms waiting).
     pub input_drops: u64,
     /// Ticks that sent silence because no frame was waiting, after audio had started.
@@ -81,8 +87,9 @@ impl CallAudioCounters {
     /// The one log line written when a call ends.
     pub fn log_line(&self, guild: u64) -> String {
         format!(
-            "call audio for guild {guild}: frames sent {}, input drops {}, input underruns {}, packets received {}, late {}, concealed {} (FEC {}), playout underruns {}, output drops {}, decode errors {}, stretched pause {} ms, stretched speech {} ms, removed {} ms, bridged frames {}, speech gaps {}, depth {} ms (max {} ms)",
+            "call audio for guild {guild}: frames sent {}, encode errors {}, input drops {}, input underruns {}, packets received {}, late {}, concealed {} (FEC {}), playout underruns {}, output drops {}, decode errors {}, stretched pause {} ms, stretched speech {} ms, removed {} ms, bridged frames {}, speech gaps {}, depth {} ms (max {} ms)",
             self.frames_sent,
+            self.encode_errors,
             self.input_drops,
             self.input_underruns,
             self.packets_received,
@@ -184,6 +191,8 @@ impl CallReport {
 /// One call: the peer connection, its outgoing track and the data channel.
 pub struct RtcCall {
     report: CallReport,
+    /// The Opus codec of this call (`diagnostics.opus_codec` when it opened).
+    codec: OpusCodec,
     pc: Arc<dyn PeerConnection>,
     track: Arc<TrackLocalStaticSample>,
     ssrc: u32,
@@ -196,23 +205,28 @@ pub struct RtcCall {
     input: FrameReceiver,
     /// The input queue's drop count when the call opened; the queue outlives calls.
     input_drops_at_open: u64,
+    /// Where a panic of the call's codec is reported (the join's, from the ports).
+    failures: CodecFailures,
 }
 
 #[derive(Default)]
 struct Counters {
     frames_sent: AtomicU64,
     input_underruns: AtomicU64,
+    encode_errors: AtomicU64,
 }
 
 impl RtcCall {
     /// Builds the peer, the track and the `oai-events` channel, creates the offer and waits
     /// for ICE gathering (at most 2 s). Returns the call and the offer SDP. The send and
     /// receive paths start at once: audio from `ports.input` flows as soon as the peer is
-    /// connected, and remote audio goes to `ports.output`.
+    /// connected, and remote audio goes to `ports.output`. `codec` encodes the speech toward
+    /// the call and decodes the answer for the whole call.
     pub async fn open(
         handle: Handle,
         ports: AudioPorts,
         report: CallReport,
+        codec: OpusCodec,
     ) -> Result<(Arc<Self>, String), String> {
         let runtime = default_runtime().ok_or_else(|| "no WebRTC runtime".to_owned())?;
         let mut media_engine = MediaEngine::default();
@@ -245,7 +259,7 @@ impl RtcCall {
         let pc: Arc<dyn PeerConnection> = Arc::new(pc);
 
         let ssrc = rand::random::<u32>();
-        let codec = opus_codec();
+        let rtp_codec = opus_codec();
         let track = Arc::new(
             TrackLocalStaticSample::new(
                 Instant::now(),
@@ -259,7 +273,7 @@ impl RtcCall {
                             ssrc: Some(ssrc),
                             ..Default::default()
                         },
-                        codec: codec.rtp_codec.clone(),
+                        codec: rtp_codec.rtp_codec.clone(),
                         ..Default::default()
                     }],
                 ),
@@ -339,17 +353,21 @@ impl RtcCall {
             Some(estimator) => (estimator, "learnt in the previous call"),
             None => (DepthEstimator::with_prior(), "initial"),
         };
-        let jitter = Arc::new(JitterBuffer::with_estimator(true, estimator));
+        let jitter = Arc::new(
+            JitterBuffer::with_codec(true, estimator, codec).reporting(ports.failures.clone()),
+        );
         crate::detail!(
             "rtc",
             "[rtc] call opens with a voice buffer of {} ms ({start})",
             jitter.depth_ms()
         );
+        log::info!("[rtc] Opus codec for this call: {}", codec.label());
         ports
             .output
             .attach_provider(Arc::clone(&jitter) as Arc<dyn FrameProvider>);
         let call = Arc::new(Self {
             report,
+            codec,
             pc,
             track,
             ssrc,
@@ -361,6 +379,7 @@ impl RtcCall {
             output: ports.output.clone(),
             input: ports.input.clone(),
             input_drops_at_open: ports.input.dropped(),
+            failures: ports.failures.clone(),
         });
 
         // Receive path: every remote RTP packet goes into the jitter buffer, which the
@@ -463,10 +482,15 @@ impl RtcCall {
         self.state.clone()
     }
 
+    pub fn codec(&self) -> OpusCodec {
+        self.codec
+    }
+
     pub fn counters(&self) -> CallAudioCounters {
         let jitter = self.jitter.counters();
         CallAudioCounters {
             frames_sent: self.counters.frames_sent.load(Ordering::Relaxed),
+            encode_errors: self.counters.encode_errors.load(Ordering::Relaxed),
             input_drops: self
                 .input
                 .dropped()
@@ -509,29 +533,46 @@ impl RtcCall {
     }
 }
 
-/// The Opus encoder toward the call: mono VOIP with in-band FEC (design D4).
-pub(crate) fn new_encoder() -> Option<opus2::Encoder> {
-    let mut encoder =
-        opus2::Encoder::new(48_000, opus2::Channels::Mono, opus2::Application::Voip).ok()?;
-    let _ = encoder.set_complexity(ENCODER_COMPLEXITY);
-    let _ = encoder.set_bitrate(opus2::Bitrate::Bits(ENCODER_BITRATE));
-    let _ = encoder.set_inband_fec(true);
-    let _ = encoder.set_packet_loss_perc(ENCODER_EXPECTED_LOSS);
-    Some(encoder)
+/// The encoder's parameters toward the call: mono VOIP with in-band FEC (design D4).
+pub fn call_params() -> EncoderParams {
+    EncoderParams {
+        channels: Channels::Mono,
+        application: Application::Voip,
+        bitrate: ENCODER_BITRATE,
+        complexity: ENCODER_COMPLEXITY,
+        inband_fec: true,
+        loss_percent: ENCODER_EXPECTED_LOSS,
+    }
+}
+
+/// The Opus encoder toward the call, of `codec`.
+pub(crate) fn new_encoder(codec: OpusCodec) -> Result<VoiceEncoder, CodecError> {
+    VoiceEncoder::new(codec, call_params())
 }
 
 /// Sends one packet every 20 ms while connected: the oldest frame the gate passed, or
-/// silence when none waits (after a 40 ms prefill, see [`SendPacer`]). Runs until the call
-/// is closed.
+/// silence when none waits (after a 40 ms prefill, see [`SendPacer`]). A frame the codec
+/// fails on is sent as a silence packet and counted. Runs until the call is closed.
 fn send_loop(call: Arc<RtcCall>, input: FrameReceiver, packets: mpsc::UnboundedSender<Bytes>) {
-    let Some(mut encoder) = new_encoder() else {
-        log::error!("[rtc] could not create the Opus encoder");
-        return;
+    let mut encoder = match new_encoder(call.codec) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            log::error!("[rtc] {error}");
+            return;
+        }
     };
     let mut downsampler = StereoDownsampler::new(1);
     let mut pacer = SendPacer::new();
     let silence = Frame::silence();
     let mut packet = vec![0u8; 4000];
+    let silence_packet = encoder
+        .encode_i16(&[0; MONO_FRAME], &mut packet)
+        .ok()
+        .and_then(|written| packet.get(..written))
+        .map(Bytes::copy_from_slice)
+        // The Opus silence frame (TOC for 20 ms CELT, no data) if even that failed.
+        .unwrap_or_else(|| Bytes::from_static(&[0xf8, 0xff, 0xfe]));
+    let mut spell = FailureSpell::default();
     let mut next = Instant::now();
     while !call.is_closed() {
         next += FRAME;
@@ -549,13 +590,17 @@ fn send_loop(call: Arc<RtcCall>, input: FrameReceiver, packets: mpsc::UnboundedS
             };
             let mono = downsampler.process(frame.as_ref().unwrap_or(&silence).as_slice());
             debug_assert_eq!(mono.len(), MONO_FRAME);
-            if let Ok(written) = encoder.encode(&mono, &mut packet) {
-                if packets
-                    .send(Bytes::copy_from_slice(&packet[..written]))
-                    .is_err()
-                {
-                    break;
-                }
+            let bytes = encode_toward_call(
+                &mut encoder,
+                &mono,
+                &mut packet,
+                &silence_packet,
+                &mut spell,
+                &call.counters.encode_errors,
+                &call.failures,
+            );
+            if packets.send(bytes).is_err() {
+                break;
             }
         } else {
             // Not connected (yet or any more): drop what the gate sent so it does not
@@ -568,6 +613,32 @@ fn send_loop(call: Arc<RtcCall>, input: FrameReceiver, packets: mpsc::UnboundedS
             std::thread::sleep(next - now);
         } else if now - next > Duration::from_millis(200) {
             next = now;
+        }
+    }
+}
+
+/// One packet toward the call: `mono` encoded, or the silence packet when the codec fails
+/// (counted in `encode_errors`, logged once per spell, and a panic reported through
+/// `failures`).
+fn encode_toward_call(
+    encoder: &mut VoiceEncoder,
+    mono: &[i16],
+    packet: &mut [u8],
+    silence_packet: &Bytes,
+    spell: &mut FailureSpell,
+    encode_errors: &AtomicU64,
+    failures: &CodecFailures,
+) -> Bytes {
+    match encoder.encode_i16(mono, packet) {
+        Ok(written) => {
+            spell.succeeded("rtc");
+            Bytes::copy_from_slice(&packet[..written])
+        }
+        Err(error) => {
+            spell.failed("rtc", &error);
+            encode_errors.fetch_add(1, Ordering::Relaxed);
+            failures.report(CodecPath::CallSend, &error);
+            silence_packet.clone()
         }
     }
 }
@@ -605,9 +676,51 @@ mod tests {
     use std::io::Read;
 
     #[test]
+    fn an_encoder_panic_toward_the_call_sends_silence_and_is_reported_once() {
+        let (hub, mut reports) = crate::audio::codec::CodecFailureHub::new();
+        let failures = hub.for_guild(21);
+        let mut encoder = new_encoder(OpusCodec::OpusRs).unwrap();
+        let mut packet = vec![0u8; 4000];
+        let silence = Bytes::from_static(&[0xf8, 0xff, 0xfe]);
+        let mut spell = FailureSpell::default();
+        let errors = AtomicU64::new(0);
+        let voice = tone(MONO_FRAME * 3, 300.0);
+        let frames: Vec<&[i16]> = voice.chunks(MONO_FRAME).collect();
+        let mut send = |encoder: &mut VoiceEncoder, frame: &[i16]| {
+            encode_toward_call(
+                encoder,
+                frame,
+                &mut packet,
+                &silence,
+                &mut spell,
+                &errors,
+                &failures,
+            )
+        };
+        encoder.panic_next_for_test();
+        assert_eq!(
+            send(&mut encoder, frames[0]),
+            silence,
+            "silence for the failed frame"
+        );
+        assert_ne!(
+            send(&mut encoder, frames[1]),
+            silence,
+            "a fresh encoder after it"
+        );
+        encoder.panic_next_for_test();
+        let _ = send(&mut encoder, frames[2]);
+        assert_eq!(errors.load(Ordering::Relaxed), 2);
+        let report = reports.try_recv().expect("the panic is reported");
+        assert_eq!((report.guild, report.path), (21, CodecPath::CallSend));
+        assert!(reports.try_recv().is_err(), "once per join");
+    }
+
+    #[test]
     fn the_end_of_call_line_names_every_counter() {
         let counters = CallAudioCounters {
             frames_sent: 500,
+            encode_errors: 8,
             input_drops: 1,
             input_underruns: 2,
             packets_received: 480,
@@ -629,6 +742,7 @@ mod tests {
         for part in [
             "guild 42",
             "frames sent 500",
+            "encode errors 8",
             "input drops 1",
             "input underruns 2",
             "packets received 480",
@@ -702,12 +816,16 @@ mod tests {
     }
 
     /// Both directions through real peers on this machine, with a jittery producer on the
-    /// send side. Gated by `VOICEBRO_RTC_LOOPBACK=1` because it runs for about 12 s.
+    /// send side. Gated by `VOICEBRO_RTC_LOOPBACK=1` because it runs for about 12 s. Our side
+    /// runs the codec of `VOICEBRO_OPUS_CODEC` (libopus when unset); the far end, standing
+    /// in for the realtime server, is libopus.
     #[test]
     fn loopback_call_loses_nothing_when_enabled() {
         if std::env::var("VOICEBRO_RTC_LOOPBACK").ok().as_deref() != Some("1") {
             return;
         }
+        let codec = OpusCodec::from_env().expect("VOICEBRO_OPUS_CODEC");
+        eprintln!("codec: {}", codec.label());
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let handle = runtime.handle().clone();
         let (sender, input) = frame_channel(INPUT_CAPACITY);
@@ -715,6 +833,7 @@ mod tests {
         let ports = AudioPorts {
             input,
             output: output.clone(),
+            failures: CodecFailures::none(),
         };
         let report = CallReport::new(0);
         let seconds = 10usize;
@@ -723,7 +842,7 @@ mod tests {
 
         let (call, far_pc, far_track, far_ssrc, far_payload, mut far_tracks) =
             runtime.block_on(async {
-                let (call, offer) = RtcCall::open(handle.clone(), ports, report.clone())
+                let (call, offer) = RtcCall::open(handle.clone(), ports, report.clone(), codec)
                     .await
                     .unwrap();
                 let mut media_engine = MediaEngine::default();
@@ -825,12 +944,12 @@ mod tests {
         {
             let far_tone = far_tone.clone();
             runtime.spawn(async move {
-                let mut encoder = new_encoder().unwrap();
+                let mut encoder = new_encoder(OpusCodec::Libopus).unwrap();
                 let mut packet = vec![0u8; 4000];
                 let mut ticker = tokio::time::interval(FRAME);
                 for chunk in far_tone.chunks(MONO_FRAME) {
                     ticker.tick().await;
-                    let written = encoder.encode(chunk, &mut packet).unwrap();
+                    let written = encoder.encode_i16(chunk, &mut packet).unwrap();
                     let _ = far_track
                         .sample_writer(far_ssrc, far_payload)
                         .write_sample(&Sample {

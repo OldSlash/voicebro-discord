@@ -26,6 +26,9 @@ sha2 = "0.11"
 webrtc = "0.21"
 rtc = "0.21"
 opus2 = "0.4"
+# The pure-Rust Opus codec next to libopus (change `opus-codec-experiment`), selected by
+# `diagnostics.opus_codec`. Pinned: an update is a decision with its own comparison run.
+opus-rs = "=0.1.42"
 bytes = "1"
 async-trait = "0.1"
 rand = "0.9"

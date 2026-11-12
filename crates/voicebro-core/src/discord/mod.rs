@@ -11,8 +11,10 @@ mod handler;
 mod panel;
 mod receive;
 mod session;
+pub(crate) mod speaker_decode;
 mod speakers;
 
+use crate::audio::codec::{CodecFailures, OpusCodec};
 use crate::audio::{Frame, OutputCounters, OutputHandle};
 use crate::events::{AppEvent, EventBus};
 use serde::Serialize;
@@ -68,6 +70,8 @@ pub struct VoiceCounters {
     pub speaker_frames: u64,
     pub malformed_frames: u64,
     pub unnamed_sources: u64,
+    /// Speakers' frames the app's own decoder failed on and concealed (pure-Rust codecs).
+    pub decode_errors: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,6 +82,8 @@ pub struct VoiceChannelStatus {
     pub output: OutputCounters,
     /// The leg toward Discord: voice server, region, our encoder and Discord's reports.
     pub delivery: DeliveryCounters,
+    /// The Opus codec of this join, name and version (`diagnostics.opus_codec` at the join).
+    pub opus_codec: String,
 }
 
 /// A server the bot is in, as the Status tab lists it.
@@ -135,6 +141,15 @@ pub trait VoiceHost: Send + Sync {
     fn prepare_join(&self, _guild: u64) -> JoinPreparation<'_> {
         Box::pin(async { Ok(()) })
     }
+    /// The Opus codec for the next join (`diagnostics.opus_codec`).
+    fn opus_codec(&self) -> OpusCodec {
+        OpusCodec::default()
+    }
+    /// Where a join of `guild` reports a codec panic, asked once per join: the join starts
+    /// with nothing reported. Reports nowhere unless the host collects them.
+    fn codec_failures(&self, _guild: u64) -> CodecFailures {
+        CodecFailures::none()
+    }
     /// Every 20 ms while the bot is in a channel: the mix and each speaker's own frame.
     fn on_tick(&self, guild: u64, mixed: &Frame, speakers: &[(u32, &[i16])]);
     fn set_speaker_name(&self, guild: u64, ssrc: u32, name: &str);
@@ -164,6 +179,7 @@ pub(crate) struct Shared {
     pub(crate) speaker_frames: AtomicU64,
     pub(crate) malformed_frames: AtomicU64,
     pub(crate) unnamed_sources: AtomicU64,
+    pub(crate) decode_errors: AtomicU64,
 }
 
 impl Shared {
@@ -183,6 +199,7 @@ impl Shared {
             speaker_frames: self.speaker_frames.load(Ordering::Relaxed),
             malformed_frames: self.malformed_frames.load(Ordering::Relaxed),
             unnamed_sources: self.unnamed_sources.load(Ordering::Relaxed),
+            decode_errors: self.decode_errors.load(Ordering::Relaxed),
         }
     }
 
@@ -253,6 +270,7 @@ impl DiscordRuntime {
                 speaker_frames: AtomicU64::new(0),
                 malformed_frames: AtomicU64::new(0),
                 unnamed_sources: AtomicU64::new(0),
+                decode_errors: AtomicU64::new(0),
             }),
             task: Mutex::new(None),
             shard_manager: Arc::new(Mutex::new(None)),
