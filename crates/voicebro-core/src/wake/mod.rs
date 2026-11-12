@@ -180,6 +180,11 @@ pub enum WakeState {
         label: String,
         percent: u8,
     },
+    /// An archive, downloaded or put into the assets folder by hand, is being checked
+    /// against its pinned hash and extracted.
+    Installing {
+        label: String,
+    },
     Loading,
     Ready,
     Error {
@@ -194,6 +199,10 @@ pub struct DownloadItem {
     /// The site it comes from (`github.com`, `alphacephei.com`).
     pub host: String,
     pub bytes: u64,
+    /// The archive's file name, as a download by hand must be named in the assets folder.
+    pub file: String,
+    /// The official page to download it from by hand.
+    pub page: String,
 }
 
 impl DownloadItem {
@@ -211,6 +220,8 @@ impl DownloadItem {
             label: asset.label.to_owned(),
             host,
             bytes: asset.size,
+            file: asset.file_name().to_owned(),
+            page: asset.page.to_owned(),
         }
     }
 }
@@ -286,7 +297,8 @@ pub(crate) enum WakeMessage {
 pub const AUDIO_QUEUE: usize = 256;
 
 /// Downloads, verifies and extracts one asset: [`assets::ensure`], replaced in tests.
-type Fetch = dyn Fn(&Asset, &Path, &dyn Fn(u8)) -> Result<(), WakeError> + Send + Sync;
+type Fetch =
+    dyn Fn(&Asset, &Path, &dyn Fn(assets::Progress)) -> Result<(), WakeError> + Send + Sync;
 
 struct Inner {
     engines: Vec<Arc<dyn WakeEngine>>,
@@ -711,17 +723,31 @@ impl WakeManager {
             let events = self.inner.events.clone();
             let manager = self.clone();
             let label = asset.label.to_owned();
-            events.log(format!("downloading the {label} (first use only)"));
-            (self.inner.fetch)(&asset, &self.inner.assets_dir, &|percent| {
-                manager.set_state(WakeState::Downloading {
-                    label: label.clone(),
-                    percent,
-                });
-                events.publish(AppEvent::Assets {
-                    label: label.clone(),
-                    percent,
-                    error: None,
-                });
+            if assets::archive_path(&self.inner.assets_dir, &asset).is_file() {
+                events.log(format!(
+                    "using {} from the assets folder for the {label}",
+                    asset.file_name()
+                ));
+            } else {
+                events.log(format!("downloading the {label} (first use only)"));
+            }
+            (self.inner.fetch)(&asset, &self.inner.assets_dir, &|step| match step {
+                assets::Progress::Downloaded(percent) => {
+                    manager.set_state(WakeState::Downloading {
+                        label: label.clone(),
+                        percent,
+                    });
+                    events.publish(AppEvent::Assets {
+                        label: label.clone(),
+                        percent,
+                        error: None,
+                    });
+                }
+                assets::Progress::Unpacking => {
+                    manager.set_state(WakeState::Installing {
+                        label: label.clone(),
+                    });
+                }
             })
             .inspect_err(|error| {
                 self.inner.events.publish(AppEvent::Assets {
@@ -990,6 +1016,7 @@ mod tests {
     struct OneAssetEngine;
     const TEST_ASSET: Asset = Asset {
         label: "Test model",
+        page: "https://example.test/models",
         url: "https://example.test/models/test-model.zip",
         sha256: "0000000000000000000000000000000000000000000000000000000000000000",
         directory: "test-model",
@@ -1017,7 +1044,7 @@ mod tests {
             let marker = assets_dir.join(asset.directory).join(asset.marker);
             std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
             std::fs::write(marker, b"").unwrap();
-            progress(100);
+            progress(assets::Progress::Downloaded(100));
             Ok(())
         });
         let manager = WakeManager::with_fetch(
@@ -1062,6 +1089,8 @@ mod tests {
                     label: "Test model".to_owned(),
                     host: "example.test".to_owned(),
                     bytes: 12_000_000,
+                    file: "test-model.zip".to_owned(),
+                    page: "https://example.test/models".to_owned(),
                 }]
             }
         );
@@ -1318,7 +1347,28 @@ mod tests {
                 label: "Vosk library".to_owned(),
                 host: "github.com".to_owned(),
                 bytes: vosk::LIBRARY.size,
+                file: "vosk-win64-0.3.45.zip".to_owned(),
+                page: "https://github.com/alphacep/vosk-api/releases/tag/v0.3.45".to_owned(),
             }
+        );
+        let english = manager
+            .requirements(catalog::default_entry().id)
+            .unwrap()
+            .into_iter()
+            .map(|item| (item.file, item.page))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            english,
+            [
+                (
+                    "vosk-win64-0.3.45.zip".to_owned(),
+                    "https://github.com/alphacep/vosk-api/releases/tag/v0.3.45".to_owned()
+                ),
+                (
+                    "vosk-model-small-en-us-0.15.zip".to_owned(),
+                    "https://alphacephei.com/vosk/models".to_owned()
+                ),
+            ]
         );
 
         for sub in ["am", "conf"] {
@@ -1421,13 +1471,138 @@ mod tests {
         assert_eq!(list.last().unwrap().bytes, 0);
     }
 
+    /// A "vosk" engine that needs the given archives for any model.
+    struct ArchivesEngine(Vec<Asset>);
+    impl WakeEngine for ArchivesEngine {
+        fn id(&self) -> &'static str {
+            catalog::VOSK_ENGINE
+        }
+        fn assets(&self, _: &ModelSource) -> Vec<Asset> {
+            self.0.clone()
+        }
+        fn load(&self, _: &Path, _: &Path) -> Result<Box<dyn LoadedModel>, WakeError> {
+            Ok(Box::new(FakeModel))
+        }
+    }
+
+    #[test]
+    fn a_library_put_into_the_folder_is_unpacked_and_only_the_model_downloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
+        let file_url =
+            |path: &Path| format!("file:///{}", path.display().to_string().replace('\\', "/"));
+        let assets_dir = dir.path().join("assets");
+        let served = dir.path().join("served");
+        std::fs::create_dir_all(&assets_dir).unwrap();
+        std::fs::create_dir_all(&served).unwrap();
+        // The library: downloaded by hand into the assets folder; its URL leads nowhere.
+        let (library_zip, library_hash) =
+            assets::test_zip(dir.path(), "test-lib", "lib.dll", "made-lib.zip");
+        std::fs::copy(&library_zip, assets_dir.join("test-lib.zip")).unwrap();
+        let library = Asset {
+            label: "Test library",
+            page: "https://example.test/releases",
+            url: leak(file_url(&dir.path().join("nowhere").join("test-lib.zip"))),
+            sha256: leak(library_hash),
+            directory: "test-lib",
+            marker: "lib.dll",
+            size: std::fs::metadata(&library_zip).unwrap().len(),
+        };
+        // The model: not in the folder, served by a file URL.
+        let (model_zip, model_hash) =
+            assets::test_zip(dir.path(), "test-model", "am/final.mdl", "made-model.zip");
+        std::fs::copy(&model_zip, served.join("test-model.zip")).unwrap();
+        let model = Asset {
+            label: "Test model",
+            page: "https://example.test/models",
+            url: leak(file_url(&served.join("test-model.zip"))),
+            sha256: leak(model_hash),
+            directory: "test-model",
+            marker: "am/final.mdl",
+            size: std::fs::metadata(&model_zip).unwrap().len(),
+        };
+        let events = EventBus::new(256);
+        let mut seen = events.subscribe();
+        let manager = WakeManager::new(
+            vec![Arc::new(ArchivesEngine(vec![library, model]))],
+            assets_dir.clone(),
+            dir.path().join("models"),
+            events,
+            Arc::new(NoSink),
+        );
+        manager.configure(&Settings::default());
+        manager.download(catalog::default_entry().id).unwrap();
+        assert_eq!(
+            wait_for(&manager, |state| *state == WakeState::NoPhrases),
+            WakeState::NoPhrases
+        );
+        assert!(assets::is_installed(&assets_dir, &library));
+        assert!(assets::is_installed(&assets_dir, &model));
+        assert!(!assets_dir.join("test-lib.zip").exists(), "archive removed");
+
+        let (mut lines, mut states) = (Vec::new(), Vec::new());
+        while let Ok(event) = seen.try_recv() {
+            match event {
+                AppEvent::Log { line } => lines.push(line),
+                AppEvent::Wake(status) => states.push(status.state),
+                _ => {}
+            }
+        }
+        assert!(
+            lines.contains(
+                &"using test-lib.zip from the assets folder for the Test library".to_owned()
+            ),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"downloading the Test model (first use only)".to_owned()),
+            "{lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("downloading the Test library")),
+            "{lines:?}"
+        );
+        let downloading: Vec<&str> = states
+            .iter()
+            .filter_map(|state| match state {
+                WakeState::Downloading { label, .. } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            downloading.iter().all(|label| *label == "Test model"),
+            "{states:?}"
+        );
+        assert!(!downloading.is_empty(), "{states:?}");
+        for label in ["Test library", "Test model"] {
+            assert!(
+                states.contains(&WakeState::Installing {
+                    label: label.to_owned()
+                }),
+                "{states:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_download_item_names_the_site() {
         let item = DownloadItem::of(&vosk::LIBRARY);
         assert_eq!(item.host, "github.com");
         assert_eq!(item.label, "Vosk library");
+        assert_eq!(item.file, "vosk-win64-0.3.45.zip");
+        assert_eq!(
+            item.page,
+            "https://github.com/alphacep/vosk-api/releases/tag/v0.3.45"
+        );
         let english = catalog::default_entry();
         assert_eq!(DownloadItem::of(&english.asset).host, "alphacephei.com");
+        assert_eq!(
+            DownloadItem::of(&english.asset).file,
+            "vosk-model-small-en-us-0.15.zip"
+        );
+        assert_eq!(DownloadItem::of(&english.asset).page, catalog::MODELS_PAGE);
         assert_eq!(DownloadItem::of(&english.asset).bytes, 41_205_931);
         assert_eq!(megabytes(english.asset.size), 41);
         assert_eq!(megabytes(vosk::LIBRARY.size), 15);

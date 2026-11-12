@@ -6,6 +6,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Asset {
     pub label: &'static str,
+    /// The official page a person downloads the archive from by hand.
+    pub page: &'static str,
     pub url: &'static str,
     pub sha256: &'static str,
     /// Directory the archive extracts to, relative to the assets directory.
@@ -14,6 +16,14 @@ pub struct Asset {
     pub marker: &'static str,
     /// Expected size in bytes, for progress reporting.
     pub size: u64,
+}
+
+impl Asset {
+    /// The archive's file name, the last segment of `url`: the name a download is saved
+    /// under and the name a file downloaded by hand must have in the assets folder.
+    pub fn file_name(&self) -> &'static str {
+        self.url.rsplit('/').next().unwrap_or(self.url)
+    }
 }
 
 /// One model the app knows how to download, verify and load.
@@ -31,6 +41,9 @@ pub struct ModelEntry {
 
 pub const VOSK_ENGINE: &str = "vosk";
 
+/// Where the Vosk project publishes its models; every catalog model's archive is listed there.
+pub const MODELS_PAGE: &str = "https://alphacephei.com/vosk/models";
+
 /// The model of a settings file from schema version 1, which had only this one.
 pub const RUSSIAN_SMALL: &str = "vosk-model-small-ru-0.22";
 
@@ -44,6 +57,7 @@ const ENTRIES: &[ModelEntry] = &[
         license: "Apache-2.0",
         asset: Asset {
             label: "Vosk English model",
+            page: MODELS_PAGE,
             url: "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
             sha256: "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498",
             directory: "vosk-model-small-en-us-0.15",
@@ -59,6 +73,7 @@ const ENTRIES: &[ModelEntry] = &[
         license: "Apache-2.0",
         asset: Asset {
             label: "Vosk Russian model",
+            page: MODELS_PAGE,
             url: "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip",
             sha256: "961d5ff98a17f4aa6de69864d0aa71fa5bac682301d2b5d17a3f24c5c99a46d4",
             directory: "vosk-model-small-ru-0.22",
@@ -76,6 +91,7 @@ const ENTRIES: &[ModelEntry] = &[
         license: "MIT",
         asset: Asset {
             label: "Vosk Czech model",
+            page: MODELS_PAGE,
             url: "https://alphacephei.com/vosk/models/vosk-model-small-cs-0.4-rhasspy.zip",
             sha256: "287c3bbefc8ad67b4ab9636eecef3d62acc3719990777d03e226db5a7f19fbda",
             directory: "vosk-model-small-cs-0.4-rhasspy",
@@ -91,6 +107,7 @@ const ENTRIES: &[ModelEntry] = &[
         license: "Apache-2.0",
         asset: Asset {
             label: "Vosk Dutch model",
+            page: MODELS_PAGE,
             url: "https://alphacephei.com/vosk/models/vosk-model-small-nl-0.22.zip",
             sha256: "039811c3b829de64e4f123a9f684a53784005b212a346ac0b899dc7efce2ed0a",
             directory: "vosk-model-small-nl-0.22",
@@ -106,6 +123,7 @@ const ENTRIES: &[ModelEntry] = &[
         license: "Apache-2.0",
         asset: Asset {
             label: "Vosk French model",
+            page: MODELS_PAGE,
             url: "https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip",
             sha256: "cabf6180e177eb9b3a9a9d43a437bd5e549f3a7d09525e5d69a3fed787be12ad",
             directory: "vosk-model-small-fr-0.22",
@@ -121,6 +139,7 @@ const ENTRIES: &[ModelEntry] = &[
         license: "Apache-2.0",
         asset: Asset {
             label: "Vosk German model",
+            page: MODELS_PAGE,
             url: "https://alphacephei.com/vosk/models/vosk-model-small-de-0.15.zip",
             sha256: "b7e53c90b1f0a38456f4cd62b366ecd58803cd97cd42b06438e2c131713d5e43",
             directory: "vosk-model-small-de-0.15",
@@ -136,6 +155,7 @@ const ENTRIES: &[ModelEntry] = &[
         license: "Apache-2.0",
         asset: Asset {
             label: "Vosk Italian model",
+            page: MODELS_PAGE,
             url: "https://alphacephei.com/vosk/models/vosk-model-small-it-0.22.zip",
             sha256: "9ec65e75861d1c6c2e457cccd932705340dcdf233f5b239f00733b4de0bf3267",
             directory: "vosk-model-small-it-0.22",
@@ -151,6 +171,7 @@ const ENTRIES: &[ModelEntry] = &[
         license: "Apache-2.0",
         asset: Asset {
             label: "Vosk Polish model",
+            page: MODELS_PAGE,
             url: "https://alphacephei.com/vosk/models/vosk-model-small-pl-0.22.zip",
             sha256: "c4cd16498ea544f446f9e9a55cbd602b71cfe5a2b6f2b0834d81e1b6fce15f0d",
             directory: "vosk-model-small-pl-0.22",
@@ -166,6 +187,7 @@ const ENTRIES: &[ModelEntry] = &[
         license: "Apache-2.0",
         asset: Asset {
             label: "Vosk Portuguese (Brazil) model",
+            page: MODELS_PAGE,
             url: "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip",
             sha256: "6e1ce909032e1afa7a88e68a3d628ecafff302bdf195befab308826c395e93b7",
             directory: "vosk-model-small-pt-0.3",
@@ -182,6 +204,7 @@ const ENTRIES: &[ModelEntry] = &[
         license: "Apache-2.0",
         asset: Asset {
             label: "Vosk Spanish model",
+            page: MODELS_PAGE,
             url: "https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip",
             sha256: "09b239888f633ef2f0b4e09736e3d9936acfd810bc65d53fad45261762c6511f",
             directory: "vosk-model-small-es-0.42",
@@ -266,6 +289,8 @@ mod tests {
                 entry.asset.url,
                 format!("https://alphacephei.com/vosk/models/{}.zip", entry.id)
             );
+            assert_eq!(entry.asset.file_name(), format!("{}.zip", entry.id));
+            assert_eq!(entry.asset.page, MODELS_PAGE, "{}", entry.id);
             assert_eq!(entry.asset.directory, entry.id);
             assert!(!entry.asset.marker.is_empty(), "{}", entry.id);
             assert!(

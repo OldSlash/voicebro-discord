@@ -225,6 +225,13 @@ fn open_models_folder(state: State<'_, AppState>) -> Result<String, String> {
     open_folder(&dir)
 }
 
+/// Opens the assets folder, where the user puts the archives they downloaded by hand.
+#[tauri::command]
+fn open_assets_folder(state: State<'_, AppState>) -> Result<String, String> {
+    let dir = state.runtime.wake().assets_dir().to_path_buf();
+    open_folder(&dir)
+}
+
 #[tauri::command]
 fn chat_log(state: State<'_, AppState>) -> Vec<ChatEntry> {
     state
@@ -388,8 +395,36 @@ fn build_main_window(app: &tauri::App, data_dir: &std::path::Path) -> tauri::Res
         .min_inner_size(860.0, 560.0)
         .resizable(true)
         .data_directory(paths::webview_data_dir(data_dir))
+        .on_new_window(|url, _features| {
+            hand_link_to_browser(url.as_str());
+            tauri::webview::NewWindowResponse::Deny
+        })
         .build()?;
     Ok(())
+}
+
+/// Whether the window hands `url` to the default browser: web addresses only. Anything
+/// else (a file path, another scheme) opens nothing, because the shell runs a file path
+/// handed to it.
+fn opens_in_browser(url: &str) -> bool {
+    tauri::Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+}
+
+/// Every link in the window has `target="_blank"`, so following it in any way (a click, a
+/// modifier or middle click, Enter, the context menu) asks for a new window. The window
+/// never opens one: a web address goes to the default browser and the request is denied.
+fn hand_link_to_browser(url: &str) {
+    if !opens_in_browser(url) {
+        log::warn!("did not open {url}: not a web address");
+        return;
+    }
+    match std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn()
+    {
+        Ok(_) => log::info!("opened {url} in the default browser"),
+        Err(error) => log::warn!("could not open {url} in the default browser: {error}"),
+    }
 }
 
 /// The file, the window's ring and, in debug builds, stdout: one level table for all three,
@@ -617,7 +652,8 @@ fn main() {
             system_status,
             memory_status,
             open_log_folder,
-            open_models_folder
+            open_models_folder,
+            open_assets_folder
         ])
         .build(tauri::generate_context!())
         .expect("error while building the VoiceBro application")
@@ -633,6 +669,24 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_web_addresses_go_to_the_browser() {
+        assert!(opens_in_browser("https://alphacephei.com/vosk/models"));
+        assert!(opens_in_browser(
+            "https://github.com/alphacep/vosk-api/releases/tag/v0.3.45"
+        ));
+        assert!(opens_in_browser("http://example.com/"));
+        for refused in [
+            "file:///C:/Windows/notepad.exe",
+            "C:\\Windows\\notepad.exe",
+            "ms-settings:",
+            "javascript:alert(1)",
+            "not an address",
+        ] {
+            assert!(!opens_in_browser(refused), "{refused}");
+        }
+    }
 
     #[test]
     fn the_app_logs_at_info_and_songbirds_receive_task_at_error() {

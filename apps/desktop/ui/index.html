@@ -216,6 +216,12 @@
                   <div class="wake-download" id="wake-download" hidden>
                     <p id="wake-download-text"></p>
                     <ul id="wake-download-items"></ul>
+                    <div class="manual-download" id="wake-download-manual" hidden>
+                      <p class="manual-lead">Rather download them yourself?</p>
+                      <ul class="manual-items"></ul>
+                      <p class="manual-note">Put the .zip files into the assets folder as they are, then press Download: VoiceBro checks each against its pinned SHA-256 and unpacks it without going online, and downloads only what is not there.</p>
+                      <button type="button" class="button" id="wake-download-assets">Open assets folder</button>
+                    </div>
                     <button type="button" class="button primary" id="wake-download-button">Download</button>
                   </div>
                   <button type="button" class="button" id="open-models-folder">Open models folder</button>
@@ -308,6 +314,12 @@
       <p id="wake-install-text"></p>
       <ul id="wake-install-items"></ul>
       <p class="install-total" id="wake-install-total"></p>
+      <div class="manual-download" id="wake-install-manual" hidden>
+        <p class="manual-lead">Rather download them yourself?</p>
+        <ul class="manual-items"></ul>
+        <p class="manual-note">Put the .zip files into the assets folder as they are, then press Download: VoiceBro checks each against its pinned SHA-256 and unpacks it without going online, and downloads only what is not there.</p>
+        <button type="button" class="button" id="wake-install-assets">Open assets folder</button>
+      </div>
       <p class="install-progress" id="wake-install-progress" role="status" hidden></p>
       <p class="install-error" id="wake-install-error" role="alert" hidden></p>
       <p class="install-note" id="wake-install-note"></p>

@@ -346,8 +346,11 @@ pub trait WakeFeed: Send + Sync {
   wake-word mode it stops the engine (`Off`) and checks nothing. In wake-word mode it first
   checks, in the calling thread, which files of the engine and the selected model are
   missing (two file stats), before it looks at the phrases. Missing files without the
-  user's consent publish `NeedsDownload {items}` (label, host, bytes of each missing
-  archive) at once, with or without phrases, and nothing is requested from the network.
+  user's consent publish `NeedsDownload {items}` at once, with or without phrases, and
+  nothing is requested from the network. Each `DownloadItem` has the label, the host, the
+  bytes, the archive's `file` name and the official `page` a person downloads it from by
+  hand (`Asset.page`: the Vosk release page on GitHub for the library,
+  `catalog::MODELS_PAGE` for every catalog model).
   With everything on disk it stops the engine when both phrase lists of the selected model
   are empty (`NoPhrases`), sends new phrases to the running worker when only the phrases
   changed, and otherwise loads and starts on a thread of its own (`Loading` → `Ready`, or
@@ -355,8 +358,11 @@ pub trait WakeFeed: Send + Sync {
   check and ends in the loader's `Error`. `WakeManager::download(model)` (the Download
   buttons, command `wake_download {model}`) is refused unless `model` is the selected
   model; it records the consent for that engine and model in memory and runs `configure`
-  again with the last settings, which then downloads (`Downloading {label, percent}`) and
-  loads, or ends in `NoPhrases` when the model has none. The consent is not stored: files
+  again with the last settings, which then downloads (`Downloading {label, percent}`),
+  checks and extracts each archive (`Installing {label}`) and loads, or ends in
+  `NoPhrases` when the model has none. The loader logs "using <file> from the assets
+  folder for the <label>" instead of "downloading the <label>" when the archive is
+  already there. The consent is not stored: files
   on disk need none, after a restart with files still missing the question comes back, and
   another model asks again. A load that ends after a newer `configure` (a generation
   counter) applies the newest settings instead of publishing its own result.
@@ -404,11 +410,17 @@ pub trait WakeFeed: Send + Sync {
   settings id (catalog first); a local model needs only the Vosk library, its directory is
   `models\<folder>`, and a missing folder is the engine's error, so its phrases stay stored.
   The app never downloads, changes or deletes anything in `models\`.
-- **Asset store** (`assets.rs`): downloads with the system `curl.exe` to a `.part` name,
-  verifies the SHA-256 (a mismatch deletes the file and extracts nothing), renames, extracts
-  with the system `tar.exe`, checks the marker file, and cleans up `.part` files at start.
-  Progress goes to the event bus as `AppEvent::Assets {label, percent, error}` in steps of
-  at least 20 %. No HTTP crate.
+- **Asset store** (`assets.rs`): `ensure` has two routes to the archive
+  `assets\<Asset::file_name()>` (the URL's last segment). If that file is already there
+  (one the user downloaded by hand), it is used. Otherwise `ensure` downloads with the
+  system `curl.exe` to a `.part` name and renames. Either way it then reports
+  `Progress::Unpacking`, verifies the SHA-256, extracts with the system `tar.exe`, removes
+  the archive and checks the marker file. A mismatch deletes the file, extracts nothing,
+  and fails with "<file> (downloaded | found in the assets folder) does not match the
+  pinned SHA-256 (<digest>); it was deleted". An extracted folder with the marker counts as
+  installed without an archive (`is_installed`), but nothing checks its hash. `.part` files
+  are cleaned up at start. Download progress (`Progress::Downloaded`) goes to the event bus
+  as `AppEvent::Assets {label, percent, error}` in steps of at least 20 %. No HTTP crate.
 - Vosk is loaded at runtime through `libloading` (`LOAD_WITH_ALTERED_SEARCH_PATH`), so the
   app starts without the DLL. Partial word timestamps are not requested (they delay
   partials by seconds). Grammar-restricted recognition is not used (it maps ordinary speech
@@ -690,6 +702,15 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
 - Tauri commands are thin: validate input, call `Runtime`, return serializable snapshots.
   Errors cross the boundary as `String`.
 - One event bridge task forwards `AppEvent` to the webview.
+- **Links open in the default browser.** Every link in the window has
+  `target="_blank"`, so following it in any way (a click, a modifier or middle click,
+  Enter, the context menu) is a WebView2 new-window request. The main window's builder
+  has one `on_new_window` handler (`hand_link_to_browser`): an `http` or `https` URL goes
+  to the default browser through `rundll32 url.dll,FileProtocolHandler` and is logged,
+  any other address opens nothing and is logged, and the request is always denied, so the
+  window never shows a web page or opens a window of its own. The page has no click
+  handler for links. That is the one rule the user asked for on 2026-11-12: no list of
+  allowed pages, no second guard.
 - **Global hotkey** through `tauri-plugin-global-shortcut`: registered at start-up and again
   when a saved settings document changes `hotkey.mute`, the previous shortcut unregistered
   first; an empty value registers nothing; toggle only, on the key-down edge; the outcome
@@ -787,10 +808,16 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     dots, show the selected model's name in their labels, and are filled again from the
     stored settings when another model is saved. Under the wake model control, the
     download notice renders from `status.wake.state`: `needs_download` (with or without
-    phrases) lists each file with its size and site and a Download button
-    (`wake_download {model}`), `downloading` shows the progress, and an error after a
-    download shows the message with the button again; next to it "Open models folder"
-    (`open_models_folder`). Choosing a wake model first asks `wake_requirements {model}`:
+    phrases) lists each file with its size and site, the download-by-hand part and a
+    Download button (`wake_download {model}`), `downloading` shows the progress,
+    `installing` shows "Checking and unpacking the <label>…", and an error after a
+    download shows the message with the part and the button again; next to it "Open
+    models folder" (`open_models_folder`). The download-by-hand part (`renderManual`, the
+    same in the notice and the dialog) lists each missing file's archive name (`file`)
+    with a link to its `page`, an "Open assets folder" button (`open_assets_folder`) and a
+    line on putting the `.zip` files into that folder and pressing Download. It is hidden
+    while the state is `downloading` or `installing`, and after a failure it is filled
+    again from `wake_requirements`, so it lists only what is still missing. Choosing a wake model first asks `wake_requirements {model}`:
     nothing missing saves at once; otherwise the install dialog opens with the `choice`
     reason and nothing is saved until its Download (which saves, then calls
     `wake_download`); Cancel puts the list back on the stored model. The Codex model, reasoning effort and
@@ -806,17 +833,23 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     button, with the earcon switch, and under each gain the last second's peak and the clip
     count from `Status.audio`.
   - **Install dialog** (`<dialog id="wake-install">`, opened with `showModal()`): one modal
-    dialog for the wake word's missing files, driven by `status.wake`. It opens when the
-    window's first status after `start()` (armed once the model list and the settings are
-    loaded) is in wake-word mode and `needs_download` (`start`), when the wake state later
-    turns into `needs_download` from another kind, as after a switch to wake word (`mode`),
-    when the number of `discord.voice_channels` grows while it is `needs_download` (`join`),
-    and from the wake model choice (`choice`). It names the model and each missing file
-    with its size and site, and the total. Download calls `wake_download` and shows the
-    progress in the dialog (one button, Hide), closes when the state leaves `downloading`
-    for `ready`, `no_phrases` or `loading`, and shows an error with Try again and Close.
-    Not now, Hide, Close and Escape store nothing: the state stays `needs_download`, so
-    only a new trigger opens it again, and the card's notice stays.
+    dialog for the wake word's missing files, driven by `status.wake`, armed by `start()`
+    once the model list and the settings are loaded. In wake-word mode and
+    `needs_download` it opens when the number of `discord.voice_channels` grows (`join`;
+    a bot already in a channel at the first status after arming counts too, which only a
+    reload of the window can show), when the wake state turns into `needs_download` from
+    another kind, as after a switch to wake word (`mode`), and from the wake model choice
+    (`choice`). The window's start alone never opens it (the user's decision of
+    2026-11-12; until then a `start` trigger opened it at the first status). The reason is
+    in the dialog's `data-reason`. It names the model and each missing file with its size
+    and site, the total, and the download-by-hand part. Download calls `wake_download`
+    ("Starting…", not "the download", since files from the folder are not downloaded) and
+    shows the progress in the dialog (one button, Hide): "Downloading the <label>: N %"
+    and "Checking and unpacking the <label>…". It closes when the state leaves
+    `downloading` or `installing` for `ready`, `no_phrases` or `loading`, and shows an
+    error with Try again and Close. Not now, Hide, Close and Escape store nothing: the
+    state stays `needs_download`, so only a new trigger opens it again, and the card's
+    notice stays.
     `apps/desktop/ui-dev/check-wake-dialog.mjs` runs all of this against the mock.
   - **Form state is kept apart from the status.** `main.js` holds the stored settings
     (from `get_settings`, refreshed on `settings_changed` and returned by each
@@ -840,9 +873,11 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     Filters for names and notes, agent work and call events, Auto-scroll, Copy (one
     `[time] label: text` line per shown row) and Open log folder.
   - Commands: `get_settings`, `save_settings`, `set_secret`, `clear_secret`, `status`,
-    `app_info`, `system_status`, `set_muted`, `toggle_mute`, `discord_connect`,
-    `discord_disconnect`, `codex_sign_in`, `codex_check`, `codex_models`, `capabilities`,
-    `wake_models`, `chat_log`, `log_history`, `open_log_folder`.
+    `app_info`, `set_muted`, `toggle_mute`, `discord_connect`, `discord_disconnect`,
+    `codex_sign_in`, `codex_check`, `codex_install_info`, `codex_install`,
+    `codex_models`, `capabilities`, `wake_models`, `wake_download`, `wake_requirements`,
+    `chat_log`, `log_history`, `system_status`, `memory_status`, `open_log_folder`,
+    `open_models_folder`, `open_assets_folder`.
 - Checking the window without a person: start the app with
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`; the page is then
   reachable through the Chrome DevTools protocol (evaluate expressions, take screenshots).
