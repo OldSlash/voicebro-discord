@@ -9,8 +9,17 @@
 ; The installer takes English or Russian from the system language without asking, and
 ; Tauri's template saves that choice nowhere, so the uninstaller (MUI_UNGETLANGUAGE) would
 ; open an "Installer Language" dialog first. Saving the language where it looks avoids it.
+;
+; The Windows shell caches an executable's icon by its path. An update writes the new
+; voicebro.exe over the old one, so without a notice Explorer, the shortcuts and the
+; taskbar keep the icon of the earlier build. This tells the shell that the file changed
+; (SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSH) and that cached icons must be read again
+; (SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSH). The hook runs after the program file
+; is copied and the Start menu shortcut is written; the desktop shortcut comes later.
 !macro NSIS_HOOK_POSTINSTALL
   WriteRegStr HKCU "${MANUPRODUCTKEY}" "Installer Language" $LANGUAGE
+  System::Call 'shell32::SHChangeNotify(i 0x00002000, i 0x1005, w "$INSTDIR\${MAINBINARYNAME}.exe", p 0)'
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0x1000, p 0, p 0)'
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
