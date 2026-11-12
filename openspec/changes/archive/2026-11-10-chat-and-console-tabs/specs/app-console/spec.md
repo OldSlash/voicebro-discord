@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Shows the app's own log in the window, as the first version's Console tab does, so the user
-can follow what the app does and copy it into a report without opening files.
+Shows the app's own log in the window, so the user can follow what the app does and copy it
+into a report without opening files.
 
 ## ADDED Requirements
 

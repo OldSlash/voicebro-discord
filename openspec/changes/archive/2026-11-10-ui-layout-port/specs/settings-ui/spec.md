@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Every setting is editable
-Every field of the settings document SHALL have a control, split as in the first version.
+Every field of the settings document SHALL have a control, split between two tabs.
 The Settings tab: Appearance (theme, font size); Audio (input and output gain, earcons and
 volume); Assistant (session mode, idle timeout, wake engine, wake model, activation phrases,
 deactivation phrases); Codex (model, reasoning effort, voice, instructions, speaker labels);

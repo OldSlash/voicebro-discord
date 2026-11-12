@@ -46,7 +46,7 @@
   - **far server** `finland14057` (the user's ping about 300–380 ms): the tone was heard, but broken up all the time. Discord reported up to 18.8 % of our packets lost in a second and sent 62 feedback packets (205, likely NACKs). The expected loss followed it: 9 → 13 → 7 → 19 → 5 %.
   - **near server** `c-sin19-5f0d7996` (Singapore, ping about 30 ms): the tone was clean. 0.0 % loss in every report and no feedback packets. The expected loss went from 9 down to 1 %.
 
-  So the tone, generated locally with no OpenAI leg at all, breaks up on the far server. The loss happens after we send, on the way to Discord's server. One-packet FEC does not cover losses at that level. The follow-up is in `docs/NEXT-CHANGES.md`. The user accepted the near-server result for this change.
+  So the tone, generated locally with no OpenAI leg at all, breaks up on the far server. The loss happens after we send, on the way to Discord's server. One-packet FEC does not cover losses at that level. The user accepted the near-server result for this change.
 
   The second host's form showed that the region parse read `c-sin19-…` as `c`. It now reads `sin`, with a test.
 

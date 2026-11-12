@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Gives the app the first version's window: the same tabs, cards and status bar, a System tab,
-a Config tab, user-selectable appearance, and window data kept with the portable app.
+Gives the app its window: tabs, cards and a status bar, a System tab, a Config tab,
+user-selectable appearance, and window data kept with the portable app.
 
 ## ADDED Requirements
 

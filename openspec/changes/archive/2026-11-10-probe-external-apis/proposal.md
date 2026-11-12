@@ -5,9 +5,9 @@
 The MVP plan ([docs/MVP-PLAN.md](../../../docs/MVP-PLAN.md), the probes phase) builds on
 external APIs that nobody has exercised from this code base: the `webrtc` 0.21 crate with its
 new API, the experimental realtime methods of Codex CLI 0.167.0, the Windows Credential
-Manager, songbird 0.6.1 lifecycle details and a global hotkey under a full-screen game. The
-first version of this product lost days to assumptions about exactly such APIs (websocket
-realtime with a ChatGPT sign-in, the ignored session `prompt`). Every later change depends on
+Manager, songbird 0.6.1 lifecycle details and a global hotkey under a full-screen game. A
+wrong assumption about such an API can cost days (for example that websocket realtime works
+with a ChatGPT sign-in, or that the session `prompt` is used). Every later change depends on
 these answers, so they are collected first, in code that stays in the repository.
 
 ## What Changes

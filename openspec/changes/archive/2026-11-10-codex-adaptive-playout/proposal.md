@@ -10,9 +10,9 @@ dry, so every stall becomes a hole: 29 playout underruns in a 117 s session, 15 
 test call. The handoff mode makes no difference.
 
 The server does the same to Chromium. In a comparison call through Chromium's WebRTC stack,
-as the first version used through WebView2, the lag was 2.65 s over 62 s. Chromium's NetEQ
-hid it: it stretched 1.88 s of speech, concealed 1.18 s (0.67 s of it in pauses) and grew
-its buffer from 56 to 365 ms. The first version never stuttered for that reason.
+the lag was 2.65 s over 62 s. Chromium's NetEQ hid it: it stretched 1.88 s of speech,
+concealed 1.18 s (0.67 s of it in pauses) and grew its buffer from 56 to 365 ms, so the
+voice did not stutter.
 
 The faster delivery other bots rely on is not available here. With a ChatGPT sign-in, Codex
 0.167.0 refuses the websocket transport ("realtime conversation requires API key auth",

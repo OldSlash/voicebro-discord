@@ -3,7 +3,7 @@
 ## 1. Traits and spotter
 
 - [x] 1.1 Add `wake/mod.rs` with `SpeechRecognizer`, `LoadedModel`, `WakeEngine`, `Recognition`, `Word`, `PhraseKind`, `PhraseSink`, `WakeFeed`, `WakeStatus`, `WakeError`; verify `cargo build -p voicebro-core`
-- [x] 1.2 Add `wake/spotter.rs` from v1 `Detector`/`PhraseDetectors`/`find_occurrences` over `Recognition` (15-in-a-row activation, 5-of-10 deactivation, final always counts, once per utterance, deactivation-then-activation ignored); verify unit tests with synthetic partials for each rule and for the look-alike word
+- [x] 1.2 Add `wake/spotter.rs` with `Detector`/`PhraseDetectors`/`find_occurrences` over `Recognition` (15-in-a-row activation, 5-of-10 deactivation, final always counts, once per utterance, deactivation-then-activation ignored); verify unit tests with synthetic partials for each rule and for the look-alike word
 
 ## 2. Assets (spec `wake-model-assets`)
 
@@ -13,8 +13,8 @@
 
 ## 3. Vosk engine
 
-- [x] 3.1 Add `wake/vosk/ffi.rs` (v1 `VoskApi`, `Model`, `Recognizer` with `Drop`, `LOAD_WITH_ALTERED_SEARCH_PATH`, log level −1, no partial word timestamps) and `wake/vosk/mod.rs` implementing the traits; verify the gated corpus test `VOICEBRO_WAKE_WAV` fires on a positive sample and `VOICEBRO_WAKE_EXPECT=none` holds on a negative one
-- [x] 3.2 Port the sequence and noise tests (`VOICEBRO_WAKE_SEQUENCES`, `VOICEBRO_WAKE_NOISE`); verify they run against the scratch assets and report pass/fail per file
+- [x] 3.1 Add `wake/vosk/ffi.rs` (`VoskApi`, `Model`, `Recognizer` with `Drop`, `LOAD_WITH_ALTERED_SEARCH_PATH`, log level −1, no partial word timestamps) and `wake/vosk/mod.rs` implementing the traits; verify the gated corpus test `VOICEBRO_WAKE_WAV` fires on a positive sample and `VOICEBRO_WAKE_EXPECT=none` holds on a negative one
+- [x] 3.2 Add the sequence and noise tests (`VOICEBRO_WAKE_SEQUENCES`, `VOICEBRO_WAKE_NOISE`); verify they run against the scratch assets and report pass/fail per file
 
 ## 4. Worker and manager (spec `wake-word-detection`)
 

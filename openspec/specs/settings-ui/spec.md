@@ -8,7 +8,7 @@ clear messages, so the settings file never has to be edited by hand.
 
 ### Requirement: Every setting is editable
 Every field of the settings document SHALL have a control, split between the Settings and
-Config tabs as in the first version. The Settings tab: Appearance (theme, font size); Audio
+Config tabs. The Settings tab: Appearance (theme, font size); Audio
 (both gains, earcons and their volume); Assistant (session mode, idle timeout, wake engine
 and model, activation and deactivation phrases); Codex (model, reasoning effort, voice,
 instructions, speaker labels, save chat history); Hotkey (mute); Diagnostics (performance
@@ -35,7 +35,7 @@ token is stored.
 - **THEN** no control for connecting at start-up is shown, and the Config tab says auto-start is enabled
 
 ### Requirement: Save on change with validation
-On the Settings tab a change SHALL be saved automatically, as in the first version: a text
+On the Settings tab a change SHALL be saved automatically: a text
 field when it loses focus or on Enter, a slider when released, a list or switch when
 changed. On the Config tab changes SHALL be saved with Save changes and discarded with Reset.
 A rejected value SHALL stay in the field with the validation message next to it while the

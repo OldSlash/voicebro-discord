@@ -71,7 +71,7 @@ pub struct DiagnosticsSettings {
     pub verbose_log: bool,
 }
 
-/// The window's themes, as in the first version.
+/// The window's themes.
 pub const THEMES: &[&str] = &["dark", "darcula", "light", "intellij"];
 /// The window's font size range in pixels.
 pub const FONT_SIZES: std::ops::RangeInclusive<u32> = 11..=20;
@@ -148,7 +148,7 @@ impl Default for SessionSettings {
     }
 }
 
-/// The highest gain either direction accepts (400 %), as in the first version.
+/// The highest gain either direction accepts (400 %).
 pub const MAX_GAIN: f32 = 4.0;
 
 /// How loud the assistant hears the channel and how loud it speaks in it.
@@ -270,8 +270,7 @@ pub struct CodexSettings {
     pub model: String,
     /// Empty means the model default.
     pub reasoning_effort: String,
-    /// Empty (the default) means the server's default voice, which is what the first
-    /// version effectively used.
+    /// Empty (the default) means the server's default voice.
     pub voice: String,
     /// Instructions for the assistant. There is no default: the user writes their own.
     pub instructions: String,

@@ -2,12 +2,11 @@
 
 ## Why
 
-Comparing this app with the first version's code and the documents the rewrite started from
-(`docs/NEXT-CHANGES.md`, section 8) found technical decisions that were not carried over or
-were carried over from a document that disagreed with the working code: the Codex process
-runs from app start, mute keeps the call open, overlapping voices clip, the recognizer's
-results never reach the window, an unnamed speaker stays unnamed, and the bot does not
-connect at launch for this user. The user requires these to match the first version.
+A review of the app's technical decisions found several that do not work as the user needs:
+the Codex process runs from app start, mute keeps the call open, overlapping voices clip,
+the recognizer's results never reach the window, an unnamed speaker stays unnamed, and the
+bot does not connect at launch for this user. The user requires each of them changed as
+listed below.
 
 ## What Changes
 
@@ -16,8 +15,8 @@ connect at launch for this user. The user requires these to match the first vers
   out) and opens the guild's thread; the first activation only places the call. The
   app-server stops when the bot leaves its last voice channel, one minute after an on-demand
   Sign in or Check when the bot is in no channel, and at exit.
-- **Mute ends the session**, as in the first version: the call closes, nothing is spent
-  while muted; in always mode unmute starts a new session.
+- **Mute ends the session**: the call closes, nothing is spent while muted; in always mode
+  unmute starts a new session.
 - **Mute and unmute tones** next to the session start and end tones.
 - **Overlapping voices are averaged** instead of summed and clamped.
 - **The window gets the whole app log** (Info and above from this app's crates), so what the

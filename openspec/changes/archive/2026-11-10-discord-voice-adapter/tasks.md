@@ -2,7 +2,7 @@
 
 ## 1. Audio core
 
-- [x] 1.1 Add `audio/frame.rs` (`Frame`, `FRAME_SAMPLES`, `peak`, `is_silent`) and copy v1 `dsp.rs` as `audio/dsp.rs` with its tests; verify `cargo test -p voicebro-core audio::` passes
+- [x] 1.1 Add `audio/frame.rs` (`Frame`, `FRAME_SAMPLES`, `peak`, `is_silent`) and `audio/dsp.rs` (the resamplers) with its tests; verify `cargo test -p voicebro-core audio::` passes
 - [x] 1.2 Add `audio/queue.rs`: bounded `FrameQueue` (4 frames, drop oldest, counters); verify tests for overflow count and order
 - [x] 1.3 Add `audio/output.rs`: `OutputQueue` (8 frames, jitter 3→8, relax after 750 stable frames, flush epoch, mute, `last_signal`, `close`) and `PcmSource` (`Read`+`Seek`+`MediaSource`, f32, one packet per read, silence on underrun, EOF only after close); verify tests for jitter growth and relax, flush, mute, EOF
 - [x] 1.4 Add `audio/earcon.rs` (rising/falling tones, volume 0.18, mixed in even when muted); verify a test that a muted source still outputs the earcon samples

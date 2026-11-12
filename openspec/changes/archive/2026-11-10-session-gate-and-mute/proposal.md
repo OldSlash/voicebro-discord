@@ -4,17 +4,17 @@
 
 Between Discord and the assistant sits the decision of when the assistant listens: a wake
 phrase opens a session, a deactivation phrase or an idle timeout closes it, and mute
-overrides everything. The first version's gate (`gate.rs`, ours) encodes the rules that
-came out of real use: a 5 s pre-roll replayed from the end of the phrase, holding the replay
-while the call connects, counting the assistant's own voice as activity, muting the output
-the moment a session ends. This change ports it onto the new audio ports and adds the three
-mute sources (app button, global hotkey, Discord panel) sharing one state.
+overrides everything. The gate (`gate.rs`) encodes the rules for this: a 5 s pre-roll
+replayed from the end of the phrase, holding the replay while the call connects, counting
+the assistant's own voice as activity, muting the output the moment a session ends. This
+change builds it on the audio ports and adds the three mute sources (app button, global
+hotkey, Discord panel) sharing one state.
 
 ## What Changes
 
-- `voicebro-core::gate`: `RelayGate` per guild and `RelayRegistry`, ported from v1 over
-  `AudioPorts`; implements the receive path's `TickSink` and the wake engine's
-  `PhraseSink`; talks to the assistant through `AssistantSession`.
+- `voicebro-core::gate`: `RelayGate` per guild and `RelayRegistry` over `AudioPorts`;
+  implements the receive path's `TickSink` and the wake engine's `PhraseSink`; talks to the
+  assistant through `AssistantSession`.
 - `voicebro-core::assistant`: the `Assistant` and `AssistantSession` traits and a
   `StubAssistant` for tests and for running without Codex.
 - Mute: `Runtime::toggle_mute` drives the registry; the Discord panel button and the app

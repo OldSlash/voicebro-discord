@@ -9,7 +9,7 @@ and the confirmed Credential Manager calls. Constraints:
 
 - Tauri's test executable crashes without the Common-Controls v6 manifest; the core crate
   must not link Tauri so its tests run without it.
-- The UI is static HTML/JS with `withGlobalTauri`, no bundler, as in the first version.
+- The UI is static HTML/JS with `withGlobalTauri`, no bundler.
 - Windows `std::fs::rename` replaces an existing file, so temp-and-rename works without
   `ReplaceFileW`.
 - Line endings: `.gitattributes` from the probe change is already in place.
@@ -34,7 +34,7 @@ and the confirmed Credential Manager calls. Constraints:
 
 **D1. `voicebro-core` is a plain library with no Tauri dependency.** Everything the app does
 lives there behind types and traits; `apps/desktop` only wires commands and events.
-Alternative: one Tauri crate as in v1. Rejected: the manifest crash in tests and the
+Alternative: one Tauri crate. Rejected: the manifest crash in tests and the
 impossibility of a headless probe both come from that.
 
 **D2. Events flow through `tokio::sync::broadcast<AppEvent>`.** The core publishes, the
@@ -46,8 +46,8 @@ subscribers (UI bridge, panel refresher later, tests) for free.
 **D3. Settings are a serde struct with `#[serde(default)]` on every section and
 `#[serde(flatten)] extra: Map` to keep unknown fields.** Validation is one `validate()`
 returning the first error with a field path. Migration is `version` plus `Default`; no
-migration table until a field actually changes meaning. Alternative: a flat string map as in
-v1. Rejected: seven places per setting.
+migration table until a field actually changes meaning. Alternative: a flat string map.
+Rejected: seven places per setting.
 
 **D4. Apply is a diff.** `Runtime::apply(new)` compares each section with the current
 settings and calls only the affected subsystem (none exist yet in this change; the diff

@@ -189,7 +189,7 @@ impl EventHandler for Handler {
             .log(format!("Discord: connected as {}", ready.user.name));
 
         // Globally, so every server has them, and in the configured server too, where they
-        // appear at once (as the first version did).
+        // appear at once.
         match Command::set_global_commands(&ctx.http, command_definitions()).await {
             Ok(list) => self.shared.log(format!(
                 "registered {} global slash commands (Discord may take up to an hour to show new ones)",

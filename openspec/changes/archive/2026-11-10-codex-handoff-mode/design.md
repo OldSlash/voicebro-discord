@@ -41,7 +41,7 @@ the agent's answer word for word, which none of the modes does.
 | `thinking` | neither field |
 
 `thinking` sends nothing rather than `"thinking"`, so it stays exactly what the app sent
-before this change and what the first version sent. `items` sends no handoff mode either:
+before this change. `items` sends no handoff mode either:
 the tested combination was `codexResponsesAsItems` alone. *Alternative:* store Codex's own
 names. Rejected: two field names behind one choice, and the setting would break if Codex
 renamed a value.

@@ -6,7 +6,7 @@
 
 ## 2. Gate (spec `assistant-session-gate`)
 
-- [x] 2.1 Port `gate.rs` (`RelayGate`, `RelayRegistry`, `GateSettings`, `GateStatus`, `ActivationMode`, `SpeakerNamesMode`, constants) over `AudioPorts` and the event bus, with its unit tests; verify `cargo test -p voicebro-core gate::` passes
+- [x] 2.1 Write `gate.rs` (`RelayGate`, `RelayRegistry`, `GateSettings`, `GateStatus`, `ActivationMode`, `SpeakerNamesMode`, constants) over `AudioPorts` and the event bus, with its unit tests; verify `cargo test -p voicebro-core gate::` passes
 - [x] 2.2 Implement `TickSink` and `PhraseSink` for the gate; feed per-speaker frames to `WakeFeed` only in wake-word mode when not muted; verify tests with the stub assistant: replay starts at the phrase end, holds until ready, skips silence, caps at 300 frames
 - [x] 2.3 Idle timeout counting assistant audio (`OutputHandle::last_signal`), deactivation flush, output muted when no session in wake-word mode, replay timeout ends the session with an error; verify tests for each
 - [x] 2.4 Wire `Runtime`: build a gate per join from `Settings`, register it, preload the speaker directory, attach the assistant session (stub until Codex), apply `session`/`wake`/`assistant` setting changes to live gates, `AppEvent::Gate`, `Status.gates`; verify a live run in always mode where joining makes the session wanted (stub logs it) and leaving ends it (covered by a runtime unit test driving `on_join`/`on_leave`; the live `/join` needs a person in the channel and is the user's step)

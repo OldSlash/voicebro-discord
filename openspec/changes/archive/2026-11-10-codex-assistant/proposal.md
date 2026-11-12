@@ -6,8 +6,8 @@ The assistant is the product: the people in the channel ask, ChatGPT answers in 
 Codex CLI app-server is the only sanctioned path with a ChatGPT sign-in, and the live probes
 on 2026-11-09 proved the whole chain from Rust: `thread/realtime/start` over WebRTC, v3,
 the canary instruction in `initialItems`, 9 s of voice decoded, the data channel's events.
-This change turns that probe into the assistant engine, with the conversation continuity,
-speaker labels and chat log the first version had.
+This change turns that probe into the assistant engine, with conversation continuity across
+calls, speaker labels and a chat log.
 
 ## What Changes
 

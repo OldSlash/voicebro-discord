@@ -7,10 +7,10 @@
 - [x] 1.3 Add the asynchronous join preparation hook to the host and await it in the `/join` handler before `songbird.join`; on error reply with the reason and do not join; verify a test with a fake host that a failing preparation leaves the bot out of the channel and the reply carries the reason
 - [x] 1.4 Stop the app-server when the last guild detaches and one minute after an on-demand Sign in or Check with no guild attached; keep the conversations; verify a test with the stub process that the server stops on the last detach and the next `prepare` starts a new one with the history kept, and the gated live smoke test (`VOICEBRO_CODEX_SMOKE=1`) for a real start and stop (the stub process is a Node fake in `testdata/fake-codex`; the live test `real_codex_starts_at_join_and_stops_after_the_last_leave_when_enabled` prepared in 720 ms and stopped 552 ms after the leave)
 
-## 2. Mute as in the first version (specs `mute-control`, `assistant-session-gate`, `audio-transport`)
+## 2. Mute ends the session (specs `mute-control`, `assistant-session-gate`, `audio-transport`)
 
 - [x] 2.1 Make `wants_session` depend on mute, end the session on mute (flush, session not wanted), make it wanted again on unmute in always mode, and stop sending silent frames while muted; verify gate tests: always mode mute gives `[true, false]` wanted calls and unmute `[true, false, true]`, no frame is sent while muted, wake-word mode mute ends an active session
-- [x] 2.2 Port the first version's four earcons exactly (notes and durations from its `earcon_samples`), replacing today's start and end tones, and play the mute and unmute tones on mute changes when earcons are on; verify tests: each tone's length and first note match the first version, a mute change queues the mute tone even though output is muted, no tone with earcons off
+- [x] 2.2 Add the four earcons with the exact notes and durations of design.md D4, replacing today's start and end tones, and play the mute and unmute tones on mute changes when earcons are on; verify tests: each tone's length and first note match design.md D4, a mute change queues the mute tone even though output is muted, no tone with earcons off
 
 ## 3. Mixing (spec `audio-transport`)
 

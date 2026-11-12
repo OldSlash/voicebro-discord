@@ -75,7 +75,7 @@ pub fn is_silent(samples: &[i16], threshold: i32) -> bool {
 }
 
 /// Mixes every speaker's block into `out`: the average of the speakers (one speaker passes
-/// unchanged), as the first version did. Sums in `i32` and divides before the single clamp,
+/// unchanged). Sums in `i32` and divides before the single clamp,
 /// so nothing saturates before averaging.
 pub fn mix_into(speakers: &[&[i16]], scratch: &mut Vec<i32>, out: &mut Frame) {
     scratch.clear();

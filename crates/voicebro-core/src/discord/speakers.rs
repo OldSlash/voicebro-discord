@@ -40,7 +40,7 @@ impl SpeakerDirectory {
 }
 
 /// The name to assume for an audio source Discord did not name: the only person in the
-/// channel, when there is exactly one (the first version's fallback). `participants` are
+/// channel, when there is exactly one. `participants` are
 /// the non-bot members in the bot's channel.
 pub fn sole_person(participants: &[String]) -> Option<&str> {
     match participants {

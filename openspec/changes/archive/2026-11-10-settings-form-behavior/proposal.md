@@ -3,9 +3,9 @@
 ## Why
 
 The user could not choose a value in Settings: the choice reset by itself, again and again,
-and it was unclear whether anything was saved (`docs/NEXT-CHANGES.md`, section 2). The form
-is rewritten from the stored settings every 5 s and after every app event, its lists are
-rebuilt each time, and some fields save at once while others need their own Save button.
+and it was unclear whether anything was saved. The form is rewritten from the stored
+settings every 5 s and after every app event, its lists are rebuilt each time, and some
+fields save at once while others need their own Save button.
 
 ## What Changes
 
@@ -15,9 +15,9 @@ rebuilt each time, and some fields save at once while others need their own Save
   unsaved value.
 - Lists (wake engine and model, Codex model, effort, voice) are built when their source
   changes, keeping the current selection; they are never rebuilt under an open list.
-- One saving model, as in the first version: the Settings tab saves each field automatically
-  (text on leaving the field or Enter, sliders on release, lists and switches on change); the
-  Config tab saves with Save changes and discards with Reset.
+- One saving model: the Settings tab saves each field automatically (text on leaving the
+  field or Enter, sliders on release, lists and switches on change); the Config tab saves
+  with Save changes and discards with Reset.
 - Every field shows its state: saving, saved (for two seconds), or the validation error,
   which stays until the value is corrected; a rejected value stays in the field so it can be
   fixed.

@@ -3,19 +3,18 @@
 ## Why
 
 The assistant must be hands-free: a phrase opens a session, another closes it, with no cloud
-and no transcription of the whole channel. The first version solved this with Vosk and
-learned the rules the hard way (open vocabulary, separate detectors per phrase kind,
-trailing silence, no reset after a hit). This change brings that engine over behind traits,
-so the engine and the model are settings and a different recognizer can be added later
-without touching the phrase logic.
+and no transcription of the whole channel. Vosk does this offline, given the right rules
+(open vocabulary, separate detectors per phrase kind, trailing silence, no reset after a
+hit). This change adds that engine behind traits, so the engine and the model are settings
+and a different recognizer can be added later without touching the phrase logic.
 
 ## What Changes
 
 - `voicebro-core::wake`: the traits `WakeEngine`, `LoadedModel`, `SpeechRecognizer`; the
-  engine-independent `PhraseSpotter` (v1 detector rules); the worker thread with one
+  engine-independent `PhraseSpotter` (the detector rules); the worker thread with one
   recognizer per speaker, trailing silence and the reactivation guard; `WakeManager` that
   loads the engine only in wake-word mode and reconfigures on settings changes.
-- `wake/vosk/`: the v1 FFI wrappers over `libvosk.dll` loaded at runtime.
+- `wake/vosk/`: the FFI wrappers over `libvosk.dll` loaded at runtime.
 - `wake/assets.rs`: first-use download of the library and the model with pinned SHA-256,
   temp-and-rename, extraction with the system `tar.exe`, marker files, cleanup of partial
   downloads, progress events.

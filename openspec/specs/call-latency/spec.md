@@ -1,8 +1,8 @@
 # call-latency Specification
 
 ## Purpose
-Measures how long the assistant takes to answer each turn and where the time goes, as the
-first version did, so slow answers can be traced to the model, the call or the playback.
+Measures how long the assistant takes to answer each turn and where the time goes, so slow
+answers can be traced to the model, the call or the playback.
 
 ## Requirements
 

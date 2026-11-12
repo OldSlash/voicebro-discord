@@ -4,10 +4,8 @@
 
 In the first real-channel session (build `0.2.0+19bcf29`, 2026-11-09) the assistant
 misheard the user, answered fragments of sentences (a one-word "uh-huh" or "yes" after half a
-sentence) and
-spoke with stutters, while the first version (GPTVoice) handled the same game talk well.
-The causes are in this app's call audio path and in one thread parameter taken from the
-rewrite documents instead of the working code (`docs/NEXT-CHANGES.md`, section 1).
+sentence) and spoke with stutters during game talk. The causes are in this app's call audio
+path and in one thread parameter, the approval policy.
 
 ## What Changes
 
@@ -23,10 +21,10 @@ rewrite documents instead of the working code (`docs/NEXT-CHANGES.md`, section 1
   in-band FEC, measured against transcript fidelity.
 - Each call reports its audio counters (frames sent, packets received, late, lost,
   concealed, playout underruns, queue drops) in the status and in one log line at its end.
-- The Codex thread uses the first version's `approvalPolicy: untrusted` instead of
-  `never`; the agent keeps web search and is not restricted beyond acting on the computer.
-- An empty `codex.voice` means the server's default voice, which is what the first version
-  effectively used; the log names the voice actually used.
+- The Codex thread uses `approvalPolicy: untrusted` instead of `never`; the agent keeps web
+  search and is not restricted beyond acting on the computer.
+- An empty `codex.voice` means the server's default voice; the log names the voice actually
+  used.
 - songbird's RTCP decryption warnings stop flooding the log.
 
 ## Capabilities

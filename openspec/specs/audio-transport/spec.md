@@ -18,7 +18,7 @@ Audio between Discord and the app SHALL be 48 kHz, 2 channels, 20 ms frames of 1
 ### Requirement: Speakers are mixed without clipping losses
 When several speakers are heard in one tick, each sample of the mix SHALL be the sum of the
 speakers' samples, computed in 32-bit integers, divided by the number of speakers that
-contributed to it, as in the first version; each speaker's own frame SHALL also be passed on
+contributed to it; each speaker's own frame SHALL also be passed on
 unmixed.
 
 #### Scenario: Two loud speakers

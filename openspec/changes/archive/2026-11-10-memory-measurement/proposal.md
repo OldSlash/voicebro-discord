@@ -3,12 +3,10 @@
 ## Why
 
 The plan reports 434 MB for the app's process in wake-word mode and concludes it is "well
-above" the expected 150 to 200 MB; the user read that as a defect against the first
-version's 200 MB. Measured the way Task Manager counts (private working set) on the same
-machine at the same time, this app's release build uses 169 MB and the first version 179 MB
-(`docs/NEXT-CHANGES.md`, section 6). The 434 MB was private bytes of a debug build. The
-measurement and the conclusion are wrong, and the window shows no memory at all, while the
-first version's status bar and System tab show a memory slot.
+above" the expected 150 to 200 MB; the user read that as a defect. Measured the way Task
+Manager counts (private working set), this app's release build uses 169 MB. The 434 MB was
+private bytes of a debug build. The measurement and the conclusion are wrong, and the window
+shows no memory at all: the memory slots in its status bar and System tab are empty.
 
 ## What Changes
 

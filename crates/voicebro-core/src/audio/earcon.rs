@@ -1,6 +1,5 @@
 //! Short tones that tell the channel what changed: a session started or ended, the
 //! assistant was muted or unmuted. Generated here, mixed into the output even while muted.
-//! The notes and durations are the first version's (`earcon_samples` in its `audio.rs`).
 
 use super::frame::SAMPLE_RATE;
 
@@ -61,7 +60,7 @@ mod tests {
     }
 
     #[test]
-    fn the_four_tones_have_the_first_versions_lengths_and_first_notes() {
+    fn the_four_tones_have_their_lengths_and_first_notes() {
         let ms = |n: usize| n * SAMPLE_RATE as usize / 1_000;
         for (kind, total_ms, first_hz) in [
             (Earcon::Mute, 200, 660.0),

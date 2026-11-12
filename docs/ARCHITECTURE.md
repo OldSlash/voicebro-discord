@@ -1,8 +1,7 @@
 # VoiceBro architecture
 
 How the project is built: crates, components, their boundaries and contracts. This file
-describes the target shape of the code, not the order in which it is written and not the
-history of the first version. Every agent working here reads it before touching code and
+describes the target shape of the code, not the order in which it is written. Every agent working here reads it before touching code and
 updates it in the same change as the code it describes.
 
 Related files:
@@ -138,11 +137,11 @@ Owns the formats, queues and conversions shared by everything else.
   payload.
 - **`Frame`**: a fixed-size 48 kHz stereo packet. Everything between Discord and the gate and
   between the gate and the assistant is a `Frame`.
-- **Mixing** several speakers: the average, as in the first version. Sum into `i32`, divide
+- **Mixing** several speakers: the average. Sum into `i32`, divide
   by the number of speakers in the tick, then clamp to `i16` once; one speaker passes
   unchanged. Never saturate before averaging.
 - **Resamplers** (`dsp.rs`): fixed-ratio windowed-sinc FIR, 48 k stereo → 16 k mono, and the
-  24 k paths from the first version (kept and tested, unused by the MVP). Deterministic, no
+  24 k paths (kept and tested for a later websocket path, unused by the MVP). Deterministic, no
   external resampler.
 - **`OutputQueue` / `PcmSource`**: the assistant's audio toward Discord. A small adaptive
   jitter buffer (3 to 8 frames), drop-oldest when full, a flush epoch (so a cut answer never
@@ -180,12 +179,12 @@ Owns the formats, queues and conversions shared by everything else.
   say) produces silence, so a temporary underrun never ends the track. Only leaving the
   channel closes the source: `OutputHandle::close()` makes the next `read` return end of
   stream, and the track ends with it. Nothing else may end it.
-- **Earcons**: the first version's four tones generated in Rust, mixed into the output even
+- **Earcons**: four tones generated in Rust, mixed into the output even
   while muted, at volume 0.18 by default: session start 523.25, 659.25 and 783.99 Hz (70, 70,
   110 ms), session end 659.25 then 392 Hz (80, 130 ms), mute 660 then 440 Hz (90, 110 ms),
   unmute 440 then 660 Hz (90, 110 ms), each note with a 6 ms fade at both ends.
 - **Gains** (`gain.rs`): `audio.input_gain` and `audio.output_gain`, 0.0 to 4.0, default
-  1.0, as in the first version. `AudioGains` holds one `GainStage` per direction (the gain
+  1.0. `AudioGains` holds one `GainStage` per direction (the gain
   in an atomic, a clip counter, the peak of the last second), owned by the
   `RelayRegistry` and shared by every gate and output, so a saved change reaches the next
   frame without rebuilding anything. The input gain scales the frame the gate is about to
@@ -269,8 +268,8 @@ state machine. A `RelayRegistry` holds all gates and the single app-wide mute fl
 - **Modes**: `always` (session is always wanted while connected) and `wake_word`.
 - **Mute** is one app-wide state with three sources: the app button, the global hotkey and
   the Discord panel button. All three end in `Runtime::toggle_mute`, which goes through
-  `RelayRegistry::set_muted` into every gate. Mute ends the session, as in the first
-  version: the session is no longer wanted (the call closes, nothing is spent while muted),
+  `RelayRegistry::set_muted` into every gate. Mute ends the session: the session is no
+  longer wanted (the call closes, nothing is spent while muted),
   nothing is sent to the assistant, the output is flushed and discarded, and phrases are
   ignored. Unmute in always mode wants a new session at once; in wake-word mode the next
   session needs the activation phrase. The mute and unmute tones play on every change when
@@ -447,7 +446,7 @@ pub trait AssistantSession: Send + Sync {
 pub struct AudioPorts { pub input: FrameReceiver, pub output: OutputHandle }
 ```
 
-`AudioPorts` replace the first version's local WebSocket transport: the gate pushes gated
+`AudioPorts` connect the gate and the assistant in process: the gate pushes gated
 frames into `input`, the assistant pushes decoded answer audio into `output` (the
 `OutputQueue` from 4.1) and can `flush` it. `Runtime::on_join` builds the ports and the gate,
 calls `attach`, and gives the session to the gate; `on_leave` calls `detach`.
@@ -474,7 +473,7 @@ assistant is given, so the app never panics on an unknown engine setting.
   (`CodexAssistant::executable_version`), so a status read starts no process unless
   Codex was replaced.
 - `thread.rs`: one ephemeral, read-only thread per guild (`sandbox: read-only`,
-  `approvalPolicy: "untrusted"` as in the first version's working code, so the agent's
+  `approvalPolicy: "untrusted"`, so the agent's
   server-side tools such as web search run; client-side approval requests are still
   declined), `developerInstructions`, optional `model` and
   `config.model_reasoning_effort`). A changed model or effort opens a new thread and remaps
@@ -492,7 +491,7 @@ assistant is given, so the app never panics on an unknown engine setting.
   agent's answer reaches the voice model. `items` (the default) sends
   `codexResponsesAsItems: true`, `commentary` and `bem_tags` send
   `codexResponseHandoffMode` `commentary` and `bemTags`, `thinking` sends neither, which is
-  Codex's built-in routing and what the app and the first version sent before. With the
+  Codex's built-in routing and what the app sent before. With the
   built-in routing the voice model sometimes answered with made-up facts before the agent
   had finished; with `items` it kept the agent's facts in every call of the 2026-11-10
   tests. The fields are experimental: if Codex refuses a start that carries one, the start
@@ -581,7 +580,7 @@ assistant is given, so the app never panics on an unknown engine setting.
   backoff of 2 s times the attempt; the fourth failure sets the connection error. A stop
   closes the peer, sends `thread/realtime/stop` and flushes the output; a restart waits for
   the stop. Barge-in is left to the realtime server (it stops its own output when the user
-  speaks); the first version's client-side flush is not ported.
+  speaks); the app does not flush its output on the user's speech.
 - `CodexAssistant` (`codex/mod.rs`) owns the process, the account, the voices and models,
   the conversations per guild and the chat log. **Nothing of Codex runs before `/join`.**
   `prepare(guild)` (`Assistant::prepare`, awaited by the `/join` handler through
@@ -710,7 +709,7 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
   `WebviewWindowBuilder::data_directory(<data dir>\webview-data)`; `tauri.conf.json` lists no
   window, because its `dataDirectory` is relative to `%APPDATA%`.
 - UI: static HTML, CSS and JS with `withGlobalTauri: true`, no framework or bundler. The
-  window has the first version's look, written new for this app: a tab bar with **Console,
+  window has a tab bar with **Console,
   Codex chat, Status,
   Performance, System, Settings, Config**, cards, and a status bar (Discord state in colour,
   guild count, voice channel count, uptime, a memory slot while memory measurement is on,
@@ -718,7 +717,7 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
   keeps each tab's content and scroll position. Four themes (Dark, Darcula, Light,
   IntelliJ) as CSS variables on `html[data-theme]` and a font size, both from the `ui`
   settings section, applied at once and at load.
-  - Console, as in the first version, is a read-only text area with the app log
+  - Console is a read-only text area with the app log
     (`log_history` at load, then each `app-log` record; at most 2 000 lines in the view),
     search that filters the lines and shows the match count, Clear (the view only), Copy
     (the shown lines), Copy Selection and Auto-scroll (off keeps the view where the user
@@ -742,9 +741,8 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     sees winget's link on the next status read. Without winget the notice gives the npm
     and the manual ways instead of the button. With Codex found and no account, the area
     names the next step, Sign in to Codex.
-  - Performance, as in the first version: a window selector (30 s, 60 s, 5 min), Refresh,
-    a health dot and a quality label, two canvas charts drawn with the first version's
-    `drawChart` (no library), and stat cards, all behind the "Performance monitoring"
+  - Performance: a window selector (30 s, 60 s, 5 min), Refresh, a health dot and a
+    quality label, two canvas charts drawn with the page's own `drawChart` (no library), and stat cards, all behind the "Performance monitoring"
     switch in the tab's toolbar, which is the `diagnostics.performance` setting (off by
     default; the Diagnostics card of the Settings tab holds a second control of the same
     setting). While it is on the window samples the status once a second (the same poll
@@ -834,7 +832,7 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     an "Auto-start enabled" badge, Save changes (one settings patch for the edited fields
     plus `set_secret` when a token was typed) and Reset (back to the stored values), and the
     stored `settings.json` read-only with its path. The token is never in that view.
-  - Codex chat is the first version's chat view: the chat log entries (pulled at start,
+  - Codex chat shows the chat log entries (pulled at start,
     then one `chat` event per entry, at most 600 rows), one row each with the time, a
     coloured source label and the text. Labels: the speaker's name for a user transcript,
     `GPT` (the voice answer), `Context → GPT`, `Task → Codex`, `Codex`, `Codex thinking`,
@@ -975,7 +973,7 @@ UI patch ─► command save_settings ─► Settings::validate ─► store ─
 
 ## 6. Contracts and constants
 
-Values that worked in the first version. Change them only with a measurement or a corpus run.
+Values that are known to work. Change them only with a measurement or a corpus run.
 
 | Contract | Value |
 |---|---|
@@ -1035,15 +1033,14 @@ Values that worked in the first version. Change them only with a measurement or 
   [delivery:<guild>] voice server <host> (region <region>)
   [delivery:<guild>] voice server <host> (region <region>): <n> packets encoded, <n> passed through, <n> encode errors; expected loss <p> % (measured|default); <n> reports, last loss <p> %, jitter <ms> ms
   ```
-- **Turn latency** (`latency.rs`, ported from the first version's tracker with its
-  constants): one `LatencyTracker` per guild, owned by the gate. The gate reports every
+- **Turn latency** (`latency.rs`): one `LatencyTracker` per guild, owned by the gate. The gate reports every
   frame with speech (peak ≥ 700, before the gain) it sends to the assistant; `PcmSource`
   reports every played frame of the assistant's audio with a signal (peak ≥ 256), with the
   network arrival of its packet from the jitter buffer (`FrameProvider::arrival`). A turn
   starts after more than 350 ms without speech; the first answer audio within 15 s of its
   last speech is its response; speech while the answer plays (its audio less than 1 s ago)
   is reported once as an interruption; answer audio with no turn waiting is autonomous.
-  The log lines, as in the first version, prefixed with the guild:
+  The log lines, prefixed with the guild:
 
   ```text
   [latency:<guild>] turn <n> (response|response after interruption): first Discord speech -> ChatGPT audio <ms> ms; last Discord speech -> ChatGPT audio <ms> ms; ChatGPT audio -> Discord relay handoff <ms> ms; first speech -> Discord relay handoff <ms> ms
@@ -1096,14 +1093,9 @@ Values that worked in the first version. Change them only with a measurement or 
 | A setting | One field in `Settings`, its validation, its `apply` branch, its UI control |
 | A UI | Anything that can call the commands and subscribe to the event; the core is unchanged |
 
-## 10. Provenance
+## 10. Code origin
 
-Modules carried over from the first version (`gptvoice-discord`, branch
-`feature/codex-voice-assistant`, written by this project's author): `codex.rs` without its
-websocket pump and its old call transport, `wake.rs`, `gate.rs`, `dsp.rs`, and the manifest
-embedding in `build.rs`. They are adapted to this architecture: the Tauri `AppHandle` and `Emitter` become the event bus,
-`tauri::async_runtime::spawn` becomes a tokio handle, and the local WebSocket media
-transport becomes `AudioPorts`.
-
-Everything else (Discord adapter, member panel, audio core, settings, desktop shell, UI) is
-written new from this document.
+All of VoiceBro's own code is written by the project's author; no one else's code is copied
+into it (the libraries it is built with are dependencies, listed in the README). Every module
+(the Codex assistant, the wake engine, the session gate, the audio core, the Discord adapter,
+the member panel, the settings, the desktop shell and the UI) follows this document.

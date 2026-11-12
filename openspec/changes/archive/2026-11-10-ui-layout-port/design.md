@@ -2,39 +2,37 @@
 
 ## Context
 
-See proposal.md. The first version's window (its screenshots in `docs/NEXT-CHANGES.md`)
-has a tab bar, cards with two-column forms, stat tiles, info lists, a status bar and four
-themes; theme and font size are kept in the browser storage. This app's UI (`apps/desktop/ui`) has three tabs and its own minimal CSS; its
-commands and the status snapshot already carry most of what the first version shows.
-WebView2 runs with Tauri's default data folder `%LOCALAPPDATA%\com.voicebro.desktop`
+See proposal.md. The new window has a tab bar, cards with two-column forms, stat tiles,
+info lists, a status bar and four themes. The app's UI today (`apps/desktop/ui`) has three
+tabs and its own minimal CSS; its commands and the status snapshot already carry most of
+what the new window shows. WebView2 runs with Tauri's default data folder `%LOCALAPPDATA%\com.voicebro.desktop`
 (130 MB measured), which breaks the rule that the app writes nothing under the user profile.
 
 ## Goals / Non-Goals
 
-**Goals:** the first version's look and structure, tab for tab, wired to this app's
-commands; appearance settings; portable window data.
+**Goals:** the new look and structure, tab for tab, wired to the app's commands;
+appearance settings; portable window data.
 
 **Non-Goals:** the form's saving behaviour (change `settings-form-behavior`), the content of
 Console, Codex chat and Performance (changes `chat-and-console-tabs`,
 `performance-statistics`), memory readings (change `memory-measurement`); a framework or
-bundler; the first version's browser parts and update check.
+bundler; an update check.
 
 ## Decisions
 
-**D1. Written new to the first version's look.** `index.html`, `styles.css` and the window
-parts of `main.js` are written for this app from the first version's screenshots: the same
-tabs, cards, status bar and themes, without the browser cards, the ChatGPT URL, the browser
-executable, the audio mode and the update tile, every string in English. The status bar's
-memory slot is left for change `memory-measurement`. *Alternative:* a different design
-guided by the skill. Rejected: the user asked for the first version's interface.
+**D1. Written new.** `index.html`, `styles.css` and the window parts of `main.js` are
+written for this app: the tabs, cards, status bar and themes the proposal lists, with no
+update tile, every string in English. The status bar's memory slot is left for change
+`memory-measurement`. *Alternative:* a different design guided by the skill. Rejected: the
+user asked for this layout.
 
-**D2. Own code only.** No file of the first version's window is copied: the markup, the
-styles and the window code are written from the screenshots and this app's commands.
+**D2. Own code only.** The markup, the styles and the window code are all written for this
+app and its commands.
 
 **D3. Appearance in the settings file.** `ui.theme` and `ui.font_size` live in a new `ui`
 section, so they travel with the portable folder; the page applies them from the settings at
-load (CSS variables, `html[data-theme]`) and saves them like any other setting. The first
-version's `localStorage` keys are not used.
+load (CSS variables, `html[data-theme]`) and saves them like any other setting.
+`localStorage` is not used for them.
 
 **D4. System facts.** A `system_status` command returns version, build stamp, process id,
 uptime (from a start instant kept in the shell), platform, architecture and CPU count. The
@@ -55,17 +53,15 @@ delete.
 
 **D7. Skill.** The `frontend-design` skill from `anthropics/skills` is installed for every
 agent as `AI-REFERENCE.md` describes (`.agents/skills/` and `.claude/skills/`, real copies);
-it guides spacing, contrast and states within the first version's look, not a new one.
+it guides spacing, contrast and states within the layout of D1, not a new design.
 
 **D8. Checking without the window.** The page is opened from disk in a browser; without
-`window.__TAURI__` it renders its layout with placeholders, which is enough to compare each
-tab with the first version's screenshots. Live data in the browser comes with the command
+`window.__TAURI__` it renders its layout with placeholders, which is enough to check each
+tab's layout. Live data in the browser comes with the command
 mock of change `settings-form-behavior`.
 
 ## Risks / Trade-offs
 
-- [The first version's window relies on its own commands] → the window code is written for
-  this app's status snapshot.
 - [Building the window in code changes how Tauri reads the window list] → the configuration
   keeps no window; the capability file's window label stays `main`.
 - [Two settings sources during the transition] → the `ui` section is new; nothing else moves

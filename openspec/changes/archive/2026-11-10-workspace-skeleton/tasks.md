@@ -33,7 +33,7 @@
 - [x] 5.2 Implement the event bridge task forwarding `AppEvent` to the webview as `app-event`, with lag counting; verify a log line emitted from Rust appears in the UI log pane
 - [x] 5.3 Build the static UI shell: three tabs (Status, Settings, Chat), the log pane, the build stamp in the footer, a token field with set/clear and the `is_set` badge, and one settings control (idle timeout) that exercises save, validate and apply; verify in `cargo tauri dev` that an out-of-range timeout shows the validation message and a valid one persists across restart
 
-  5.1–5.3 closed by the user's decision of 2026-11-10 at the merge into `main` (every remaining check counts as done); not verified separately as tasks. Later changes replaced this shell with the first version's layout.
+  5.1–5.3 closed by the user's decision of 2026-11-10 at the merge into `main` (every remaining check counts as done); not verified separately as tasks. Later changes replaced this shell with the seven-tab layout.
 
 ## 6. Close-out
 

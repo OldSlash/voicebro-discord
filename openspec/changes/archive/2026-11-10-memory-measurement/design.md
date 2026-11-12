@@ -2,13 +2,11 @@
 
 ## Context
 
-See proposal.md. Measured on 2026-11-09 at 22:02, both apps running with the wake word
-loaded: the first version (`gptvoice-tauri.exe`, release) 1213 MB private bytes, 219 MB
-working set, 179 MB private working set; this app (`voicebro.exe`, release 0.2.0) 689 MB,
-195 MB, 169 MB. `scripts\measure.ps1` reports `PrivateMemorySize64` (private bytes, the
-commit charge) and the working set; the first version's status bar shows the literal
-"Native" and its System tab the literal "Native host", not measurements. After change
-`ui-layout-port` this app has the status bar and the System tab with an empty memory slot.
+See proposal.md. Measured on 2026-11-09 at 22:02 with the wake word loaded: this app
+(`voicebro.exe`, release 0.2.0) 689 MB private bytes, 195 MB working set, 169 MB private
+working set. `scripts\measure.ps1` reports `PrivateMemorySize64` (private bytes, the commit
+charge) and the working set. After change `ui-layout-port` this app has the status bar and
+the System tab with an empty memory slot.
 
 ## Goals / Non-Goals
 
@@ -25,8 +23,8 @@ shows; private bytes and the working set stay in the script's output for diagnos
 `GetProcessMemoryInfo` with `PROCESS_MEMORY_COUNTERS_EX2` gives `PrivateWorkingSetSize`
 (present in `windows-sys` 0.61 `Win32::System::ProcessStatus`); the script uses the
 `Working Set - Private` performance counter. *Alternative:* private bytes. Rejected: it
-counts committed memory the process never touches (the first version shows 1213 MB) and it
-is not what the user sees.
+counts committed memory the process never touches (689 MB for the release build above) and
+it is not what the user sees.
 
 **D2. Which processes.** The app's own process, its descendants whose image is
 `msedgewebview2.exe`, and the Codex child (`codex.exe` and its `codex-code-mode-host.exe`),

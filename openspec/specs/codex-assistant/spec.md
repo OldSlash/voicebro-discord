@@ -31,8 +31,8 @@ error text.
 - **THEN** the app-server process is gone within two seconds and the conversation of each guild is kept for the next join
 
 ### Requirement: Nothing acts on the computer
-Every thread SHALL be ephemeral with a read-only sandbox and `approvalPolicy: untrusted`, as
-in the first version; every approval, tool call, user-input and elicitation request from the
+Every thread SHALL be ephemeral with a read-only sandbox and `approvalPolicy: untrusted`;
+every approval, tool call, user-input and elicitation request from the
 server SHALL be declined automatically and logged. The agent's own server-side tools, web
 search included, SHALL stay available.
 

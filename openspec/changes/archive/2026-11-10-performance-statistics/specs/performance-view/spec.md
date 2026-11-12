@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Gives the user the first version's Performance tab: a quick verdict on call quality, live
-charts and the measured counters, over a time window the user chooses.
+Gives the user a Performance tab: a quick verdict on call quality, live charts and the
+measured counters, over a time window the user chooses.
 
 ## ADDED Requirements
 

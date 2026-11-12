@@ -2,25 +2,25 @@
 
 ## Context
 
-See proposal.md. Target: `docs/ARCHITECTURE.md` 4.3 and 4.5 (the trait half). Source: v1
-`gate.rs` (962 lines, ours) with its tests and constants (pre-roll 250 frames, replay cap
-300, lookback 1 s + 80 ms, peak 700, utterance gap 700 ms, concurrent window 400 ms). The
-audio ports, the receive path's `TickSink`, the wake engine's `PhraseSink` and the hotkey
-probe exist. `Runtime::toggle_mute` exists and publishes `MuteChanged`.
+See proposal.md. Target: `docs/ARCHITECTURE.md` 4.3 and 4.5 (the trait half). The gate's
+constants: pre-roll 250 frames, replay cap 300, lookback 1 s + 80 ms, peak 700, utterance
+gap 700 ms, concurrent window 400 ms. The audio ports, the receive path's `TickSink`, the
+wake engine's `PhraseSink` and the hotkey probe exist. `Runtime::toggle_mute` exists and
+publishes `MuteChanged`.
 
 ## Goals / Non-Goals
 
-**Goals:** the v1 session rules on the new ports; the assistant interface the Codex change
+**Goals:** the session rules on the audio ports; the assistant interface the Codex change
 implements; mute from all three sources; everything testable with a stub assistant.
 
 **Non-Goals:** no assistant implementation; no change to the detection rules.
 
 ## Decisions
 
-**D1. Port `gate.rs` with its tests; replace the media transport by `AudioPorts`.**
-`media.send_pcm_i16` → `FrameSender::send(frame)`; `media.last_assistant_signal()` →
-`OutputHandle::last_signal()`; `set_output_muted` → `OutputHandle::set_muted` plus `flush`.
-`Earcon` comes from `audio::earcon`. `AppHandle`/`Emitter` → `EventBus`.
+**D1. `gate.rs` with its tests, over `AudioPorts` only.** The gate sends frames with
+`FrameSender::send(frame)`, reads the assistant's last signal from
+`OutputHandle::last_signal()`, mutes with `OutputHandle::set_muted` plus `flush`, takes
+`Earcon` from `audio::earcon` and publishes through `EventBus`.
 
 **D2. The gate is the `TickSink` and the `PhraseSink`.** The receive path calls
 `gate.process_tick(mixed, per_speaker)`; the wake worker calls `gate.on_phrase(kind, phrase,
@@ -53,7 +53,7 @@ error "assistant did not become ready"; nothing waits forever.
   rising earcon tells the user the session started.
 - [Hotkey eaten by a game or anti-cheat] → the panel and the app button remain; a raw
   `RegisterHotKey` fallback is the recorded option.
-- [Utterance timing without recognizer word times] → the 1 s + 80 ms lookback from v1.
+- [Utterance timing without recognizer word times] → the 1 s + 80 ms lookback.
 
 ## Open Questions
 
