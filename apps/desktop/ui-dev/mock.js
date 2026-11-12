@@ -76,14 +76,23 @@
   }
   // `?always`: the session mode starts as always listening.
   if (new URLSearchParams(location.search).has("always")) settings.session.mode = "always";
-  let inVoice = !FRESH;
+  // `?joined`: the bot is in a voice channel when the page loads, also with `?fresh` (as
+  // after a reload of the window while the bot is in use).
+  let inVoice = !FRESH || new URLSearchParams(location.search).has("joined");
   // The wake engine as the app runs it: in wake-word mode the files are checked before the
   // phrases, a model that is not on disk asks first, and Download walks through the
   // progress. The consent covers one model.
   let consentFor = null;
-  let download = null; // { model, items, index, percent, failed }
+  let download = null; // { model, items, index, percent, failed, installing }
   let failNextDownload = false;
-  const LIBRARY = { label: "Vosk library", host: "github.com", bytes: 14900000 };
+  // Archives the user put into the assets folder by hand, by file name: Download checks
+  // and unpacks them instead of downloading them.
+  const placed = new Set();
+  const MODELS_PAGE = "https://alphacephei.com/vosk/models";
+  const LIBRARY = {
+    label: "Vosk library", host: "github.com", bytes: 14900000,
+    file: "vosk-win64-0.3.45.zip", page: "https://github.com/alphacep/vosk-api/releases/tag/v0.3.45",
+  };
   // Missing lists are empty, as the app fills them when it reads the document.
   function selectedPhrases() {
     const entry = settings.wake.phrases[settings.wake.model] || {};
@@ -95,14 +104,20 @@
     if (!model) throw `model «${id}» is neither in the catalog nor a local: model`;
     const items = [];
     if (!libraryInstalled) items.push(clone(LIBRARY));
-    if (!model.installed) items.push({ label: model.asset, host: "alphacephei.com", bytes: model.bytes });
+    if (!model.installed) {
+      items.push({ label: model.asset, host: "alphacephei.com", bytes: model.bytes, file: `${model.id}.zip`, page: MODELS_PAGE });
+    }
     return items;
   }
   function wakeState() {
     if (settings.session.mode !== "wake_word") return { kind: "off" };
     if (download && download.model === settings.wake.model) {
-      if (download.failed) return { kind: "error", message: `${download.items[download.index].label}: SHA-256 mismatch; nothing was extracted` };
-      return { kind: "downloading", label: download.items[download.index].label, percent: download.percent };
+      const item = download.items[download.index];
+      if (download.failed) {
+        return { kind: "error", message: `${item.file} (downloaded) does not match the pinned SHA-256 (0000…); it was deleted` };
+      }
+      if (download.installing) return { kind: "installing", label: item.label };
+      return { kind: "downloading", label: item.label, percent: download.percent };
     }
     const model = wakeModels.find((entry) => entry.id === settings.wake.model);
     if (!model) return { kind: "error", message: `the model folder C:\\VoiceBro\\models\\${settings.wake.model.slice(6)} is missing; put the model back or choose another one` };
@@ -119,22 +134,30 @@
     consentFor = settings.wake.model;
     const model = wakeModels.find((entry) => entry.id === settings.wake.model);
     // A retry goes on with what is still missing.
-    download = { model: model.id, items: requirements(model.id), index: 0, percent: 0, failed: false };
+    // Each file: downloaded in 20 % steps, then one step of checking and unpacking, then
+    // installed. A file found in the assets folder starts at the unpacking step at once,
+    // as the app reports it.
+    const items = requirements(model.id);
+    download = { model: model.id, items, index: 0, percent: 0, failed: false, installing: placed.has(items[0].file) };
     const step = () => {
       if (!download || download.model !== settings.wake.model) return;
-      if (failNextDownload && download.percent >= 40) {
+      const item = download.items[download.index];
+      if (download.installing) {
+        if (item.label === LIBRARY.label) libraryInstalled = true;
+        else model.installed = true;
+        placed.delete(item.file);
+        download.index += 1;
+        download.percent = 0;
+        if (download.index >= download.items.length) download = null;
+        else download.installing = placed.has(download.items[download.index].file);
+      } else if (failNextDownload && download.percent >= 40) {
         failNextDownload = false;
         download.failed = true;
         emit("app-event", { event: "wake" });
         return;
-      }
-      download.percent += 20;
-      if (download.percent >= 100) {
-        if (download.items[download.index].label === LIBRARY.label) libraryInstalled = true;
-        else model.installed = true;
-        download.index += 1;
-        download.percent = 0;
-        if (download.index >= download.items.length) download = null;
+      } else {
+        download.percent += 20;
+        if (download.percent >= 100) download.installing = true;
       }
       emit("app-event", { event: "wake" });
       if (download) setTimeout(step, 300);
@@ -358,6 +381,7 @@
     wake_requirements: ({ model }) => requirements(model),
     wake_download: ({ model }) => startDownload(model),
     open_models_folder: () => "C:\\VoiceBro\\models",
+    open_assets_folder: () => "C:\\VoiceBro\\assets",
     capabilities: () => clone(capabilities),
     // `?sample` in the page's address: a sample session for the screenshots in docs/images.
     chat_log: () => (SAMPLE ? clone(SAMPLE_CHAT) : [
@@ -463,7 +487,9 @@
     // The wake engine: `wakeState()` as the status reports it; `failNextDownload()` makes
     // the next Download stop at 40 % with a hash error; `resetDownloads()` puts the English
     // model and the library back to "not downloaded" and forgets the consent;
-    // `setInstalled(ids, library)` marks those models (and the library) as on disk.
+    // `setInstalled(ids, library)` marks those models (and the library) as on disk;
+    // `placeArchives(ids, library)` puts their archives (and the library's) into the assets
+    // folder, so the next Download checks and unpacks them without a download step.
     wakeState: () => wakeState(),
     requirements: (id) => requirements(id),
     failNextDownload() {
@@ -480,6 +506,10 @@
       for (const model of wakeModels) if (ids.includes(model.id)) model.installed = true;
       libraryInstalled = library;
       emit("app-event", { event: "wake" });
+    },
+    placeArchives(ids, library = false) {
+      for (const id of ids) placed.add(`${id}.zip`);
+      if (library) placed.add(LIBRARY.file);
     },
     // The bot joins or leaves the mock server's voice channel, as `/join` and `/leave` do.
     join() {

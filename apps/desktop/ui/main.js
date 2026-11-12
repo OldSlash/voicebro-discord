@@ -662,10 +662,66 @@
     }
   }
 
+  // ---------- Downloading the wake word's files by hand ----------
+  // The same part in the notice and in the install dialog: each missing file's archive
+  // name with a link to the official page it is published on, the assets folder button,
+  // and what Download then does with the files. A link has target="_blank": the app hands
+  // every new-window request to the default browser and never shows a page itself.
+  function renderManual(container, items) {
+    const list = container.querySelector(".manual-items");
+    list.innerHTML = "";
+    for (const item of items || []) {
+      if (!item.file || !item.page) continue;
+      const line = document.createElement("li");
+      const name = document.createElement("code");
+      name.textContent = item.file;
+      const link = document.createElement("a");
+      link.href = item.page;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = item.page.replace(/^https?:\/\//, "");
+      const source = document.createElement("span");
+      source.className = "manual-source";
+      source.append("from ", link);
+      line.append(name, source);
+      list.appendChild(line);
+    }
+    container.dataset.empty = list.children.length ? "" : "1";
+  }
+  function showManual(container, visible) {
+    container.hidden = !visible || container.dataset.empty === "1";
+  }
+  // After a failed download only what is still missing is listed.
+  async function refreshManualItems(model) {
+    if (!invoke || !model) return;
+    try {
+      const items = await invoke("wake_requirements", { model });
+      renderManual($("wake-download-manual"), items);
+      renderManual($("wake-install-manual"), items);
+      showManual($("wake-download-manual"), !$("wake-download").hidden && $("wake-download").dataset.failed === "1");
+      showManual($("wake-install-manual"), installDialog.open && !$("wake-install-error").hidden);
+    } catch (error) {
+      appendLog(`wake_requirements failed: ${error}`);
+    }
+  }
+  async function openAssetsFolder(report) {
+    if (!invoke) return;
+    try {
+      report(`Opened ${await invoke("open_assets_folder")}`);
+    } catch (error) {
+      report(`Could not open the assets folder: ${error}`);
+    }
+  }
+  $("wake-download-assets").addEventListener("click", () => openAssetsFolder((line) => {
+    $("settings-feedback").textContent = line;
+  }));
+  $("wake-install-assets").addEventListener("click", () => openAssetsFolder(appendLog));
+
   // ---------- The wake model download: nothing downloads without the button ----------
   let lastWakeKind = "";
   let lastWakeModel = "";
   let downloadRequestError = "";
+  const fetching = (kind) => kind === "downloading" || kind === "installing";
   function renderWakeDownload(wake) {
     const state = wake.state || {};
     lastWakeModel = wake.model || lastWakeModel;
@@ -673,7 +729,8 @@
     const text = $("wake-download-text");
     const list = $("wake-download-items");
     const button = $("wake-download-button");
-    const afterDownload = lastWakeKind === "downloading" || lastWakeKind === "needs_download" || box.dataset.failed === "1";
+    const manual = $("wake-download-manual");
+    const afterDownload = fetching(lastWakeKind) || lastWakeKind === "needs_download" || box.dataset.failed === "1";
     list.innerHTML = "";
     if (state.kind === "needs_download") {
       box.hidden = false;
@@ -685,17 +742,25 @@
         line.textContent = `${item.label} — ${megabytes(item.bytes)} MB from ${item.host}`;
         list.appendChild(line);
       }
+      renderManual(manual, state.items);
+      showManual(manual, true);
       button.hidden = false;
       button.disabled = false;
-    } else if (state.kind === "downloading") {
+    } else if (fetching(state.kind)) {
       box.hidden = false;
       box.dataset.failed = "";
-      text.textContent = `Downloading the ${state.label}: ${state.percent} %`;
+      text.textContent = state.kind === "downloading"
+        ? `Downloading the ${state.label}: ${state.percent} %`
+        : `Checking and unpacking the ${state.label}…`;
+      showManual(manual, false);
       button.hidden = true;
     } else if (state.kind === "error" && afterDownload) {
       box.hidden = false;
+      const firstError = box.dataset.failed !== "1";
       box.dataset.failed = "1";
       text.textContent = `The download failed: ${state.message}`;
+      showManual(manual, true);
+      if (firstError) refreshManualItems(wake.model);
       button.hidden = false;
       button.disabled = false;
     } else {
@@ -704,7 +769,7 @@
     }
     // A finished download, with or without phrases to load: the list marks it downloaded.
     if ((state.kind === "ready" && lastWakeKind && lastWakeKind !== "ready")
-      || (lastWakeKind === "downloading" && state.kind !== "downloading")) reloadWakeModels();
+      || (fetching(lastWakeKind) && !fetching(state.kind))) reloadWakeModels();
     if (state.kind !== "needs_download") downloadRequestError = "";
     lastWakeKind = state.kind || "";
   }
@@ -732,16 +797,17 @@
   });
 
   // ---------- The install dialog: the wake word's files are not on this PC ----------
-  // One modal dialog. It opens when the window starts in wake-word mode with files missing
-  // (`start`), when the wake state turns to needs_download later, as after a switch to
-  // wake word (`mode`), when the bot joins a voice channel while files are still missing
-  // (`join`), and before a model choice whose files are missing is saved (`choice`).
-  // Download asks for that model's download and shows the progress here; Not now, Hide,
-  // Close and Escape store nothing, and the Assistant card's notice stays.
+  // One modal dialog. It never opens because the window started: it opens when the bot
+  // joins a voice channel while files are missing (`join`; a bot already in a channel at
+  // the window's first status counts, as after a reload), when the wake state turns to
+  // needs_download later, as after a switch to wake word (`mode`), and before a model
+  // choice whose files are missing is saved (`choice`). Download asks for that model's
+  // files and shows the progress here; Not now, Hide, Close and Escape store nothing, and
+  // the Assistant card's notice stays.
   const installDialog = $("wake-install");
   const install = {
     armed: false, // set by `start()` once the model list and the settings are loaded
-    started: false, // the start check ran
+    started: false, // the first status after arming was seen
     lastKind: "",
     voiceCount: null,
     reason: "",
@@ -772,11 +838,14 @@
   function installOpen(reason, model, items) {
     if (installDialog.open) return;
     Object.assign(install, { reason, model, saved: reason !== "choice", downloading: false });
+    installDialog.dataset.reason = reason;
     const onlyLibrary = items.length === 1 && items[0].label === "Vosk library";
     $("wake-install-text").textContent = onlyLibrary
       ? `The wake word needs the Vosk recognizer to use ${installNames(model)}, and it is not on this PC yet. Download it now?`
       : `VoiceBro listens for your wake phrase with the ${installNames(model)} model, which is not on this PC yet. Download it now?`;
     installSetItems(items);
+    renderManual($("wake-install-manual"), items);
+    showManual($("wake-install-manual"), true);
     $("wake-install-progress").hidden = true;
     $("wake-install-error").hidden = true;
     $("wake-install-note").textContent = reason === "choice"
@@ -808,25 +877,32 @@
     const voiceCount = Object.keys(status.discord?.voice_channels || {}).length;
     const wakeWord = (stored?.session?.mode ?? status.settings?.session?.mode) === "wake_word";
     if (installDialog.open && wake.model === install.model) {
-      if (kind === "downloading") {
+      if (fetching(kind)) {
         install.downloading = true;
         $("wake-install-progress").hidden = false;
-        $("wake-install-progress").textContent = `Downloading the ${state.label}: ${state.percent} %`;
+        $("wake-install-progress").textContent = kind === "downloading"
+          ? `Downloading the ${state.label}: ${state.percent} %`
+          : `Checking and unpacking the ${state.label}…`;
         $("wake-install-error").hidden = true;
+        showManual($("wake-install-manual"), false);
         installButtons(null, "Hide");
       } else if (kind === "error" && install.downloading) {
         $("wake-install-progress").hidden = true;
         $("wake-install-error").hidden = false;
         $("wake-install-error").textContent = `The download failed: ${state.message}`;
+        showManual($("wake-install-manual"), true);
         installButtons("Try again", "Close");
       } else if (install.downloading && ["ready", "no_phrases", "loading"].includes(kind)) {
         installClose();
       }
     }
     if (install.armed && !installDialog.open && kind === "needs_download" && wakeWord) {
-      if (!install.started) installOpen("start", wake.model, state.items || []);
-      else if (install.lastKind && install.lastKind !== "needs_download") installOpen("mode", wake.model, state.items || []);
-      else if (install.voiceCount !== null && voiceCount > install.voiceCount) installOpen("join", wake.model, state.items || []);
+      const items = state.items || [];
+      // The window's start never opens it; a bot already in a voice channel does.
+      if (!install.started) {
+        if (voiceCount > 0) installOpen("join", wake.model, items);
+      } else if (install.lastKind && install.lastKind !== "needs_download") installOpen("mode", wake.model, items);
+      else if (install.voiceCount !== null && voiceCount > install.voiceCount) installOpen("join", wake.model, items);
     }
     if (install.armed) install.started = true;
     install.lastKind = kind;
@@ -878,7 +954,9 @@
     }
     $("wake-install-error").hidden = true;
     $("wake-install-progress").hidden = false;
-    $("wake-install-progress").textContent = "Starting the download…";
+    // Not "the download": archives put into the assets folder are only checked and unpacked.
+    $("wake-install-progress").textContent = "Starting…";
+    showManual($("wake-install-manual"), false);
     try {
       await invoke("wake_download", { model: install.model });
       install.downloading = true;
@@ -887,6 +965,7 @@
       $("wake-install-progress").hidden = true;
       $("wake-install-error").hidden = false;
       $("wake-install-error").textContent = `Could not start the download: ${error}`;
+      showManual($("wake-install-manual"), true);
       installButtons("Try again", "Close");
     }
     refresh();
@@ -909,6 +988,7 @@
         text = `waiting for your OK to download ${(state.items || []).map((item) => `the ${item.label} (${megabytes(item.bytes)} MB)`).join(" and ")}: Settings → Assistant`;
         break;
       case "downloading": text = `downloading the ${state.label}: ${state.percent}%`; break;
+      case "installing": text = `checking and unpacking the ${state.label}`; break;
       case "loading": text = `loading ${wake.model}`; break;
       case "ready": text = `ready (${wake.model})`; break;
       case "error": text = `error: ${state.message}`; break;

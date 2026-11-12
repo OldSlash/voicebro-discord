@@ -355,3 +355,22 @@ textarea.prompt-input { min-height: 80px; line-height: 1.45; }
 .install-progress { font-variant-numeric: tabular-nums; }
 .install-error { color: var(--bad); }
 .install-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
+/* Downloading the files by hand: in the notice and in the dialog, under the file list. */
+.manual-download { margin: 2px 0 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.manual-download[hidden] { display: none; }
+.manual-download p { margin: 0 0 6px; }
+.manual-download .manual-lead { font-weight: 600; }
+.manual-download .manual-note { color: var(--ink-dim); line-height: 1.45; }
+.manual-download ul { margin: 0 0 6px; padding-left: 18px; }
+.manual-download li { line-height: 1.5; margin-bottom: 3px; }
+.manual-download code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.92em; }
+.manual-download .manual-source { display: block; color: var(--ink-dim); }
+/* The text colour, not the accent: the accent is too dim on the Darcula panel. */
+.manual-download a {
+  color: var(--ink); white-space: nowrap;
+  text-decoration: underline; text-decoration-color: var(--accent);
+  text-underline-offset: 2px; text-decoration-thickness: 1px;
+}
+.manual-download a:hover { text-decoration-thickness: 2px; }
+.manual-download a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }

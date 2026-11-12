@@ -125,17 +125,32 @@ Open **Settings → Assistant**.
 - **Activation phrases** and **Deactivation phrases** belong to the model chosen below
   them: one per line, or separated by commas. Words the model does not know are listed
   under the field.
-- When the wake word's files are not on this PC, a window says so: **The wake word is not
-  installed**, with what it needs to download (the Vosk recognizer, 15 MB from
-  github.com, once, and the model, 32 to 53 MB depending on the language, from
-  alphacephei.com). It appears when VoiceBro starts, when the bot joins a voice channel,
-  when you switch to **Wake word**, and when you choose a model that is not downloaded
-  yet. Nothing is downloaded until you press **Download**; the window shows the progress
-  and closes when the files are in place.
-- **Not now** closes the window and downloads nothing. The same notice stays under
-  **Wake model** in **Settings → Assistant**, with its own **Download** button, and the
-  window comes back at the next start or join. When you were choosing a model,
-  **Cancel** keeps the model you had.
+- When the wake word's files are not on this PC, the notice under **Wake model** in
+  **Settings → Assistant** says so, and so does **Wake word** on the **Status** tab. It
+  lists what is needed: the Vosk recognizer, 15 MB from github.com, once, and the model,
+  32 to 53 MB depending on the language, from alphacephei.com. Starting VoiceBro does not
+  interrupt you with it.
+- A window, **The wake word is not installed**, asks about the same files when the bot
+  joins a voice channel (`/join`), when you switch to **Wake word**, and when you choose
+  a model that is not downloaded yet. Nothing is downloaded until you press
+  **Download**; the window shows the progress and closes when the files are in place.
+- **Not now** closes the window and downloads nothing. The notice under **Wake model**
+  keeps its own **Download** button, and the window comes back at the next `/join`. When
+  you were choosing a model, **Cancel** keeps the model you had.
+- **Rather download the files yourself?** The window and the notice name each file and
+  link to the official page it is published on. A link opens in your browser:
+  - `vosk-win64-0.3.45.zip`, the recognizer, from its release page on GitHub
+    (`github.com/alphacep/vosk-api/releases/tag/v0.3.45`), under **Assets**;
+  - the model, for example `vosk-model-small-en-us-0.15.zip` for English, from the Vosk
+    models page (`alphacephei.com/vosk/models`). The models are not on GitHub; this page
+    is where the Vosk project publishes them.
+
+  Press **Open assets folder** and put the `.zip` files there as they are, without
+  unpacking them, then press **Download**. VoiceBro checks each file against the
+  checksum it knows for it and unpacks it without going online; the window says
+  "Checking and unpacking" instead of "Downloading". Only files that are not in the
+  folder are downloaded. A file with the right name that fails the check is deleted, and
+  the window says so.
 
 Good phrases are easy to recognize and rare in game talk:
 
@@ -243,7 +258,7 @@ need it.
 |---|---|
 | The commands do not show up in Discord | Put your server's ID into **Config → Discord guild ID**, or wait up to an hour. |
 | `/join` replies "Codex CLI is not installed" or "not signed in" | Do [step 4](#4-set-up-codex); the **Status** tab shows what is missing. |
-| The wake phrase does nothing | Look at **Wake word** on the **Status** tab: it says when the model still waits for its download (you pressed **Not now**; press **Download** under **Wake model** in **Settings → Assistant**), when no phrases are set, or which words the model does not know. The **Console** shows a "heard:" line for everything the recognizer understood, so you can pick phrases it hears correctly. |
+| The wake phrase does nothing | Look at **Wake word** on the **Status** tab: it says when the model still waits for its download (press **Download** under **Wake model** in **Settings → Assistant**, or put the files there yourself as section 5 describes), when no phrases are set, or which words the model does not know. The **Console** shows a "heard:" line for everything the recognizer understood, so you can pick phrases it hears correctly. |
 | The bot joins but does not hear or speak | Check that the bot has **Connect** and **Speak** in that channel, and look for errors in the **Console**. |
 | The assistant's voice stutters in places | The ping from the PC that runs VoiceBro to the channel's Discord voice server is probably too high: at around 300 ms or more the voice can break up. Set the channel's **Region Override** (**Edit Channel → Overview**) to a region close to that PC. See [Limitations](../README.md#limitations). |
 | VoiceBro does not start and names a folder | Install or extract it into a folder you can write to, such as `%LOCALAPPDATA%\VoiceBro`. |

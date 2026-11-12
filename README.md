@@ -65,8 +65,8 @@ Get the latest version from [Releases](https://github.com/OldSlash/voicebro-disc
 3. **Set up Codex.** On the **Status** tab press **Install Codex** if it is missing, then
    **Sign in to Codex** and finish the ChatGPT sign-in in your browser.
 4. **Choose a wake phrase.** In **Settings → Assistant**, pick the wake model for your
-   language, enter a phrase such as `hey bro`, and press **Download** when VoiceBro asks for
-   the speech model.
+   language, enter a phrase such as `hey bro`, and press **Download** under **Wake model**
+   for the speech model, or download its files yourself from the linked pages.
 5. **Talk.** Join a voice channel, type `/join`, say your phrase and ask a question.
 
 The [user guide](docs/user-guide.md) covers each step in detail, as well as other

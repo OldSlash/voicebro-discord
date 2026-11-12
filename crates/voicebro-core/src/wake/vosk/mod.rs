@@ -16,6 +16,7 @@ use std::sync::Arc;
 /// The Vosk 0.3.45 Windows build (libvosk.dll and its MinGW runtime DLLs).
 pub const LIBRARY: Asset = Asset {
     label: "Vosk library",
+    page: "https://github.com/alphacep/vosk-api/releases/tag/v0.3.45",
     url: "https://github.com/alphacep/vosk-api/releases/download/v0.3.45/vosk-win64-0.3.45.zip",
     sha256: "f1dcc9cca460630f81ea8f71794f69c80bed6556d2a4e6237b5785e1d2dff34b",
     directory: "vosk-win64-0.3.45",
