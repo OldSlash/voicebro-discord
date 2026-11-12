@@ -7,6 +7,7 @@
 //! This binary is a development tool and is not shipped.
 
 mod codex;
+mod compare;
 mod credential;
 mod discord;
 mod hotkey;
@@ -16,6 +17,40 @@ mod seed;
 mod vosk;
 
 use std::process::ExitCode;
+use voicebro_core::audio::codec::OpusCodec;
+
+/// The codec named by `--codec <name>` (change `opus-codec-experiment`); libopus without
+/// the flag. An unknown or missing name is an error that lists the two.
+pub fn codec_arg(args: &[String]) -> anyhow::Result<OpusCodec> {
+    let Some(index) = args.iter().position(|arg| arg == "--codec") else {
+        return Ok(OpusCodec::Libopus);
+    };
+    let name = args
+        .get(index + 1)
+        .ok_or_else(|| anyhow::anyhow!("--codec needs one of {}", OpusCodec::names()))?;
+    OpusCodec::parse(name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{name} is not an Opus codec; use one of {}",
+            OpusCodec::names()
+        )
+    })
+}
+
+/// `args` without `--codec <name>`, for probes that read their other arguments by position.
+pub fn without_codec_arg(args: &[String]) -> Vec<String> {
+    let mut rest = Vec::with_capacity(args.len());
+    let mut skip = false;
+    for arg in args {
+        if skip {
+            skip = false;
+        } else if arg == "--codec" {
+            skip = true;
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    rest
+}
 
 /// What a probe found. `pass` is judged against the written criterion; `details` are the
 /// measured values, printed whatever the verdict.
@@ -63,20 +98,26 @@ const PROBES: &[Probe] = &[
     },
     Probe {
         name: "opus-roundtrip",
-        summary: "encode and decode 48 kHz 20 ms frames with opus2",
+        summary: "encode and decode 48 kHz 20 ms frames; args: [--codec <name>]",
         needs: "nothing",
         run: opus::roundtrip,
     },
     Probe {
+        name: "opus-compare",
+        summary: "every WAV of a corpus through libopus and opus-rs on the app's four Opus paths: time, SNR, loss, WAVs; args: <corpus dir> [--out <dir>] [--no-wav]",
+        needs: "16-bit WAVs at 48 kHz or a divisor of it; run in release for the timings",
+        run: compare::compare,
+    },
+    Probe {
         name: "rtc-loopback",
-        summary: "two in-process peer connections exchange an Opus track and a data channel",
+        summary: "two in-process peer connections exchange an Opus track and a data channel; args: [--codec <name>]",
         needs: "nothing",
         run: rtc::loopback,
     },
     Probe {
         name: "rtc-call",
         summary:
-            "WebRTC call to Codex realtime v3 with the canary instruction; args: <in.wav> <out.wav>",
+            "WebRTC call to Codex realtime v3 with the canary instruction; args: <in.wav> <out.wav> [--codec <name>]",
         needs: "codex signed in with a ChatGPT account; a 48 kHz mono WAV",
         run: rtc::call,
     },
@@ -125,7 +166,7 @@ const PROBES: &[Probe] = &[
     },
     Probe {
         name: "discord-delivery",
-        summary: "plays a tone; logs the voice server, our SSRC and Discord's RTCP reports; args: [seconds] [--opus] (--opus: through the app's Opus encoder, counts passthrough)",
+        summary: "plays a tone; logs the voice server, our SSRC and Discord's RTCP reports; args: [seconds] [--opus] [--codec <name>] (--opus: through the app's Opus encoder of that codec, counts passthrough)",
         needs: "VOICEBRO_DISCORD_TOKEN, VOICEBRO_TEST_GUILD, VOICEBRO_TEST_CHANNEL (or probe.local.json)",
         run: discord::delivery,
     },

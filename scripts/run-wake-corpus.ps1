@@ -6,8 +6,12 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-wake-corpus.ps1 [-Languages de,fr]
 # The phrases are the test's own (activation | deactivation), the same as in
 # catalog_models_load_when_enabled.
+# -CorpusRoot runs the same files from another folder with the same layout (the assets stay
+# in $Root\assets), for example the copies `probe opus-compare` decoded with each codec:
+#   ... -File scripts\run-wake-corpus.ps1 -CorpusRoot target\opus-compare\receive\opus-rs
 param(
     [string]$Root = "target\wake-corpus",
+    [string]$CorpusRoot,
     [string[]]$Languages
 )
 $ErrorActionPreference = "Stop"
@@ -25,6 +29,7 @@ $exe = cargo test --release -p voicebro-core --no-run --message-format=json 2>$n
 $ErrorActionPreference = "Stop"
 if (-not $exe) { throw "could not build the voicebro-core tests" }
 $Root = (Resolve-Path $Root).Path
+$CorpusRoot = if ($CorpusRoot) { (Resolve-Path $CorpusRoot).Path } else { $Root }
 
 $sets = [ordered]@{
     "ru" = @("vosk-model-small-ru-0.22", "братан | отбой", [ordered]@{
@@ -66,7 +71,7 @@ foreach ($lang in $sets.Keys) {
     foreach ($noise in 0, 300) {
         if ($noise) { $env:VOICEBRO_WAKE_NOISE = "$noise" } else { Remove-Item Env:VOICEBRO_WAKE_NOISE -ErrorAction SilentlyContinue }
         foreach ($file in $files.Keys) {
-            $path = Join-Path $Root $file
+            $path = Join-Path $CorpusRoot $file
             if (-not (Test-Path $path)) { "$lang missing $file"; continue }
             $expected = $files[$file]
             $env:VOICEBRO_WAKE_SEQUENCES = "$path=$expected"

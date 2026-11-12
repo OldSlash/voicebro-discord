@@ -3,6 +3,7 @@
 //! knows every subsystem.
 
 use crate::assistant::{Assistant, StubAssistant};
+use crate::audio::codec::{CodecFailure, CodecFailureHub, CodecFailures, OpusCodec};
 use crate::audio::{frame_channel, AudioPorts, Frame, OutputHandle, INPUT_CAPACITY};
 use crate::discord::{AssistantState, DiscordError, DiscordRuntime, JoinPreparation, VoiceHost};
 use crate::events::{AppEvent, EventBus};
@@ -52,9 +53,22 @@ struct GateHost {
     errors: Arc<ConnectionErrors>,
     gate_settings: Mutex<GateSettings>,
     discord: Mutex<Option<Arc<DiscordRuntime>>>,
+    /// `diagnostics.opus_codec`, read by the Discord side at each join.
+    opus_codec: Mutex<OpusCodec>,
+    /// Where the joins' codec panics are reported (design D5).
+    codec_failures: Arc<CodecFailureHub>,
 }
 
 impl VoiceHost for GateHost {
+    fn opus_codec(&self) -> OpusCodec {
+        *self.opus_codec.lock().expect("opus codec lock")
+    }
+
+    fn codec_failures(&self, guild: u64) -> CodecFailures {
+        self.codec_failures.reset(guild);
+        self.codec_failures.for_guild(guild)
+    }
+
     fn prepare_join(&self, guild: u64) -> JoinPreparation<'_> {
         Box::pin(async move {
             match self.assistant.prepare(guild).await {
@@ -114,6 +128,7 @@ impl VoiceHost for GateHost {
             AudioPorts {
                 input: receiver,
                 output,
+                failures: self.codec_failures.for_guild(guild),
             },
         ) {
             Ok(session) => gate.set_session(session),
@@ -168,6 +183,71 @@ impl GateHost {
     }
 }
 
+/// What the codec failure handler needs from Discord: the voice channel a guild is in, and
+/// leaving it. The Discord adapter in the app, a fake in the tests.
+pub(crate) trait VoiceControl: Send + Sync {
+    /// The guild's name and the voice channel's name, when the bot is in one.
+    fn voice_channel(&self, guild: u64) -> Option<(String, String)>;
+    /// Leaves the guild's voice channel as `/leave` does.
+    fn leave(
+        &self,
+        guild: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+}
+
+impl VoiceControl for DiscordRuntime {
+    fn voice_channel(&self, guild: u64) -> Option<(String, String)> {
+        self.status()
+            .voice_channels
+            .get(&guild.to_string())
+            .map(|channel| (channel.guild_name.clone(), channel.channel_name.clone()))
+    }
+
+    fn leave(
+        &self,
+        guild: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(DiscordRuntime::leave(self, guild))
+    }
+}
+
+/// An opus-rs panic on one of a guild's paths (design D5): logged, the bot leaves that
+/// guild's voice channel, and the window gets its notice. The settings stay as they are.
+/// A report for a guild with no voice channel (already left) is logged and dropped.
+pub(crate) async fn handle_codec_failure(
+    failure: CodecFailure,
+    voice: &dyn VoiceControl,
+    events: &EventBus,
+) {
+    let path = failure.path.name();
+    let codec = failure.codec.label();
+    let Some((guild_name, channel_name)) = voice.voice_channel(failure.guild) else {
+        log::warn!(
+            "{path}: {codec} panicked in guild {}, which has no voice channel now: {}",
+            failure.guild,
+            failure.message
+        );
+        return;
+    };
+    log::error!(
+        "{path}: {codec} panicked: {}; the bot leaves the voice channel {channel_name} in {guild_name}",
+        failure.message
+    );
+    events.log(format!(
+        "the bot left {channel_name} in {guild_name}: {codec} failed while {}",
+        failure.path.activity()
+    ));
+    voice.leave(failure.guild).await;
+    events.publish(AppEvent::CodecFailure {
+        guild_name,
+        channel_name,
+        path: path.to_owned(),
+        activity: failure.path.activity().to_owned(),
+        codec,
+        message: failure.message,
+    });
+}
+
 pub struct Runtime {
     build_stamp: String,
     data_dir: PathBuf,
@@ -183,6 +263,8 @@ pub struct Runtime {
     errors: Arc<ConnectionErrors>,
     secrets_set: Mutex<HashSet<SecretKey>>,
     hotkey: Mutex<HotkeyStatus>,
+    /// The codec failure reports, taken by `start` for its handler task.
+    codec_failures: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<CodecFailure>>>,
 }
 
 impl Runtime {
@@ -226,6 +308,7 @@ impl Runtime {
             events.clone(),
             Arc::new(registry.clone()),
         );
+        let (codec_failures, failure_reports) = CodecFailureHub::new();
         let host = Arc::new(GateHost {
             registry,
             wake: wake.clone(),
@@ -234,6 +317,8 @@ impl Runtime {
             errors: Arc::clone(&errors),
             gate_settings: Mutex::new(GateSettings::from_settings(&Settings::default())),
             discord: Mutex::new(None),
+            opus_codec: Mutex::new(OpusCodec::default()),
+            codec_failures,
         });
         let discord = Arc::new(DiscordRuntime::new(
             events.clone(),
@@ -256,6 +341,7 @@ impl Runtime {
             errors,
             secrets_set: Mutex::new(HashSet::new()),
             hotkey: Mutex::new(HotkeyStatus::default()),
+            codec_failures: Mutex::new(Some(failure_reports)),
         }
     }
 
@@ -287,11 +373,28 @@ impl Runtime {
         *self.host.gate_settings.lock().expect("gate settings lock") =
             GateSettings::from_settings(&self.settings());
         self.host.registry.gains().apply(&self.settings().audio);
+        *self.host.opus_codec.lock().expect("opus codec lock") =
+            self.settings().diagnostics.codec();
         crate::wake::assets::cleanup_partial(&crate::paths::assets_dir(&self.data_dir));
         self.wake.scan_local_models();
         self.wake.configure(&self.settings());
         // Nothing of the assistant runs yet: its process starts at the first /join.
         self.assistant.configure(&self.settings());
+        // An opus-rs panic on a join makes the bot leave that channel (design D5).
+        if let Some(mut reports) = self
+            .codec_failures
+            .lock()
+            .expect("codec failures lock")
+            .take()
+        {
+            let discord = Arc::clone(&self.discord);
+            let events = self.events.clone();
+            self.handle.spawn(async move {
+                while let Some(failure) = reports.recv().await {
+                    handle_codec_failure(failure, discord.as_ref(), &events).await;
+                }
+            });
+        }
 
         for key in SecretKey::ALL {
             match self.secrets.get(*key) {
@@ -385,8 +488,9 @@ impl Runtime {
                     self.assistant.configure(&settings);
                 }
                 "codex" => self.assistant.configure(&settings),
-                // Nothing in the core reads the section: the window and the desktop shell
-                // act on it themselves from the settings change event.
+                // The window and the desktop shell act on the switches themselves from the
+                // settings change event. The codec is only noted for the next join and the
+                // next call: nothing running is rebuilt.
                 "diagnostics" => {
                     let on = |value: bool| if value { "on" } else { "off" };
                     log::info!(
@@ -395,6 +499,17 @@ impl Runtime {
                         on(settings.diagnostics.memory),
                         on(settings.diagnostics.verbose_log)
                     );
+                    let codec = settings.diagnostics.codec();
+                    let mut current = self.host.opus_codec.lock().expect("opus codec lock");
+                    if *current != codec {
+                        *current = codec;
+                        log::info!(
+                            "settings: Opus codec {} from the next join and the next call",
+                            codec.label()
+                        );
+                    }
+                    drop(current);
+                    self.assistant.configure(&settings);
                 }
                 _ => {}
             }
@@ -599,6 +714,179 @@ mod tests {
         );
         runtime.clear_secret("discord_token").unwrap();
         assert!(!runtime.status().secrets["discord_token"].is_set);
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn a_saved_opus_codec_is_kept_for_the_next_join_and_rebuilds_nothing() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        assert_eq!(runtime.host.opus_codec(), OpusCodec::Libopus);
+        let mut events = runtime.events().subscribe();
+        runtime
+            .save_settings(&json!({ "diagnostics": { "opus_codec": "opus-rs" } }))
+            .unwrap();
+        assert_eq!(
+            runtime.host.opus_codec(),
+            OpusCodec::OpusRs,
+            "the next join reads it"
+        );
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(event, AppEvent::Wake(_)),
+                "the wake engine is not reconfigured"
+            );
+        }
+        assert!(runtime
+            .save_settings(&json!({ "diagnostics": { "opus_codec": "opus2" } }))
+            .is_err());
+        assert_eq!(runtime.settings().diagnostics.opus_codec, "opus-rs");
+        assert_eq!(runtime.host.opus_codec(), OpusCodec::OpusRs);
+        runtime.shutdown();
+
+        // A restart takes the stored codec.
+        let again = super::tests::runtime(&dir, &tokio_rt);
+        again.start().unwrap();
+        assert_eq!(again.host.opus_codec(), OpusCodec::OpusRs);
+        again.shutdown();
+    }
+
+    /// A Discord stand-in: the guilds the bot is in, and the leaves asked for.
+    struct FakeVoice {
+        channels: Mutex<std::collections::HashMap<u64, (String, String)>>,
+        left: Mutex<Vec<u64>>,
+    }
+
+    impl VoiceControl for FakeVoice {
+        fn voice_channel(&self, guild: u64) -> Option<(String, String)> {
+            self.channels.lock().unwrap().get(&guild).cloned()
+        }
+
+        fn leave(
+            &self,
+            guild: u64,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            Box::pin(async move {
+                self.channels.lock().unwrap().remove(&guild);
+                self.left.lock().unwrap().push(guild);
+            })
+        }
+    }
+
+    #[test]
+    fn a_codec_panic_makes_the_bot_leave_that_channel_and_tells_the_window() {
+        use crate::audio::codec::{CodecError, CodecPath};
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let voice = FakeVoice {
+            channels: Mutex::new(
+                [
+                    (1, ("Test server".to_owned(), "General".to_owned())),
+                    (2, ("Other".to_owned(), "Lobby".to_owned())),
+                ]
+                .into(),
+            ),
+            left: Mutex::new(Vec::new()),
+        };
+        let events = EventBus::new(16);
+        let mut window = events.subscribe();
+        let (hub, mut reports) = CodecFailureHub::new();
+        let panic = CodecError::Panicked {
+            codec: OpusCodec::OpusRs,
+            detail: "attempt to subtract with overflow".to_owned(),
+        };
+        // Two paths of guild 1 panic; a guild the bot is not in panics too.
+        assert!(hub.for_guild(1).report(CodecPath::CallReceive, &panic));
+        assert!(!hub.for_guild(1).report(CodecPath::DiscordOut, &panic));
+        assert!(hub.for_guild(9).report(CodecPath::Receive, &panic));
+        tokio_rt.block_on(async {
+            while let Ok(failure) = reports.try_recv() {
+                handle_codec_failure(failure, &voice, &events).await;
+            }
+        });
+        assert_eq!(
+            *voice.left.lock().unwrap(),
+            vec![1],
+            "only the failed guild is left"
+        );
+        assert!(voice.voice_channel(2).is_some(), "the other guild stays");
+        let mut notices = Vec::new();
+        while let Ok(event) = window.try_recv() {
+            if let AppEvent::CodecFailure {
+                guild_name,
+                channel_name,
+                path,
+                codec,
+                message,
+                ..
+            } = event
+            {
+                notices.push((guild_name, channel_name, path, codec, message));
+            }
+        }
+        assert_eq!(
+            notices,
+            vec![(
+                "Test server".to_owned(),
+                "General".to_owned(),
+                "call-receive".to_owned(),
+                "opus-rs 0.1.42".to_owned(),
+                "attempt to subtract with overflow".to_owned()
+            )],
+            "one notice, for the guild the bot left"
+        );
+    }
+
+    #[test]
+    fn a_codec_panic_leaves_the_settings_and_a_new_join_reports_again() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({ "diagnostics": { "opus_codec": "opus-rs" } }))
+            .unwrap();
+        let panic = crate::audio::codec::CodecError::Panicked {
+            codec: OpusCodec::OpusRs,
+            detail: "boom".to_owned(),
+        };
+        let failures = runtime.host.codec_failures(3);
+        assert!(failures.report(crate::audio::codec::CodecPath::Receive, &panic));
+        // The handler finds no voice channel of guild 3 (not connected) and drops it.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            runtime.settings().diagnostics.opus_codec,
+            "opus-rs",
+            "not swapped"
+        );
+        assert!(
+            runtime
+                .host
+                .codec_failures(3)
+                .report(crate::audio::codec::CodecPath::Receive, &panic),
+            "a new join of the guild reports again"
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn a_settings_file_with_a_removed_codec_starts_with_libopus_and_saves() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "version": 2, "diagnostics": { "opus_codec": "mousiki" } }"#,
+        )
+        .unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        assert_eq!(runtime.host.opus_codec(), OpusCodec::Libopus);
+        runtime
+            .save_settings(&json!({ "session": { "idle_timeout_seconds": 90 } }))
+            .expect("a save of another field succeeds");
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        assert!(text.contains("\"opus_codec\": \"libopus\""), "{text}");
         runtime.shutdown();
     }
 

@@ -53,6 +53,8 @@ pub struct CallStatus {
     /// idle, starting, live or stopping.
     pub state: String,
     pub connected: bool,
+    /// The Opus codec of the running call, name and version; none without a call.
+    pub opus_codec: Option<String>,
     /// The running call's audio counters, or the last ended call's.
     pub audio: Option<codex::rtc::CallAudioCounters>,
     pub thread_id: Option<String>,
@@ -296,6 +298,7 @@ impl AssistantSession for StubSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::codec::CodecFailures;
     use crate::audio::{frame_channel, output_pair, Frame, INPUT_CAPACITY};
 
     #[test]
@@ -303,13 +306,23 @@ mod tests {
         let assistant = StubAssistant::new(Duration::from_millis(30));
         let (sender, input) = frame_channel(INPUT_CAPACITY);
         let (output, _source) = output_pair();
-        let session = assistant.attach(7, AudioPorts { input, output }).unwrap();
+        let session = assistant
+            .attach(
+                7,
+                AudioPorts {
+                    input,
+                    output,
+                    failures: CodecFailures::none(),
+                },
+            )
+            .unwrap();
         assert!(matches!(
             assistant.attach(
                 7,
                 AudioPorts {
                     input: frame_channel(1).1,
-                    output: output_pair().0
+                    output: output_pair().0,
+                    failures: CodecFailures::none(),
                 }
             ),
             Err(AssistantError::AlreadyAttached(7))

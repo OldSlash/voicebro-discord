@@ -503,8 +503,60 @@ fn show_error(title: &str, text: &str) {
     eprintln!("{title}: {text}");
 }
 
+/// What the panic hook does with a panic (change `opus-codec-experiment`, design D11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanicAction {
+    /// Inside a guarded opus-rs call: the codec catches it, the bot leaves that channel.
+    LetTheCodecCatchIt,
+    /// Anywhere else: a dialog, then the process ends, as `panic = "abort"` did.
+    StopTheApp,
+}
+
+fn panic_action(in_guarded_codec_call: bool) -> PanicAction {
+    if in_guarded_codec_call {
+        PanicAction::LetTheCodecCatchIt
+    } else {
+        PanicAction::StopTheApp
+    }
+}
+
+/// Every panic goes to the log with its thread, location and message. Release builds
+/// unwind so that the Opus codec module can catch an opus-rs panic; every other panic still
+/// ends the process at once, now after a dialog that says why (design D11).
+fn install_panic_hook(log_dir: std::path::PathBuf) {
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("unnamed").to_owned();
+        let location = info
+            .location()
+            .map(|at| format!("{}:{}:{}", at.file(), at.line(), at.column()))
+            .unwrap_or_else(|| "an unknown place".to_owned());
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_owned())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "a panic without a message".to_owned());
+        let action = panic_action(voicebro_core::audio::codec::in_guarded_call());
+        log::error!("panic in thread '{name}' at {location}: {message}");
+        eprintln!("panic in thread '{name}' at {location}: {message}");
+        if action == PanicAction::StopTheApp {
+            log::logger().flush();
+            show_error(
+                "VoiceBro",
+                &format!(
+                    "VoiceBro stopped because of an internal error:\n{message}\n\nat {location}\n\nThe details are in the log:\n{}",
+                    log_dir.display()
+                ),
+            );
+            std::process::abort();
+        }
+    }));
+}
+
 fn main() {
     let data_dir = paths::data_dir();
+    install_panic_hook(paths::logs_dir(&data_dir));
     // Everything the app creates lives in its own folder: without write access there,
     // say so and stop before anything is created.
     if let Err(error) = check_writable(&data_dir) {
@@ -591,6 +643,16 @@ fn main() {
                 log::error!("runtime start: {error}");
                 runtime.set_connection_error("runtime", Some(error.to_string()));
             }
+            // Debug builds only: a panic in a background task after start, to check the
+            // panic hook in the real app (design D11). A release build has no such switch.
+            #[cfg(debug_assertions)]
+            if std::env::var("VOICEBRO_TEST_PANIC").as_deref() == Ok("task") {
+                log::warn!("VOICEBRO_TEST_PANIC=task: a background task panics in 3 s");
+                tauri::async_runtime::spawn(async {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    panic!("VOICEBRO_TEST_PANIC: a test panic in a background task");
+                });
+            }
             apply_hotkey(app.handle(), &app.state::<AppState>());
             apply_memory_reader(&app.state::<AppState>());
             apply_verbose_log(&app.state::<AppState>());
@@ -669,6 +731,17 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panic_inside_the_codec_is_let_through_and_any_other_stops_the_app() {
+        assert_eq!(panic_action(true), PanicAction::LetTheCodecCatchIt);
+        assert_eq!(panic_action(false), PanicAction::StopTheApp);
+        // On this test thread no guarded codec call is running.
+        assert_eq!(
+            panic_action(voicebro_core::audio::codec::in_guarded_call()),
+            PanicAction::StopTheApp
+        );
+    }
 
     #[test]
     fn only_web_addresses_go_to_the_browser() {

@@ -1,6 +1,7 @@
 //! The audio core: the formats, queues and conversions shared by Discord, the gate, the
 //! wake engine and the assistant. See `docs/ARCHITECTURE.md` 4.1.
 
+pub mod codec;
 pub mod dsp;
 pub mod earcon;
 pub mod frame;

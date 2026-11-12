@@ -26,9 +26,11 @@
     codex: { executable: "", model: "", reasoning_effort: "", voice: "", instructions: "Answer briefly.", handoff_mode: "items" },
     hotkey: { mute: "Ctrl+Alt+M" },
     ui: { theme: "dark", font_size: 13 },
-    // All off, as the app fills them for a file without the section.
-    diagnostics: { performance: false, memory: false, verbose_log: false },
+    // All off and libopus, as the app fills them for a file without the section.
+    diagnostics: { performance: false, memory: false, verbose_log: false, opus_codec: "libopus" },
   };
+  // The Opus codecs and their labels, as `OpusCodec::label` gives them.
+  const CODEC_LABELS = { libopus: "libopus 1.5", "opus-rs": "opus-rs 0.1.42" };
   let tokenSet = true;
   let muted = false;
   // Codex as the status reports it, and the install offer: `__mock.setCodex(...)` switches.
@@ -79,6 +81,8 @@
   // `?joined`: the bot is in a voice channel when the page loads, also with `?fresh` (as
   // after a reload of the window while the bot is in use).
   let inVoice = !FRESH || new URLSearchParams(location.search).has("joined");
+  // The codec a join and its call started with: a save changes neither, the next join does.
+  let joinCodec = settings.diagnostics.opus_codec;
   // The wake engine as the app runs it: in wake-word mode the files are checked before the
   // phrases, a model that is not on disk asks first, and Download walks through the
   // progress. The consent covers one model.
@@ -264,6 +268,9 @@
     if (!modes.includes(doc.codex.handoff_mode)) {
       throw `codex.handoff_mode: «${doc.codex.handoff_mode}» is not an answer handoff mode; use one of ${modes.join(", ")}`;
     }
+    if (!(doc.diagnostics.opus_codec in CODEC_LABELS)) {
+      throw `diagnostics.opus_codec: «${doc.diagnostics.opus_codec}» is not an Opus codec; use one of ${Object.keys(CODEC_LABELS).join(", ")}`;
+    }
     // The app rejects a wrong type when it reads the patched document.
     for (const field of ["performance", "memory", "verbose_log"]) {
       if (typeof doc.diagnostics[field] !== "boolean") {
@@ -311,6 +318,7 @@
                 last_reported_jitter_ms: seconds ? 1.4 : null,
               };
             })(),
+            opus_codec: CODEC_LABELS[joinCodec],
           },
         },
         last_error: null,
@@ -344,6 +352,7 @@
         running: codex.installed, error: null, model_in_use: null, reasoning_effort_in_use: null,
         calls: [{
           guild_id: "1091401169441656933", state: "live", connected: true, audio: (advanceCall(), clone(callAudio)),
+          opus_codec: inVoice ? CODEC_LABELS[joinCodec] : null,
           thread_id: "mock-thread", last_user_text: null, last_assistant_text: null, last_error: null,
         }],
       },
@@ -514,10 +523,26 @@
     // The bot joins or leaves the mock server's voice channel, as `/join` and `/leave` do.
     join() {
       inVoice = true;
+      joinCodec = settings.diagnostics.opus_codec;
       emit("app-event", { event: "discord" });
     },
     leave() {
       inVoice = false;
+      emit("app-event", { event: "discord" });
+    },
+    // The codec panicked during a join: the app makes the bot leave and tells the window,
+    // as `handle_codec_failure` does. `where` names another server for a second failure.
+    codecFailure(where = {}) {
+      inVoice = false;
+      emit("app-event", {
+        event: "codec_failure",
+        guild_name: where.guild_name || "Mock server",
+        channel_name: where.channel_name || "General",
+        path: where.path || "receive",
+        activity: where.activity || "decoding the people in the channel",
+        codec: CODEC_LABELS[joinCodec],
+        message: where.message || "attempt to subtract with overflow",
+      });
       emit("app-event", { event: "discord" });
     },
     changeCapabilities() {

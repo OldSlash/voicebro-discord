@@ -70,6 +70,8 @@ pub fn frame_channel(capacity: usize) -> (FrameSender, FrameReceiver) {
 pub struct AudioPorts {
     pub input: FrameReceiver,
     pub output: OutputHandle,
+    /// Where the join's codec panics are reported (the call's encoder and decoder).
+    pub failures: crate::audio::codec::CodecFailures,
 }
 
 #[cfg(test)]
@@ -84,6 +86,7 @@ mod tests {
         let ports = AudioPorts {
             input: receiver,
             output: output.clone(),
+            failures: crate::audio::codec::CodecFailures::none(),
         };
         assert!(!sender.send(Frame::from_slice(&[1])));
         let frame = ports.input.try_recv().expect("frame arrives");

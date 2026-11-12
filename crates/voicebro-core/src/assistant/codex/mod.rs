@@ -21,6 +21,7 @@ use super::{
     Assistant, AssistantError, AssistantSession, AssistantStatus, Capabilities, ModelInfo,
     PrepareFuture,
 };
+use crate::audio::codec::OpusCodec;
 use crate::audio::AudioPorts;
 use crate::events::{AppEvent, EventBus};
 use crate::settings::{Settings, SpeakerLabels};
@@ -72,6 +73,8 @@ pub struct CodexConfig {
     pub speaker_labels: SpeakerLabels,
     /// `codex.handoff_mode`, read when a call starts.
     pub handoff_mode: String,
+    /// `diagnostics.opus_codec`, read when a call starts.
+    pub opus_codec: OpusCodec,
 }
 
 impl CodexConfig {
@@ -84,6 +87,7 @@ impl CodexConfig {
             instructions: settings.codex.instructions.clone(),
             speaker_labels: settings.assistant.speaker_labels,
             handoff_mode: settings.codex.handoff_mode.clone(),
+            opus_codec: settings.diagnostics.codec(),
         }
     }
 }
@@ -743,6 +747,7 @@ impl Assistant for CodexAssistant {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::codec::CodecFailures;
     use crate::audio::{frame_channel, output_pair, Frame, FRAME_SAMPLES, INPUT_CAPACITY};
 
     /// The fake app-server in `testdata/fake-codex`, which runs on Node; `None` where Node
@@ -772,6 +777,25 @@ mod tests {
             dir,
             &settings,
         )
+    }
+
+    #[test]
+    fn the_call_codec_is_taken_from_the_diagnostics_section_at_configure() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let assistant = assistant_with(&runtime, dir.path(), "codex-not-here");
+        assert_eq!(
+            assistant.inner.config.read().unwrap().opus_codec,
+            OpusCodec::Libopus
+        );
+        let mut settings = Settings::default();
+        settings.diagnostics.opus_codec = "opus-rs".to_owned();
+        assistant.configure(&settings);
+        assert_eq!(
+            assistant.inner.config.read().unwrap().opus_codec,
+            OpusCodec::OpusRs,
+            "the next call opens with it"
+        );
     }
 
     /// A `codex.cmd` that answers `--version` and counts its runs in `runs.txt`.
@@ -889,7 +913,18 @@ mod tests {
         assert!(assistant.status().running);
         let (_sender, input) = frame_channel(INPUT_CAPACITY);
         let (output, _source) = output_pair();
-        drop(assistant.attach(1, AudioPorts { input, output }).unwrap());
+        drop(
+            assistant
+                .attach(
+                    1,
+                    AudioPorts {
+                        input,
+                        output,
+                        failures: CodecFailures::none(),
+                    },
+                )
+                .unwrap(),
+        );
         assistant.detach(1);
         let left = Instant::now();
         while assistant.running_server().is_some() {
@@ -928,7 +963,14 @@ mod tests {
         let (_sender, input) = frame_channel(INPUT_CAPACITY);
         let (output, _source) = output_pair();
         let session = assistant
-            .attach(1, AudioPorts { input, output })
+            .attach(
+                1,
+                AudioPorts {
+                    input,
+                    output,
+                    failures: CodecFailures::none(),
+                },
+            )
             .expect("attach after a preparation");
         drop(session);
 
@@ -1098,6 +1140,10 @@ mod tests {
                 .validate()
                 .expect("VOICEBRO_CODEX_HANDOFF_MODE is a handoff mode");
         }
+        // The call's Opus codec (change `opus-codec-experiment`); libopus when unset.
+        let codec = OpusCodec::from_env().expect("VOICEBRO_OPUS_CODEC");
+        settings.diagnostics.opus_codec = codec.name().to_owned();
+        eprintln!("codec: {}", codec.label());
         let assistant = CodexAssistant::new(
             runtime.handle().clone(),
             events,
@@ -1124,6 +1170,7 @@ mod tests {
                 AudioPorts {
                     input,
                     output: output.clone(),
+                    failures: CodecFailures::none(),
                 },
             )
             .expect("attach");

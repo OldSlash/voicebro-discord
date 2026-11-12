@@ -398,6 +398,7 @@ enum Scenario {
     Delivery {
         seconds: u64,
         opus: bool,
+        codec: voicebro_core::audio::codec::OpusCodec,
     },
 }
 
@@ -645,8 +646,12 @@ impl Handler {
         ctx: &Context,
         seconds: u64,
         opus: bool,
+        codec: voicebro_core::audio::codec::OpusCodec,
     ) -> anyhow::Result<Vec<String>> {
         let mut details = Vec::new();
+        if opus {
+            details.push(format!("codec: {}", codec.label()));
+        }
         let manager = songbird::get(ctx)
             .await
             .ok_or_else(|| anyhow!("songbird is not registered"))?;
@@ -684,7 +689,7 @@ impl Handler {
             }
             let input: songbird::input::Input = if opus {
                 let (output, source) = output_pair();
-                let input = opus_out::live_input(source, Arc::clone(&delivery))
+                let input = opus_out::live_input(source, Arc::clone(&delivery), codec)
                     .map_err(|_| anyhow!("the Opus output could not be built"))?;
                 pusher = Some(push_tone(output.clone(), Arc::clone(&closed)));
                 output_handle = Some(output);
@@ -820,7 +825,11 @@ impl EventHandler for Handler {
         let outcome = match self.scenario {
             Scenario::Lifecycle => self.run_lifecycle(&ctx).await,
             Scenario::Timing { seconds } => self.run_timing(&ctx, seconds).await,
-            Scenario::Delivery { seconds, opus } => self.run_delivery(&ctx, seconds, opus).await,
+            Scenario::Delivery {
+                seconds,
+                opus,
+                codec,
+            } => self.run_delivery(&ctx, seconds, opus, codec).await,
         };
         let result = outcome.map(|lines| {
             details.extend(lines);
@@ -891,13 +900,20 @@ pub fn lifecycle(_args: &[String]) -> anyhow::Result<Outcome> {
     run(Scenario::Lifecycle, Duration::from_secs(60))
 }
 
-/// `discord-delivery [seconds] [--opus]`: a tone into the test channel, and what Discord
-/// reports. `--opus` plays it through the app's output and Opus encoder.
+/// `discord-delivery [seconds] [--opus] [--codec <name>]`: a tone into the test channel, and
+/// what Discord reports. `--opus` plays it through the app's output and Opus encoder, of the
+/// codec `--codec` names (libopus without it).
 pub fn delivery(args: &[String]) -> anyhow::Result<Outcome> {
+    let codec = crate::codec_arg(args)?;
+    let args = crate::without_codec_arg(args);
     let seconds = args.iter().find_map(|s| s.parse().ok()).unwrap_or(30);
     let opus = args.iter().any(|a| a == "--opus");
     run(
-        Scenario::Delivery { seconds, opus },
+        Scenario::Delivery {
+            seconds,
+            opus,
+            codec,
+        },
         Duration::from_secs(seconds + 40),
     )
 }

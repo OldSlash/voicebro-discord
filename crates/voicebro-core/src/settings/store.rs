@@ -93,6 +93,11 @@ impl SettingsStore {
             );
             settings.version = CURRENT_VERSION;
         }
+        if let Some(stored) = settings.diagnostics.replace_unknown_codec() {
+            log::warn!(
+                "settings: the stored Opus codec {stored} is not in this build; libopus is used"
+            );
+        }
         Ok(Some(settings))
     }
 
@@ -338,6 +343,26 @@ mod tests {
         let text = std::fs::read_to_string(store.path()).unwrap();
         assert!(text.contains("\"later\": true"));
         assert!(text.contains(&format!("\"version\": {CURRENT_VERSION}")));
+    }
+
+    #[test]
+    fn a_codec_from_the_four_codec_trial_loads_as_libopus() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(&dir);
+        std::fs::write(
+            store.path(),
+            r#"{ "version": 2, "diagnostics": { "memory": true, "opus_codec": "ropus" } }"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap().unwrap();
+        assert_eq!(loaded.diagnostics.opus_codec, "libopus");
+        assert!(loaded.diagnostics.memory, "the rest of the section stays");
+        loaded
+            .validate()
+            .expect("the loaded document passes validation");
+        store.save(&loaded).unwrap();
+        let text = std::fs::read_to_string(store.path()).unwrap();
+        assert!(text.contains("\"opus_codec\": \"libopus\""), "{text}");
     }
 
     #[test]

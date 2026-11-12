@@ -88,7 +88,7 @@ The realtime call (WebRTC) lives inside the Rust process.
 | Work | Runs on | Rule |
 |---|---|---|
 | Discord gateway, songbird driver, HTTP, downloads | Tauri's tokio runtime | Ordinary async code. |
-| Receive path: `VoiceTick` → mix → gate → assistant input, wake feed | Songbird's event task (tokio) | Must return within a fraction of 20 ms: no blocking calls, no locks held across awaits, only necessary allocation after warm-up. |
+| Receive path: `VoiceTick` → mix → gate → assistant input, wake feed | Songbird's event task (tokio) | Must return within a fraction of 20 ms: no blocking calls, no locks held across awaits, only necessary allocation after warm-up. With opus-rs selected at the join it also decodes each speaker's packet (one decoder per SSRC, created the first time the SSRC speaks). |
 | Discord output: songbird's mixer pulls one packet from `OpusOutput` (one `PcmSource` frame, then our Opus encode) | Songbird's mixer thread | A read never blocks for more than a few ms; on underrun it returns silence and counts it. Our encode replaces songbird's (passthrough), so the thread still encodes once per 20 ms; it costs about 0.64 ms on average (worst 1.4 ms) against songbird's 0.30 ms (`output_pull_cost`, release). |
 | Discord RTCP: report blocks about our stream → expected loss | Songbird's event task (tokio) | Only atomics are written; the mixer thread reads them per packet. |
 | Wake worker: recognizers, trailing silence, phrase detectors | One dedicated OS thread per engine, 20 ms tick | Fed through a bounded channel; a full queue drops and counts. |
@@ -118,6 +118,7 @@ pub enum AppEvent {
     Assistant(AssistantStatus),
     Chat(ChatEntry),                   // one assistant chat-log entry
     Assets(AssetProgress),             // downloads: label, percent, error
+    CodecFailure { guild_name, channel_name, path, activity, codec, message }, // the bot left after an opus-rs panic
 }
 ```
 
@@ -153,6 +154,42 @@ Owns the formats, queues and conversions shared by everything else.
   per read before the queue, flush and mute changes reset it, and a muted read still pulls
   and discards so the provider's playout keeps time. `OutputHandle::push` stays for the stub
   assistant and the tests.
+- **Opus codecs** (`codec.rs`, change `opus-codec-experiment`): two Opus codecs built in
+  side by side, chosen at run time by `diagnostics.opus_codec` (4.6): libopus 1.5 through
+  `opus2` (C, built by `libopus_sys` with CMake; the default) and opus-rs 0.1.42, a
+  pure-Rust port of libopus 1.6 (float), pinned to its exact version. The comparison that
+  chose it also ran ropus and mousiki; they are not built in
+  (`docs/OPUS-CODEC-COMPARISON.md`).
+  - **`OpusCodec`**: the two, with the names `libopus` and `opus-rs` (settings,
+    `VOICEBRO_OPUS_CODEC`, probes) and `label()` (name and version, for the status and the
+    log).
+  - **`VoiceEncoder`**: built from `EncoderParams` (channels, application, bitrate,
+    complexity, in-band FEC, expected loss); both codecs get all of them, the rest stays at
+    libopus's defaults (opus-rs's own defaults of complexity 9, 64 kbit/s and FEC off are
+    all overridden). `encode_f32`, `encode_i16`, `set_loss_percent`.
+  - **`VoiceDecoder`**: libopus's convention for both codecs: an empty packet conceals
+    `out.len() / channels` samples, `fec` rebuilds that many from the packet's in-band FEC,
+    otherwise the packet is decoded into `out`; each call returns samples per channel.
+    opus-rs decodes f32 only, so its i16 output goes through a buffer allocated at creation
+    and is rounded and clamped as libopus does.
+  - **Failures**: calls into opus-rs run under `catch_unwind`; a panic comes back as
+    `CodecError::Panicked`, the codec's state is dropped and rebuilt with the same
+    parameters at the next call, and the frame is replaced (silence out, concealment in).
+    libopus calls are not wrapped (C returns errors and does not unwind). `FailureSpell`
+    gives a path two log lines per spell of failures. Release builds unwind
+    (`panic = "unwind"`, the user's decision of 2026-11-12), so this works there too. While
+    a guarded call runs, a thread-local flag is set (`in_guarded_call()`); the desktop
+    shell's panic hook (4.8) reads it to tell a codec panic from any other.
+  - **A panic ends the join** (`CodecPath`, `CodecFailure`, `CodecFailureHub`,
+    `CodecFailures`): every path gets a `CodecFailures` sink with its guild when it is
+    built: `DiscordEncoder` (`discord-out`), the speaker decoders (`receive`), the call's
+    send loop (`call-send`) and its jitter buffer (`call-receive`). A `Panicked` error is
+    reported once per guild per join, with the path, the codec's label and the message,
+    through an unbounded channel that never blocks the audio thread; an error that is not a
+    panic reports nothing. The hub is reset for a guild at each join
+    (`VoiceHost::codec_failures`), and the call gets the same sink in `AudioPorts.failures`.
+    The runtime handles the report (4.7). The codec is never swapped behind the user's
+    back: the setting stays as it is.
 - **Opus output** (`opus_out.rs`, change `discord-voice-delivery`): the assistant's voice
   leaves as Opus packets the app encodes, so each packet carries in-band FEC that rebuilds a
   lost predecessor at the listener. songbird's own encoder has none.
@@ -214,9 +251,27 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   engine, the assistant's state (waiting for the wake word / listening / muted) and a
   "Mute GPT" button. The button toggles the app-wide mute through `Runtime`; the panel is
   refreshed from `AppEvent::Gate` and `AppEvent::MuteChanged`.
-- **Join order is fixed:** get or create the `Call`, register the `SpeakingStateUpdate` and
-  `VoiceTick` handlers, then `join`. Discord announces a user's SSRC only the first time
-  they speak.
+- **Join order is fixed:** get or create the `Call`, set its decode mode, register the
+  `SpeakingStateUpdate` and `VoiceTick` handlers, then `join`. Discord announces a user's
+  SSRC only the first time they speak.
+- **The Opus codec of a join** (change `opus-codec-experiment`): `join_voice` asks
+  `VoiceHost::opus_codec()` (`diagnostics.opus_codec`, 4.6) once and logs "Opus codec for
+  this join: <label> (speakers decoded by songbird | the app)". With libopus songbird
+  decodes the speakers as before (`DecodeMode::Decode`, 48 kHz stereo). With opus-rs the
+  call's config gets `DecodeMode::Decrypt` before `join` (`Driver::set_config`
+  hands it to the next connection; songbird's receive task reads the mode only when it
+  connects, checked in the 0.6.1 source), so songbird still removes the transport
+  encryption and DAVE and keeps its playout buffer, and the `VoiceTick` handler decodes
+  each speaker itself (`speaker_decode.rs`): one `VoiceDecoder` per SSRC, 48 kHz stereo,
+  the payload songbird would decode (`payload_offset..payload_end_pad`, the RTP header
+  extension skipped), a concealed frame for each missing sequence number (at most 10) and
+  for each tick that reports a speaker without a packet, no FEC, speakers dropped after
+  songbird's 60 s state timeout. A decoder failure conceals that speaker's frame and counts
+  `VoiceCounters.decode_errors`. A test feeds the same packets (a gap, a missed tick, header
+  extensions) to this path with libopus and to `opus2::Decoder` used as songbird does and
+  requires identical samples. The output track is built with the same codec (4.1), and
+  `VoiceChannelStatus.opus_codec` carries its label. songbird's fallback when it refuses
+  passthrough (decoding our packets, mixing, soft clipping, encoding again) stays libopus.
 - **Leave** uses `Songbird::remove`, not `leave`, so the `Call`, its handlers and tracks are
   gone, and closes the output source. Rejoin builds a new gate. Join and leave are
   serialized per guild across the whole awaited operation.
@@ -514,8 +569,13 @@ assistant is given, so the app never panics on an unknown engine setting.
   *Send:* the gate's frames wait in a FIFO of 5 frames (100 ms, drop-oldest, drops
   counted). The `voicebro-rtc-send` thread keeps a 20 ms clock and sends exactly one
   packet per tick: the oldest waiting frame, downmixed to mono and Opus-encoded
-  (complexity 10, 32 kbit/s, in-band FEC, 5 % expected loss), or encoded silence when the
-  FIFO is empty. After the call connects and after every underrun it waits for 2 queued
+  (`rtc::call_params`: complexity 10, 32 kbit/s, in-band FEC, 5 % expected loss), or
+  encoded silence when the FIFO is empty. The call's codec is `diagnostics.opus_codec` read
+  from the Codex config when the call opens (`RtcCall::open(…, codec)`, logged "Opus codec
+  for this call: <label>"); it encodes here and decodes in the jitter buffer for the whole
+  call, and `CallStatus.opus_codec` carries its label while the call runs. A frame the codec
+  fails on is sent as a silence packet encoded at the start and counted
+  (`CallAudioCounters.encode_errors`). After the call connects and after every underrun it waits for 2 queued
   frames (40 ms) before sending speech again (`pacing.rs`, a pure function with its own
   tests), so a late songbird tick does not starve the next send tick.
   *Receive:* the remote track (its `on_track` fires with the first RTP packet) only inserts
@@ -641,7 +701,7 @@ pub struct Settings {
     pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default), handoff_mode: items (default) | commentary | bem_tags | thinking
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
     pub ui: UiSettings,                    // theme: dark | darcula | light | intellij (default dark); font_size: 11..=20 (default 13)
-    pub diagnostics: DiagnosticsSettings,  // performance, memory, verbose_log: all default false; read by the window and the desktop shell
+    pub diagnostics: DiagnosticsSettings,  // performance, memory, verbose_log: all default false, read by the window and the desktop shell; opus_codec: libopus (default) | opus-rs, read by the core at each join and each call
     pub extra: Map<String, Value>,         // flattened: unknown fields from a newer version, kept as they are
 }
 ```
@@ -661,6 +721,12 @@ recognizes; the code ships none.
   `wake.model` becomes the default of a new file (English): version 1 only ever had the
   Russian model, so the model it names was never the user's choice. The old fields are
   removed either way, and the next save writes version 2.
+- A stored `diagnostics.opus_codec` that names no codec of this build (`ropus` or
+  `mousiki`, saved by a trial build of the four-codec comparison) becomes `libopus` when
+  the file loads (`DiagnosticsSettings::replace_unknown_codec`, called by
+  `SettingsStore::load`), with the log line "settings: the stored Opus codec <value> is not
+  in this build; libopus is used", so the file loads and later saves pass validation; the
+  next save writes `libopus`. A save that sends such a name is still refused.
 - `Settings::validate()` is the only validator (one model's phrase lists must not overlap,
   timeout range, the model is a catalog id or `local:<plain folder name>` of the engine,
   shortcut parses). `Runtime::apply(settings)` diffs against the
@@ -697,11 +763,31 @@ engine if the mode is wake-word. The assistant's process is not started: it star
 first `/join` (`GateHost::prepare_join` calls `Assistant::prepare`). Shutdown: stop the assistant (and its child process), leave every call, stop
 the wake worker. `Runtime::toggle_mute` is the single entry for all three mute sources.
 
+**Codec failures** (change `opus-codec-experiment`): `Runtime::start` spawns a task that
+drains the `CodecFailureHub` (4.1). For each report `handle_codec_failure` logs
+"<path>: <codec> panicked: <message>; the bot leaves the voice channel <channel> in
+<guild>", leaves that guild's
+voice channel as `/leave` does (`VoiceControl`, which `DiscordRuntime` implements with its
+status and `leave`), writes the console line "the bot left <channel> in <guild>: <codec>
+failed while <activity>" and publishes `AppEvent::CodecFailure { guild_name, channel_name,
+path, activity, codec, message }`. Other guilds stay; `diagnostics.opus_codec` is not
+changed. A report for a guild the bot is no longer in is logged and dropped.
+
 ### 4.8 Desktop shell (`apps/desktop`)
 
 - Tauri commands are thin: validate input, call `Runtime`, return serializable snapshots.
   Errors cross the boundary as `String`.
 - One event bridge task forwards `AppEvent` to the webview.
+- **Panic hook** (`install_panic_hook`, change `opus-codec-experiment`): installed first
+  thing in `main` once the data folder is known. It logs every panic as "panic in thread
+  '<name>' at <file:line:col>: <message>" (and to stderr). A panic inside a guarded opus-rs
+  call (`codec::in_guarded_call()`) is left to the codec's `catch_unwind` (4.1). Any other
+  panic flushes the log, shows a Windows message box "VoiceBro stopped because of an
+  internal error" with the message, the location and the log folder, and calls
+  `std::process::abort()` once it is closed, so outside the codec a release build still
+  ends at the first panic as it did with `panic = "abort"` (exit code `0xC0000409`). A
+  debug build started with `VOICEBRO_TEST_PANIC=task` panics in a background task 3 s
+  after the setup, to check the hook in the real app.
 - **Links open in the default browser.** Every link in the window has
   `target="_blank"`, so following it in any way (a click, a modifier or middle click,
   Enter, the context menu) is a WebView2 new-window request. The main window's builder
@@ -787,7 +873,11 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     `memory_status`) and the files (data folder, `settings.json`, the Codex CLI path).
   - Settings has the cards Appearance, Audio, Assistant, Codex (with the "Save chat
     history" switch, `assistant.save_chat_history`), Hotkey and Diagnostics (Performance
-    monitoring, Memory measurement and Verbose log, `diagnostics.verbose_log`),
+    monitoring, Memory measurement and Verbose log, `diagnostics.verbose_log`, and the
+    "Opus codec (experiment)" list, `diagnostics.opus_codec`, with a line under it,
+    `#opus-codec-in-use`, that `renderStatus` fills from `VoiceChannelStatus.opus_codec` and
+    `CallStatus.opus_codec`: "In use: Discord <label>; call <label>", or none while the bot
+    is in no channel; it is not a form field),
     one control per field with its JSON path (`data-path`) and kind (string, number, bool,
     list, percent), and under every control a help line saying what the setting affects,
     when a change applies (at once, from the next call, from the next session, at the next
@@ -851,6 +941,15 @@ the wake worker. `Runtime::toggle_mute` is the single entry for all three mute s
     state stays `needs_download`, so only a new trigger opens it again, and the card's
     notice stays.
     `apps/desktop/ui-dev/check-wake-dialog.mjs` runs all of this against the mock.
+  - **Codec failure notice** (`<dialog id="codec-failure">`, change
+    `opus-codec-experiment`): opened with `showModal()` by `AppEvent::CodecFailure`
+    (`showCodecFailure`), in the install dialog's style with the error colour as its border.
+    Title "The bot left the voice channel"; one item per failure, "<codec> failed while
+    <activity>: “<message>”. The bot left <channel> in <server>."; then the hint "Run /join
+    to bring the bot back, or choose libopus in Settings → Diagnostics → Opus codec. The
+    log has the details." A failure while the dialog is open adds an item to it. "Open log
+    folder" calls `open_log_folder` and keeps the dialog open; OK and Escape close it and
+    empty the list. The mock's `__mock.codecFailure(where)` sends the event.
   - **Form state is kept apart from the status.** `main.js` holds the stored settings
     (from `get_settings`, refreshed on `settings_changed` and returned by each
     `save_settings`) and a state per field: clean, dirty (unsaved), saving or error
@@ -952,8 +1051,9 @@ is built on it.
   its package folder. Five numbered sections: (1) those crates; (2) native libraries that
   crates build or link in under licenses of their own: Opus 1.5 from `libopus_sys` (text
   `opus\COPYING` inside the crate) and the WebView2 loader from `webview2-com-sys` (WebView2
-  SDK 1.0.3800.47; text kept in `scripts\notices\`), plus a line that `ring`'s own
-  `LICENSE-*` files cover its BoringSSL code; (3) the installer: NSIS 3.13 and Tauri's
+  SDK 1.0.3800.47; text kept in `scripts\notices\`) (opus-rs, a port of the Opus code,
+  ships the Opus text as its own `COPYING` and is listed with it in section 1), plus a line
+  that `ring`'s own `LICENSE-*` files cover its BoringSSL code; (3) the installer: NSIS 3.13 and Tauri's
   `nsis_tauri_utils` 0.5.3 with texts kept in `scripts\notices\`, and the WebView2 Runtime
   installer it downloads when the runtime is missing; (4) Vosk and the two catalog models,
   downloaded after the OK; (5) the Codex CLI, needed but not shipped. Each native entry is
@@ -968,7 +1068,8 @@ is built on it.
 ### Audio in
 
 ```text
-Discord UDP ─► songbird (DAVE, Opus decode) ─► VoiceTick: per-SSRC 48 k stereo
+Discord UDP ─► songbird (DAVE, Opus decode; with opus-rs only DAVE, and the
+   VoiceTick handler decodes per SSRC) ─► VoiceTick: per-SSRC 48 k stereo
    ─► mix (i32 sum, clamp) ─► RelayGate.process_tick(mixed, per_speaker)
         ├─► per speaker ─► WakeFeed (bounded channel) ─► wake worker thread
         │                     ─► 16 k mono ─► recognizer ─► PhraseSpotter ─► gate.on_phrase
@@ -1065,6 +1166,10 @@ Values that are known to work. Change them only with a measurement or a corpus r
   assistant's transcript.
 - Connection errors (Codex process, RTC call, Discord) surface in the status snapshot, not
   only in the log.
+- **Panics** are logged by the desktop shell's hook (4.8) with thread, location and message,
+  in every build. A panic of opus-rs is also logged by the runtime when the bot leaves
+  ("<path>: <codec> panicked: …", 4.7) and shown in the window's codec failure notice;
+  any other panic ends the app after a message box that names the log folder.
 - Counters: packets in/out, drops per queue, supplied silence, underruns, wake drops. They
   are part of the status snapshot.
 - **The leg toward Discord**, per voice channel (`DeliveryCounters`): the voice server and
@@ -1103,8 +1208,10 @@ Values that are known to work. Change them only with a measurement or a corpus r
   `diagnostics.memory` setting is on: the shell starts it at start-up when the setting
   says so and starts or stops it on every settings change, logging "memory reading
   started" / "stopped". The `memory_status` command returns the latest reading, `None`
-  while the reader is not running. The `diagnostics` section (`performance`, `memory`,
-  both off by default) is read by nothing in the core: `Runtime::apply` only logs it.
+  while the reader is not running. Of the `diagnostics` section the core reads only
+  `opus_codec`: `Runtime::apply` logs the switches, keeps the codec in the gate host for the
+  next join and passes it to the assistant's config for the next call ("Opus codec <label>
+  from the next join and the next call"); a running join or call keeps its own.
   `scripts\measure.ps1` reads the same metric from the `Working Set - Private` counter for
   release builds; private bytes (the commit charge) are printed only for diagnosis.
 - The status snapshot holds measured values only. A quantity that is not measured is
@@ -1118,8 +1225,11 @@ Values that are known to work. Change them only with a measurement or a corpus r
 - Locks are never held across an `await` or across FFI calls into Vosk.
 - FFI (Vosk) is wrapped in safe types with `Drop`; raw pointers never leave `wake/vosk/`.
 - Release builds optimize for speed (`opt-level = 3`, thin LTO, one codegen unit, symbols
-  stripped, `panic = "abort"`), not for size: the hot paths are FIR filters, mixing and
-  Opus, and the binary is small next to the model and the Codex process anyway.
+  stripped), not for size: the hot paths are FIR filters, mixing and Opus, and the binary
+  is small next to the model and the Codex process anyway. They unwind on panic
+  (`panic = "unwind"`, since change `opus-codec-experiment`): the Opus codec module catches
+  a panic of opus-rs (4.1), and the desktop shell's panic hook ends the process on any
+  other panic, as `panic = "abort"` did before (4.8).
 - Unit tests sit next to the code. Tests that need assets or a live account are gated by
   environment variables and skipped otherwise.
 - Files are edited with the editor tool; `.gitattributes` fixes line endings.

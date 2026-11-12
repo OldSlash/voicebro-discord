@@ -20,9 +20,12 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 # Speed over size: the hot paths are FIR resamplers, mixing and Opus, and the binary is
 # small next to the speech model and the Codex process. See docs/MVP-PLAN.md, section 3.
+# Panics unwind (change `opus-codec-experiment`, the user's decision of 2026-11-12): the
+# Opus codec module catches a panic of opus-rs, and the desktop shell's panic hook ends the
+# process at once on any other panic, as `panic = "abort"` did before.
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
-panic = "abort"
+panic = "unwind"

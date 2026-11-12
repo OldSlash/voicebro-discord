@@ -6,7 +6,10 @@
 
 use crate::Outcome;
 use anyhow::Context;
-use opus2::{Application, Channels, Decoder, Encoder};
+use std::sync::OnceLock;
+use voicebro_core::audio::codec::{
+    Application, Channels, EncoderParams, OpusCodec, VoiceDecoder, VoiceEncoder,
+};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const FRAME_SAMPLES: usize = 960; // 20 ms at 48 kHz, mono
@@ -61,19 +64,47 @@ pub fn best_peak(samples: &[i16]) -> i32 {
         .unwrap_or(0)
 }
 
-pub fn new_encoder() -> anyhow::Result<Encoder> {
-    let mut encoder =
-        Encoder::new(SAMPLE_RATE, Channels::Mono, Application::Voip).context("opus encoder")?;
-    encoder.set_inband_fec(true).ok();
-    encoder.set_complexity(5).ok();
-    Ok(encoder)
+/// The codec the Opus probes run (`--codec <name>`, change `opus-codec-experiment`); set
+/// once by the probe's entry point, libopus when it is not.
+static CODEC: OnceLock<OpusCodec> = OnceLock::new();
+
+/// Takes `--codec <name>` from `args` for this run of the probe.
+pub fn use_codec_from(args: &[String]) -> anyhow::Result<OpusCodec> {
+    let codec = crate::codec_arg(args)?;
+    let _ = CODEC.set(codec);
+    Ok(codec)
 }
 
-pub fn roundtrip(_args: &[String]) -> anyhow::Result<Outcome> {
+pub fn codec() -> OpusCodec {
+    CODEC.get().copied().unwrap_or_default()
+}
+
+/// The probes' encoder: mono VOIP, in-band FEC, complexity 5, of the selected codec.
+pub fn new_encoder() -> anyhow::Result<VoiceEncoder> {
+    VoiceEncoder::new(
+        codec(),
+        EncoderParams {
+            channels: Channels::Mono,
+            application: Application::Voip,
+            bitrate: 32_000,
+            complexity: 5,
+            inband_fec: true,
+            loss_percent: 0,
+        },
+    )
+    .context("opus encoder")
+}
+
+pub fn new_decoder() -> anyhow::Result<VoiceDecoder> {
+    VoiceDecoder::new(codec(), Channels::Mono).context("opus decoder")
+}
+
+pub fn roundtrip(args: &[String]) -> anyhow::Result<Outcome> {
+    use_codec_from(args)?;
     let input = tone(2.0);
     let mut encoder = new_encoder()?;
-    let mut decoder = Decoder::new(SAMPLE_RATE, Channels::Mono).context("opus decoder")?;
-    let mut details = vec![format!("libopus {}", opus2::version())];
+    let mut decoder = new_decoder()?;
+    let mut details = vec![format!("codec: {}", codec().label())];
 
     let mut decoded = Vec::with_capacity(input.len());
     let mut packet = vec![0u8; 4000];
@@ -82,18 +113,17 @@ pub fn roundtrip(_args: &[String]) -> anyhow::Result<Outcome> {
     let mut frames = 0usize;
     for frame in input.chunks_exact(FRAME_SAMPLES) {
         let written = encoder
-            .encode(frame, &mut packet)
+            .encode_i16(frame, &mut packet)
             .with_context(|| format!("encode frame {frames}"))?;
         bytes_total += written;
         let samples = decoder
-            .decode(&packet[..written], &mut frame_out, false)
+            .decode_i16(&packet[..written], &mut frame_out, false)
             .with_context(|| format!("decode frame {frames}"))?;
         decoded.extend_from_slice(&frame_out[..samples]);
         frames += 1;
     }
-    let lookahead = encoder.get_lookahead().unwrap_or(0);
     details.push(format!(
-        "{frames} frames of 20 ms, {bytes_total} bytes ({:.1} kbit/s), lookahead {lookahead} samples",
+        "{frames} frames of 20 ms, {bytes_total} bytes ({:.1} kbit/s)",
         bytes_total as f32 * 8.0 / (frames as f32 * 0.02) / 1000.0
     ));
     // Skip the first 100 ms on both sides: the encoder ramps in.
