@@ -1,6 +1,6 @@
 [package]
 name = "voicebro-core"
-version = "1.0.0"
+version = "1.0.1"
 description = "VoiceBro application core: settings, secrets, events, Discord, wake word, runtime. No Tauri dependency."
 publish = false
 edition.workspace = true
