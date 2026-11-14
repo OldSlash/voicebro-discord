@@ -7,6 +7,7 @@
 //! token are never kept or logged: only the server's host and our SSRC are.
 
 use crate::audio::opus_out::{DeliveryShared, LossSource};
+use crate::audio::{OutputCounters, FRAME_DURATION};
 use serde::Serialize;
 use serenity::async_trait;
 use songbird::events::{Event, EventContext, EventHandler as VoiceEventHandler};
@@ -195,7 +196,11 @@ pub(crate) fn join_line(guild: u64, host: Option<&str>) -> String {
 }
 
 /// The line logged when the bot leaves: the leg's counters.
-pub(crate) fn leave_line(guild: u64, counters: &DeliveryCounters) -> String {
+pub(crate) fn leave_line(
+    guild: u64,
+    counters: &DeliveryCounters,
+    output: &OutputCounters,
+) -> String {
     let source = match counters.expected_loss_source {
         Some(LossSource::Measured) => "measured",
         _ => "default",
@@ -207,8 +212,10 @@ pub(crate) fn leave_line(guild: u64, counters: &DeliveryCounters) -> String {
         (Some(loss), Some(jitter)) => format!(", last loss {loss:.1} %, jitter {jitter:.1} ms"),
         _ => String::new(),
     };
+    // Change `transmit-only-when-speaking`: the voice goes out only while it is audible.
+    let not_sent = FRAME_DURATION.as_secs_f64() * output.frames_not_sent as f64;
     format!(
-        "[delivery:{guild}] voice server {} (region {}): {} packets encoded, {} passed through, {} encode errors; expected loss {} % ({source}); {} reports{reported}",
+        "[delivery:{guild}] voice server {} (region {}): {} packets encoded, {} passed through, {} encode errors; expected loss {} % ({source}); {} reports{reported}; sending turned on {} times, nothing sent for {not_sent:.1} s, {} cut starts",
         counters.voice_server.as_deref().unwrap_or("unknown"),
         counters.region.as_deref().unwrap_or("unknown"),
         counters.packets_encoded,
@@ -216,6 +223,8 @@ pub(crate) fn leave_line(guild: u64, counters: &DeliveryCounters) -> String {
         counters.encode_errors,
         counters.expected_loss_percent,
         counters.reports,
+        output.sends_started,
+        output.cut_starts,
     )
 }
 
@@ -473,10 +482,20 @@ mod tests {
             join_line(42, leg.server().as_deref()),
             "[delivery:42] voice server finland14009.discord.media (region finland)"
         );
+        let output = OutputCounters {
+            sends_started: 4,
+            frames_not_sent: 3_021,
+            cut_starts: 0,
+            ..OutputCounters::default()
+        };
         assert_eq!(
-            leave_line(42, &counters),
-            "[delivery:42] voice server finland14009.discord.media (region finland): 1500 packets encoded, 1498 passed through, 0 encode errors; expected loss 7 % (measured); 1 reports, last loss 3.9 %, jitter 1.0 ms"
+            leave_line(42, &counters, &output),
+            "[delivery:42] voice server finland14009.discord.media (region finland): 1500 packets encoded, 1498 passed through, 0 encode errors; expected loss 7 % (measured); 1 reports, last loss 3.9 %, jitter 1.0 ms; sending turned on 4 times, nothing sent for 60.4 s, 0 cut starts"
         );
+        let status = serde_json::to_value(output).expect("serializes");
+        for field in ["sending", "sends_started", "frames_not_sent", "cut_starts"] {
+            assert!(status.get(field).is_some(), "the status carries {field}");
+        }
     }
 
     #[test]
@@ -493,7 +512,7 @@ mod tests {
         let counters = leg.counters();
         let logged = [
             join_line(1, leg.server().as_deref()),
-            leave_line(1, &counters),
+            leave_line(1, &counters, &OutputCounters::default()),
             serde_json::to_string(&counters).expect("serializes"),
         ];
         for line in logged {

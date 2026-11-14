@@ -13,9 +13,11 @@ use songbird::events::{Event, EventContext, EventHandler as VoiceEventHandler, T
 use songbird::input::RawAdapter;
 use songbird::tracks::{PlayMode, TrackHandle};
 use songbird::CoreEvent;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Notify;
+use tokio::sync::{watch, Notify};
+use tokio::task::JoinHandle;
 
 pub(crate) struct VoiceSession {
     pub(crate) channel: ChannelId,
@@ -27,6 +29,23 @@ pub(crate) struct VoiceSession {
     pub(crate) panel: Option<PanelRef>,
     /// The leg toward Discord: voice server, our encoder's counters, Discord's reports.
     pub(crate) delivery: Arc<DeliveryLeg>,
+    /// Applies the output's sending wish to songbird's driver; aborted at the leave.
+    pub(crate) sending_task: JoinHandle<()>,
+}
+
+/// Applies each change of the output's sending wish (change `transmit-only-when-speaking`)
+/// until the output is gone: `apply(true)` when something is audible and Discord should get
+/// the voice, `apply(false)` when nothing should be sent. Changes made faster than they are
+/// applied fold into the latest one.
+pub(crate) async fn apply_sending<F, Fut>(mut sending: watch::Receiver<bool>, mut apply: F)
+where
+    F: FnMut(bool) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    while sending.changed().await.is_ok() {
+        let on = *sending.borrow_and_update();
+        apply(on).await;
+    }
 }
 
 struct TrackLogger {
@@ -212,8 +231,21 @@ pub(crate) async fn join_voice(
         let endpoint = call
             .current_connection()
             .map(|connection| delivery::host_of(&connection.endpoint).to_owned());
+        // Nothing goes to Discord until something is audible (change
+        // `transmit-only-when-speaking`). The driver's mute only: songbird keeps pulling the
+        // track and sends nothing. `Call::mute` would also show the bot muted in Discord.
+        songbird::Driver::mute(&mut call, true);
         (call.play_only_input(input), endpoint)
     };
+    let sending_task = tokio::spawn(apply_sending(output.sending(), {
+        let call = Arc::clone(&call);
+        move |on| {
+            let call = Arc::clone(&call);
+            async move {
+                songbird::Driver::mute(&mut *call.lock().await, !on);
+            }
+        }
+    }));
     crate::detail!(
         "delivery",
         "{}",
@@ -248,6 +280,7 @@ pub(crate) async fn join_voice(
             track_ended,
             panel: None,
             delivery,
+            sending_task,
         },
     );
     let guild_name = shared
@@ -290,12 +323,18 @@ async fn leave_voice_locked(shared: &Arc<Shared>, guild: GuildId) -> bool {
         return false;
     };
     session.output.close();
+    // It holds the call: stop it before the call is removed.
+    session.sending_task.abort();
     let _ = tokio::time::timeout(Duration::from_millis(200), session.track_ended.notified()).await;
     let _ = session.track.stop();
     crate::detail!(
         "delivery",
         "{}",
-        delivery::leave_line(guild.get(), &session.delivery.counters())
+        delivery::leave_line(
+            guild.get(),
+            &session.delivery.counters(),
+            &session.output.counters()
+        )
     );
     if let Some(manager) = shared.songbird() {
         if let Err(error) = manager.remove(guild).await {
@@ -465,5 +504,47 @@ mod tests {
         // A passing preparation goes on to the join (here voice is not connected yet).
         let (outcome, _, _) = join_with(None);
         assert_eq!(outcome, JoinOutcome::NotReady);
+    }
+
+    /// The next value the loop applied, if one comes within 100 ms.
+    async fn next_applied(seen: &mut tokio::sync::mpsc::UnboundedReceiver<bool>) -> Option<bool> {
+        tokio::time::timeout(Duration::from_millis(100), seen.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    #[test]
+    fn the_sending_loop_applies_each_change_and_ends_with_the_output() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        tokio_rt.block_on(async {
+            let (wish, receiver) = watch::channel(false);
+            let (applied, mut seen) = tokio::sync::mpsc::unbounded_channel();
+            let task = tokio::spawn(apply_sending(receiver, move |on| {
+                let applied = applied.clone();
+                async move {
+                    applied.send(on).unwrap();
+                }
+            }));
+            assert_eq!(
+                next_applied(&mut seen).await,
+                None,
+                "nothing applied before a change"
+            );
+            for on in [true, false, true] {
+                wish.send_replace(on);
+                assert_eq!(next_applied(&mut seen).await, Some(on), "applied in order");
+            }
+            assert_eq!(
+                next_applied(&mut seen).await,
+                None,
+                "nothing applied without a change"
+            );
+            drop(wish);
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .expect("the loop ends with the output")
+                .unwrap();
+        });
     }
 }

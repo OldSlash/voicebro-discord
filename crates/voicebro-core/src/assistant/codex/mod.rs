@@ -1366,6 +1366,28 @@ mod tests {
         // The whole call's audio counters (the line above was taken after the first answer).
         let last_audio = assistant.status().calls[0].audio.unwrap_or_default();
         eprintln!("{}", last_audio.log_line(1));
+        // Toward Discord (change `transmit-only-when-speaking`): sending turned on for the
+        // answers before their voice played, and nothing was sent while the call was silent.
+        let toward_discord = output.counters();
+        eprintln!(
+            "toward Discord: sending turned on {} times, nothing sent for {} of {} frames, {} cut starts",
+            toward_discord.sends_started,
+            toward_discord.frames_not_sent,
+            toward_discord.played + toward_discord.silence_frames,
+            toward_discord.cut_starts
+        );
+        assert!(
+            toward_discord.sends_started >= 1,
+            "sending turned on for the answer"
+        );
+        assert_eq!(
+            toward_discord.cut_starts, 0,
+            "no answer started before sending was on"
+        );
+        assert!(
+            toward_discord.frames_not_sent > 0,
+            "nothing was sent while the call was silent"
+        );
         if let Some(path) = &record {
             let lines = jitter::recording::finish();
             eprintln!(

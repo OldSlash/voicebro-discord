@@ -1,5 +1,7 @@
 //! The assistant's audio toward Discord: a small adaptive jitter buffer with a flush epoch,
-//! mute, earcons and counters, read by songbird through `PcmSource`.
+//! mute, earcons and counters, read by songbird through `PcmSource`. The source also decides
+//! whether anything is sent toward Discord at all (change `transmit-only-when-speaking`):
+//! only while the assistant's voice or an earcon is audible.
 
 use super::earcon::{self, Earcon};
 use super::frame::{Frame, FRAME_SAMPLES};
@@ -10,6 +12,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use symphonia_core::io::MediaSource;
+use tokio::sync::watch;
 
 /// Frames kept at most: about 160 ms.
 pub const CAPACITY: usize = 8;
@@ -21,6 +24,12 @@ const UNDERRUNS_BEFORE_GROW: u32 = 3;
 const STABLE_FRAMES_BEFORE_RELAX: u32 = 750;
 /// Peak above which a frame counts as the assistant speaking.
 pub const SIGNAL_PEAK: i32 = 256;
+/// Frames between asking for sending and sending surely being on: songbird applies the
+/// driver's mute at the start of a later tick, normally the next one. Earcons wait for it.
+pub const SEND_LEAD: u32 = 2;
+/// Frames in a row with nothing audible before sending stops (500 ms): longer than every
+/// pause inside an answer in the recorded calls (at most 300 ms).
+pub const SEND_HANGOVER: u32 = 25;
 const BYTES_PER_PACKET: usize = FRAME_SAMPLES * std::mem::size_of::<f32>();
 
 /// A source of 20 ms frames that the output pulls on songbird's read clock, ahead of the
@@ -35,6 +44,12 @@ pub trait FrameProvider: Send + Sync {
     fn arrival(&self) -> Option<Instant> {
         None
     }
+    /// Whether audio already held for the frames after the last one given has a peak of
+    /// [`SIGNAL_PEAK`] or more: the output turns sending toward Discord on before that
+    /// voice plays. `false` when the provider cannot see ahead.
+    fn voice_ahead(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -45,10 +60,39 @@ pub struct OutputCounters {
     pub underruns: u64,
     pub silence_frames: u64,
     pub flushed: u64,
+    /// Whether sending toward Discord is on now (asked for or on).
+    pub sending: bool,
+    /// Times sending turned on.
+    pub sends_started: u64,
+    /// Frames pulled while nothing was sent toward Discord.
+    pub frames_not_sent: u64,
+    /// Starts whose first voiced frame played before sending was surely on: the start of
+    /// that voice may be missing in Discord.
+    pub cut_starts: u64,
+}
+
+/// Where the output stands with sending toward Discord (design D2 of change
+/// `transmit-only-when-speaking`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sending {
+    /// Nothing audible for the hangover: songbird is told to send nothing.
+    Silent,
+    /// Sending was asked for; `left` more frames before it is surely on. `cut` once a voiced
+    /// frame has played meanwhile.
+    Opening { left: u32, cut: bool },
+    /// Sending; `quiet` frames in a row without anything audible.
+    On { quiet: u32 },
+}
+
+/// A pushed frame with its epoch and whether it carries a signal.
+struct Queued {
+    epoch: u64,
+    frame: Frame,
+    voiced: bool,
 }
 
 struct Inner {
-    frames: VecDeque<(u64, Frame)>,
+    frames: VecDeque<Queued>,
     epoch: u64,
     jitter_target: usize,
     priming: bool,
@@ -64,12 +108,69 @@ struct Inner {
     gain: Arc<GainStage>,
     /// The guild's turn latency tracker, told when the assistant's audio plays.
     latency: Option<(SharedLatency, u64)>,
+    sending: Sending,
+    /// Whether sending is wanted, for whoever applies it to the driver (the session).
+    sending_tx: watch::Sender<bool>,
+}
+
+impl Inner {
+    fn set_sending(&mut self, on: bool) {
+        self.counters.sending = on;
+        self.sending_tx.send_replace(on);
+    }
+
+    /// One frame of the sending decision. `voiced`: the assistant's frame played now has a
+    /// signal. `ahead`: audio waiting to play has one, or an earcon waits. Returns whether
+    /// sending is surely on for this frame, so earcons may be mixed into it.
+    fn step_sending(&mut self, voiced: bool, ahead: bool) -> bool {
+        if let Sending::Opening { left: 0, .. } = self.sending {
+            self.sending = Sending::On { quiet: 0 };
+        }
+        match self.sending {
+            Sending::Silent => {
+                self.counters.frames_not_sent += 1;
+                if voiced || ahead {
+                    self.counters.sends_started += 1;
+                    if voiced {
+                        self.counters.cut_starts += 1;
+                    }
+                    self.sending = Sending::Opening {
+                        left: SEND_LEAD - 1,
+                        cut: voiced,
+                    };
+                    self.set_sending(true);
+                }
+                false
+            }
+            Sending::Opening { left, cut } => {
+                if voiced && !cut {
+                    self.counters.cut_starts += 1;
+                }
+                self.sending = Sending::Opening {
+                    left: left.saturating_sub(1),
+                    cut: cut || voiced,
+                };
+                false
+            }
+            Sending::On { quiet } => {
+                let quiet = if voiced || ahead { 0 } else { quiet + 1 };
+                if quiet >= SEND_HANGOVER {
+                    self.sending = Sending::Silent;
+                    self.set_sending(false);
+                } else {
+                    self.sending = Sending::On { quiet };
+                }
+                true
+            }
+        }
+    }
 }
 
 /// Creates the queue and both ends of it: the handle the assistant and the gate hold, and
 /// the source songbird reads. The gain starts at 1.0 until [`OutputHandle::use_gain`]
-/// shares the app's output gain.
+/// shares the app's output gain. Sending starts off: nothing is audible yet.
 pub fn output_pair() -> (OutputHandle, PcmSource) {
+    let (sending_tx, _) = watch::channel(false);
     let inner = Arc::new(Mutex::new(Inner {
         frames: VecDeque::with_capacity(CAPACITY),
         epoch: 0,
@@ -85,6 +186,8 @@ pub fn output_pair() -> (OutputHandle, PcmSource) {
         provider: None,
         gain: Arc::new(GainStage::new()),
         latency: None,
+        sending: Sending::Silent,
+        sending_tx,
     }));
     (
         OutputHandle {
@@ -130,7 +233,8 @@ impl OutputHandle {
     pub fn push(&self, frame: Frame) {
         let mut inner = self.inner.lock().expect("output lock");
         inner.counters.pushed += 1;
-        if frame.peak() >= SIGNAL_PEAK {
+        let voiced = frame.peak() >= SIGNAL_PEAK;
+        if voiced {
             inner.last_signal = Some(Instant::now());
         }
         if inner.muted || inner.closed {
@@ -142,7 +246,21 @@ impl OutputHandle {
             inner.counters.dropped += 1;
         }
         let epoch = inner.epoch;
-        inner.frames.push_back((epoch, frame));
+        inner.frames.push_back(Queued {
+            epoch,
+            frame,
+            voiced,
+        });
+    }
+
+    /// Whether sending toward Discord is wanted: `true` while something is audible and for
+    /// the hangover after it. The session applies each change to songbird's driver.
+    pub fn sending(&self) -> watch::Receiver<bool> {
+        self.inner
+            .lock()
+            .expect("output lock")
+            .sending_tx
+            .subscribe()
     }
 
     /// Discards everything queued but not yet played, the attached provider's too.
@@ -249,9 +367,14 @@ impl PcmSource {
         self.scratch.fill(0.0);
         let epoch = inner.epoch;
         // Skip frames queued before the last flush.
-        while matches!(inner.frames.front(), Some((e, _)) if *e != epoch) {
+        while matches!(inner.frames.front(), Some(queued) if queued.epoch != epoch) {
             inner.frames.pop_front();
         }
+        // Whether the assistant's frame played now has a signal, and whether the provider
+        // sees one ahead. Nothing of the assistant counts while muted.
+        let mut voiced = false;
+        let mut provider_ahead = false;
+        let mut from_provider = false;
         // The attached provider (the call's jitter buffer) plays first. While muted its
         // frames are pulled and discarded, so nothing said during a mute plays later.
         if let Some(provider) = inner.provider.clone() {
@@ -263,11 +386,32 @@ impl PcmSource {
                 if self.pulled.peak() >= SIGNAL_PEAK {
                     inner.last_signal = Some(Instant::now());
                     note_answer(&inner, provider.arrival(), &mut self.latency_lines);
+                    voiced = true;
                 }
-                Self::mix_earcon(&mut inner, &mut self.scratch);
-                return true;
+                from_provider = true;
             }
+            provider_ahead = !inner.muted && provider.voice_ahead();
         }
+        if !from_provider {
+            voiced = Self::play_pushed(&mut inner, &mut self.scratch, &mut self.latency_lines);
+        }
+        let ahead = provider_ahead
+            || (!inner.muted && inner.frames.iter().any(|queued| queued.voiced))
+            || !inner.earcon.is_empty();
+        if inner.step_sending(voiced, ahead) {
+            Self::mix_earcon(&mut inner, &mut self.scratch);
+        }
+        true
+    }
+
+    /// Plays the next pushed frame into `scratch` once the queue is primed; returns whether
+    /// it has a signal.
+    fn play_pushed(
+        inner: &mut Inner,
+        scratch: &mut [f32],
+        latency_lines: &mut Vec<String>,
+    ) -> bool {
+        let mut voiced = false;
         let ready = if inner.priming {
             if inner.frames.len() >= inner.jitter_target {
                 inner.priming = false;
@@ -279,11 +423,12 @@ impl PcmSource {
             !inner.frames.is_empty()
         };
         if ready && !inner.muted {
-            if let Some((_, frame)) = inner.frames.pop_front() {
-                inner.gain.scale_to_f32(frame.as_slice(), &mut self.scratch);
+            if let Some(queued) = inner.frames.pop_front() {
+                inner.gain.scale_to_f32(queued.frame.as_slice(), scratch);
                 inner.counters.played += 1;
-                if frame.peak() >= SIGNAL_PEAK {
-                    note_answer(&inner, None, &mut self.latency_lines);
+                if queued.voiced {
+                    note_answer(inner, None, latency_lines);
+                    voiced = true;
                 }
                 inner.stable_frames += 1;
                 if inner.stable_frames >= STABLE_FRAMES_BEFORE_RELAX {
@@ -310,11 +455,11 @@ impl PcmSource {
                 }
             }
         }
-        Self::mix_earcon(&mut inner, &mut self.scratch);
-        true
+        voiced
     }
 
-    /// Earcons are mixed in whatever the state, one mono sample per stereo pair.
+    /// Earcons are mixed in whatever the mute, one mono sample per stereo pair; only while
+    /// sending is surely on, so none is lost to songbird's mute (they wait meanwhile).
     fn mix_earcon(inner: &mut Inner, scratch: &mut [f32]) {
         if inner.earcon.is_empty() {
             return;
@@ -463,11 +608,11 @@ mod tests {
         handle.push(loud(5000));
         assert_eq!(handle.queued(), 0);
         handle.play_earcon(Earcon::Activate, 0.18);
-        let packet = read_packet(&mut source).unwrap();
-        assert!(
-            packet.iter().any(|s| s.abs() > 0.01),
-            "earcon audible while muted"
-        );
+        // From silence the earcon waits for sending to be on.
+        let audible = (0..=SEND_LEAD)
+            .filter_map(|_| read_packet(&mut source))
+            .any(|packet| packet.iter().any(|s| s.abs() > 0.01));
+        assert!(audible, "earcon audible while muted");
         handle.set_muted(false);
         let silence = read_packet(&mut source);
         assert!(silence.is_some());
@@ -621,7 +766,11 @@ mod tests {
             let (handle, mut source) = output_pair();
             handle.use_gain(stage);
             handle.play_earcon(Earcon::Activate, 0.18);
-            read_packet(&mut source).unwrap()
+            // The first packet the earcon is in, after the wait for sending.
+            (0..=SEND_LEAD)
+                .filter_map(|_| read_packet(&mut source))
+                .last()
+                .unwrap()
         };
         let plain = earcon_at(1.0);
         assert!(plain.iter().any(|s| *s != 0.0), "the earcon plays");
@@ -650,5 +799,236 @@ mod tests {
             total += source.read(&mut small).unwrap();
         }
         assert_eq!(total, BYTES_PER_PACKET);
+    }
+
+    fn audible(packet: &[f32]) -> bool {
+        packet.iter().any(|sample| *sample != 0.0)
+    }
+
+    /// Reads one packet per tick, pushing one loud frame before each of the first `voiced`
+    /// reads as an assistant speaking in real time does, then `quiet` reads with nothing
+    /// pushed. Per read: whether the packet was audible, and whether sending was on after it.
+    fn speak_then_wait(
+        handle: &OutputHandle,
+        source: &mut PcmSource,
+        voiced: usize,
+        quiet: usize,
+    ) -> Vec<(bool, bool)> {
+        (0..voiced + quiet)
+            .map(|tick| {
+                if tick < voiced {
+                    handle.push(loud(4_000));
+                }
+                let packet = read_packet(source).unwrap();
+                (audible(&packet), handle.counters().sending)
+            })
+            .collect()
+    }
+
+    /// A provider playing frames at the given levels in order, seeing four frames ahead.
+    struct Lookahead {
+        levels: Mutex<VecDeque<i16>>,
+    }
+
+    impl Lookahead {
+        fn new(levels: &[i16]) -> Self {
+            Self {
+                levels: Mutex::new(levels.iter().copied().collect()),
+            }
+        }
+    }
+
+    impl FrameProvider for Lookahead {
+        fn next_frame(&self, out: &mut Frame) -> bool {
+            let Some(level) = self.levels.lock().unwrap().pop_front() else {
+                return false;
+            };
+            out.as_mut_slice().fill(level);
+            true
+        }
+
+        fn reset(&self) {
+            self.levels.lock().unwrap().clear();
+        }
+
+        fn voice_ahead(&self) -> bool {
+            self.levels
+                .lock()
+                .unwrap()
+                .iter()
+                .take(4)
+                .any(|level| i32::from(*level) >= SIGNAL_PEAK)
+        }
+    }
+
+    #[test]
+    fn an_output_with_nothing_to_play_never_sends() {
+        let (handle, mut source) = output_pair();
+        let sending = handle.sending();
+        for _ in 0..100 {
+            read_packet(&mut source).unwrap();
+        }
+        let counters = handle.counters();
+        assert!(!counters.sending);
+        assert_eq!(counters.sends_started, 0);
+        assert_eq!(counters.frames_not_sent, 100);
+        assert!(!sending.has_changed().unwrap(), "no change announced");
+    }
+
+    #[test]
+    fn pushed_voice_turns_sending_on_before_it_plays() {
+        let (handle, mut source) = output_pair();
+        let ticks = speak_then_wait(&handle, &mut source, 10, 0);
+        let first_audible = ticks.iter().position(|(audible, _)| *audible).unwrap();
+        let first_sending = ticks.iter().position(|(_, sending)| *sending).unwrap();
+        assert!(
+            first_sending + SEND_LEAD as usize <= first_audible,
+            "sending on after read {first_sending}, voice at read {first_audible}"
+        );
+        let counters = handle.counters();
+        assert_eq!(counters.sends_started, 1);
+        assert_eq!(counters.cut_starts, 0);
+    }
+
+    #[test]
+    fn sending_stops_after_the_hangover_and_holds_through_a_shorter_pause() {
+        let (handle, mut source) = output_pair();
+        let ticks = speak_then_wait(&handle, &mut source, 10, 40);
+        let last_audible = ticks.iter().rposition(|(audible, _)| *audible).unwrap();
+        let hangover = SEND_HANGOVER as usize;
+        assert!(
+            ticks[last_audible + hangover - 1].1,
+            "still sending after {} quiet frames",
+            hangover - 1
+        );
+        assert!(
+            !ticks[last_audible + hangover].1,
+            "sending stopped after {hangover} quiet frames"
+        );
+        assert!(!handle.counters().sending);
+
+        let (handle, mut source) = output_pair();
+        speak_then_wait(&handle, &mut source, 10, 20);
+        let resumed = speak_then_wait(&handle, &mut source, 10, 0);
+        assert!(resumed.iter().all(|(_, sending)| *sending));
+        assert_eq!(
+            handle.counters().sends_started,
+            1,
+            "a pause of 20 frames keeps sending on"
+        );
+    }
+
+    #[test]
+    fn an_earcon_from_silence_waits_for_sending_then_plays_whole() {
+        let (handle, mut source) = output_pair();
+        handle.play_earcon(Earcon::Activate, 0.18);
+        let expected = earcon::samples(Earcon::Activate, 0.18);
+        let lead = SEND_LEAD as usize;
+        let reads = expected.len().div_ceil(FRAME_SAMPLES / 2) + lead;
+        let mut heard = Vec::new();
+        for tick in 0..reads {
+            let packet = read_packet(&mut source).unwrap();
+            if tick < lead {
+                assert!(!audible(&packet), "read {tick}: the earcon waits");
+                assert!(handle.counters().sending, "sending is asked for at once");
+            } else {
+                heard.extend(packet.iter().step_by(2).copied());
+            }
+        }
+        heard.truncate(expected.len());
+        assert_eq!(heard, expected, "every sample of the earcon plays");
+        assert_eq!(handle.counters().cut_starts, 0);
+    }
+
+    #[test]
+    fn a_muted_output_sends_its_earcons_but_not_the_assistant() {
+        let (handle, mut source) = output_pair();
+        handle.set_muted(true);
+        handle.attach_provider(Arc::new(Lookahead::new(&[4_000; 20])));
+        for _ in 0..3 {
+            handle.push(loud(4_000));
+        }
+        for _ in 0..10 {
+            read_packet(&mut source).unwrap();
+        }
+        assert_eq!(
+            handle.counters().sends_started,
+            0,
+            "the muted assistant never turns sending on"
+        );
+        handle.play_earcon(Earcon::Mute, 0.18);
+        read_packet(&mut source).unwrap();
+        assert!(handle.counters().sending, "the mute tone turns sending on");
+        let tone = (0..SEND_LEAD)
+            .filter_map(|_| read_packet(&mut source))
+            .any(|packet| audible(&packet));
+        assert!(tone, "the mute tone plays");
+    }
+
+    #[test]
+    fn a_provider_seeing_voice_ahead_turns_sending_on_before_it_plays() {
+        let (handle, mut source) = output_pair();
+        let mut levels = vec![0i16; 10];
+        levels.extend([4_000i16; 10]);
+        handle.attach_provider(Arc::new(Lookahead::new(&levels)));
+        let ticks: Vec<(bool, bool)> = (0..levels.len())
+            .map(|_| {
+                let packet = read_packet(&mut source).unwrap();
+                (audible(&packet), handle.counters().sending)
+            })
+            .collect();
+        let first_audible = ticks.iter().position(|(audible, _)| *audible).unwrap();
+        let first_sending = ticks.iter().position(|(_, sending)| *sending).unwrap();
+        assert_eq!(first_audible, 10);
+        assert!(
+            first_sending + SEND_LEAD as usize <= first_audible,
+            "sending on after read {first_sending}"
+        );
+        let counters = handle.counters();
+        assert_eq!(counters.sends_started, 1);
+        assert_eq!(counters.cut_starts, 0);
+    }
+
+    #[test]
+    fn a_voiced_frame_with_nothing_ahead_counts_one_cut_start() {
+        let (handle, mut source) = output_pair();
+        handle.attach_provider(Arc::new(Countdown {
+            left: Mutex::new(5),
+            resets: Mutex::new(0),
+        }));
+        for _ in 0..5 {
+            read_packet(&mut source).unwrap();
+        }
+        let counters = handle.counters();
+        assert_eq!(counters.sends_started, 1);
+        assert_eq!(counters.cut_starts, 1, "one start, cut once");
+    }
+
+    #[test]
+    fn the_sending_receiver_sees_each_change_once() {
+        let (handle, mut source) = output_pair();
+        let mut sending = handle.sending();
+        assert!(!*sending.borrow_and_update());
+        handle.push(loud(4_000));
+        read_packet(&mut source).unwrap();
+        assert!(sending.has_changed().unwrap());
+        assert!(*sending.borrow_and_update(), "on");
+        speak_then_wait(&handle, &mut source, 9, SEND_HANGOVER as usize - 1);
+        assert!(
+            !sending.has_changed().unwrap(),
+            "no change while it stays on"
+        );
+        for _ in 0..10 {
+            read_packet(&mut source).unwrap();
+        }
+        assert!(sending.has_changed().unwrap());
+        assert!(!*sending.borrow_and_update(), "off");
+        for _ in 0..10 {
+            read_packet(&mut source).unwrap();
+        }
+        assert!(
+            !sending.has_changed().unwrap(),
+            "no change while it stays off"
+        );
     }
 }

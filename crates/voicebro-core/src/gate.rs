@@ -1008,12 +1008,17 @@ mod tests {
                 None,
             );
             gate.set_muted(true);
+            // From silence the tone waits for sending toward Discord to be on.
             let mut bytes = vec![0u8; crate::audio::FRAME_SAMPLES * 4];
-            source.read_exact(&mut bytes).unwrap();
-            bytes
-                .chunks(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs())
-                .fold(0f32, f32::max)
+            let mut loudest = 0f32;
+            for _ in 0..=crate::audio::output::SEND_LEAD {
+                source.read_exact(&mut bytes).unwrap();
+                loudest = bytes
+                    .chunks(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs())
+                    .fold(loudest, f32::max);
+            }
+            loudest
         };
         assert!(tone_after_mute(true) > 0.05, "the mute tone plays");
         assert_eq!(tone_after_mute(false), 0.0, "no tone with earcons off");
