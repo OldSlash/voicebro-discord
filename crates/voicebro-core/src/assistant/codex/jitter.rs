@@ -12,6 +12,7 @@ use super::playout::{DepthEstimator, Playout, FRAME as PLAYOUT_FRAME};
 use crate::audio::codec::{
     Channels, CodecFailures, CodecPath, FailureSpell, OpusCodec, VoiceDecoder,
 };
+use crate::audio::output::SIGNAL_PEAK;
 use crate::audio::{Frame, FrameProvider, FRAME_SAMPLES};
 use bytes::Bytes;
 use std::collections::BTreeMap;
@@ -105,6 +106,9 @@ struct State {
     scratch: Vec<i16>,
     mono: [i16; MONO_FRAME],
     playout: Playout,
+    /// Whether the samples decoded ahead of the last frame played hold the assistant's
+    /// voice (a peak of [`SIGNAL_PEAK`] or more); set after each pull.
+    voice_ahead: bool,
     counters: JitterCounters,
 }
 
@@ -165,6 +169,7 @@ impl JitterBuffer {
                 scratch: vec![0; MAX_PACKET_SAMPLES],
                 mono: [0; MONO_FRAME],
                 playout: Playout::with_estimator(adaptive, estimator),
+                voice_ahead: false,
                 counters: JitterCounters::default(),
             }),
         }
@@ -444,11 +449,15 @@ impl State {
 
 impl FrameProvider for JitterBuffer {
     fn next_frame(&self, out: &mut Frame) -> bool {
-        self.lock().pull(out)
+        let mut state = self.lock();
+        let played = state.pull(out);
+        state.voice_ahead = state.playout.future_peak() >= SIGNAL_PEAK;
+        played
     }
 
     fn reset(&self) {
         let mut state = self.lock();
+        state.voice_ahead = false;
         state.packets.clear();
         state.next_seq = None;
         state.highest = None;
@@ -464,6 +473,12 @@ impl FrameProvider for JitterBuffer {
 
     fn arrival(&self) -> Option<Instant> {
         self.lock().playout.arrival()
+    }
+
+    /// The decoded lookahead: up to the playout's `LOOKAHEAD` (100 ms) after the frame
+    /// just played.
+    fn voice_ahead(&self) -> bool {
+        self.lock().voice_ahead
     }
 }
 
@@ -1021,6 +1036,254 @@ mod tests {
         buffer.reset();
         let mut frame = Frame::silence();
         assert!(!buffer.next_frame(&mut frame));
+        assert!(!buffer.voice_ahead(), "a reset forgets the voice ahead");
+    }
+
+    /// 20 ms Opus packets as Codex sends them between and in answers: `silent` packets of
+    /// digital silence, `voiced` of a loud tone, then `silent` again.
+    fn silence_tone_silence(silent: usize, voiced: usize) -> Vec<Bytes> {
+        let mut encoder =
+            opus2::Encoder::new(48_000, opus2::Channels::Mono, opus2::Application::Voip).unwrap();
+        encoder.set_inband_fec(true).unwrap();
+        let mut out = vec![0u8; 4000];
+        (0..2 * silent + voiced)
+            .map(|index| {
+                let loud = (silent..silent + voiced).contains(&index);
+                let pcm: Vec<i16> = (0..MONO_FRAME)
+                    .map(|i| {
+                        let t = (index * MONO_FRAME + i) as f32 / 48_000.0;
+                        let tone = (2.0 * std::f32::consts::PI * 220.0 * t).sin() * 8_000.0;
+                        if loud {
+                            tone as i16
+                        } else {
+                            0
+                        }
+                    })
+                    .collect();
+                let written = encoder.encode(&pcm, &mut out).unwrap();
+                Bytes::copy_from_slice(&out[..written])
+            })
+            .collect()
+    }
+
+    /// Pulls once per 20 ms tick while packets arrive in real time; per tick, whether the
+    /// frame played was voiced and whether voice was seen ahead after the pull.
+    fn pull_in_real_time(buffer: &JitterBuffer, payloads: &[Bytes]) -> (Vec<bool>, Vec<bool>) {
+        let start = Instant::now();
+        let mut frame = Frame::silence();
+        let mut voiced = Vec::new();
+        let mut ahead = Vec::new();
+        for tick in 0..payloads.len() + 40 {
+            if let Some(payload) = payloads.get(tick) {
+                buffer.insert_at(
+                    tick as u16,
+                    (tick * MONO_FRAME) as u32,
+                    payload.clone(),
+                    start + std::time::Duration::from_millis(20 * tick as u64),
+                );
+            }
+            let played = buffer.next_frame(&mut frame);
+            voiced.push(played && frame.peak() >= SIGNAL_PEAK);
+            ahead.push(buffer.voice_ahead());
+        }
+        (voiced, ahead)
+    }
+
+    /// What one recorded call looked like toward Discord.
+    struct SendOutcome {
+        frames: usize,
+        voiced: usize,
+        /// Voiced frames played while songbird was still muted: missing in Discord.
+        voiced_not_sent: usize,
+        not_sent: usize,
+        counters: crate::audio::OutputCounters,
+        /// Each run of frames without voice between two voiced ones.
+        quiet_runs: Vec<QuietRun>,
+    }
+
+    struct QuietRun {
+        length: usize,
+        not_sent: usize,
+        /// Frames sent at its start (the hangover) and at its end (before the next voice).
+        sent_after: usize,
+        sent_before: usize,
+    }
+
+    /// Plays a recorded call through a jitter buffer attached to the output, one read per
+    /// simulated 20 ms tick (change `transmit-only-when-speaking`). songbird applies the
+    /// output's sending wish `delay` ticks after the read that changed it.
+    fn send_recorded(packets: &[replay::Packet], delay: usize) -> SendOutcome {
+        let buffer = std::sync::Arc::new(JitterBuffer::new());
+        let (handle, mut source) = crate::audio::output_pair();
+        handle.attach_provider(buffer.clone());
+        let wish = handle.sending();
+        let threshold = SIGNAL_PEAK as f32 / 32_768.0;
+        let start = Instant::now();
+        let end = packets.last().map_or(std::time::Duration::ZERO, |p| p.at)
+            + std::time::Duration::from_secs(2);
+        let mut applied_later: std::collections::VecDeque<bool> =
+            std::iter::repeat_n(false, delay).collect();
+        let mut pcm = vec![0f32; FRAME_SAMPLES];
+        let mut next = 0;
+        let mut tick = std::time::Duration::ZERO;
+        let mut outcome = SendOutcome {
+            frames: 0,
+            voiced: 0,
+            voiced_not_sent: 0,
+            not_sent: 0,
+            counters: Default::default(),
+            quiet_runs: Vec::new(),
+        };
+        let mut run: Vec<bool> = Vec::new();
+        let mut heard_voice = false;
+        while tick <= end {
+            while next < packets.len() && packets[next].at <= tick {
+                let packet = &packets[next];
+                buffer.insert_at(
+                    packet.sequence,
+                    packet.timestamp,
+                    packet.payload.clone(),
+                    start + packet.at,
+                );
+                next += 1;
+            }
+            let sent = applied_later.pop_front().unwrap_or(*wish.borrow());
+            assert!(source.fill_frame(&mut pcm));
+            let voiced = pcm.iter().any(|sample| sample.abs() >= threshold);
+            outcome.frames += 1;
+            outcome.not_sent += usize::from(!sent);
+            if voiced {
+                outcome.voiced += 1;
+                outcome.voiced_not_sent += usize::from(!sent);
+                if !run.is_empty() {
+                    outcome.quiet_runs.push(QuietRun {
+                        length: run.len(),
+                        not_sent: run.iter().filter(|sent| !**sent).count(),
+                        sent_after: run.iter().take_while(|sent| **sent).count(),
+                        sent_before: run.iter().rev().take_while(|sent| **sent).count(),
+                    });
+                    run.clear();
+                }
+                heard_voice = true;
+            } else if heard_voice {
+                run.push(sent);
+            }
+            applied_later.push_back(*wish.borrow());
+            tick += std::time::Duration::from_millis(20);
+        }
+        // A run still open at the end follows the last answer, not a gap between answers.
+        outcome.counters = handle.counters();
+        outcome
+    }
+
+    /// The recorded calls in `VOICEBRO_PLAYOUT_REPLAY` toward Discord: with the mute applied
+    /// one tick late no voiced frame is lost and no start is cut, nothing is sent through
+    /// most of each gap between answers, and sending never blinks inside an answer. Two
+    /// ticks late is printed too.
+    #[test]
+    fn sending_on_recorded_calls_when_enabled() {
+        let Ok(list) = std::env::var("VOICEBRO_PLAYOUT_REPLAY") else {
+            return;
+        };
+        let hangover = crate::audio::output::SEND_HANGOVER as usize;
+        // Voice is seen at most the decoded lookahead ahead, and the playout may play a
+        // pause again (stretch it) up to its run limit while that voice waits.
+        let most_ahead = playout::LOOKAHEAD / MONO_FRAME + (playout::DEPTH_MAX_MS / 20) as usize;
+        for path in list.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+            let packets = replay::parse(&std::fs::read_to_string(path).expect("recording"));
+            let name = std::path::Path::new(path)
+                .file_name()
+                .map_or(path.into(), |n| n.to_string_lossy());
+            for delay in [1, 2] {
+                let o = send_recorded(&packets, delay);
+                let gaps: Vec<&QuietRun> =
+                    o.quiet_runs.iter().filter(|run| run.length > 50).collect();
+                let gap_frames: usize = gaps.iter().map(|run| run.length).sum();
+                let gap_not_sent: usize = gaps.iter().map(|run| run.not_sent).sum();
+                let stops = o
+                    .quiet_runs
+                    .iter()
+                    .filter(|run| run.length >= hangover)
+                    .count();
+                let short_stops = o
+                    .quiet_runs
+                    .iter()
+                    .filter(|run| (hangover..=50).contains(&run.length))
+                    .count();
+                println!(
+                    "{name}, mute {delay} tick(s) late: {} frames, {} voiced, {} voiced not sent, {} sends started, {} cut starts; nothing sent for {:.0} % of the call; {} gaps over 1 s, {gap_not_sent} of their {gap_frames} frames not sent; {short_stops} pauses of 0.5 to 1 s",
+                    o.frames,
+                    o.voiced,
+                    o.voiced_not_sent,
+                    o.counters.sends_started,
+                    o.counters.cut_starts,
+                    100.0 * o.not_sent as f64 / o.frames as f64,
+                    gaps.len(),
+                );
+                let edges: Vec<(usize, usize)> = gaps
+                    .iter()
+                    .map(|run| (run.sent_after, run.sent_before))
+                    .collect();
+                println!("  frames sent in each gap (after the voice, before the next): {edges:?}");
+                if delay > 1 {
+                    continue;
+                }
+                assert_eq!(o.voiced_not_sent, 0, "{name}: a voiced frame was not sent");
+                assert_eq!(o.counters.cut_starts, 0, "{name}: a start was cut");
+                for run in &gaps {
+                    assert!(run.sent_after <= hangover, "{name}: the hangover ran long");
+                    assert!(
+                        run.sent_before <= most_ahead,
+                        "{name}: sending turned on {} frames early",
+                        run.sent_before
+                    );
+                    assert_eq!(
+                        run.sent_after + run.not_sent + run.sent_before,
+                        run.length,
+                        "{name}: sending blinked inside a gap"
+                    );
+                }
+                assert!(
+                    o.counters.sends_started as usize <= stops + 1,
+                    "{name}: sending turned on more often than it could stop"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn voice_ahead_is_seen_before_the_voice_plays() {
+        let silent = 50;
+        let payloads = silence_tone_silence(silent, 25);
+        for (name, buffer) in [
+            ("200 ms prior", JitterBuffer::new()),
+            ("60 ms minimum", adaptive_empty()),
+        ] {
+            let (voiced, ahead) = pull_in_real_time(&buffer, &payloads);
+            let first_voiced = voiced.iter().position(|v| *v).expect("the tone plays");
+            let last_voiced = voiced.iter().rposition(|v| *v).unwrap();
+            let first_ahead = ahead.iter().position(|a| *a).expect("voice is seen ahead");
+            println!(
+                "{name}: voice ahead at tick {first_ahead}, first voiced frame at {first_voiced}, last at {last_voiced}"
+            );
+            assert!(
+                first_ahead >= silent,
+                "{name}: no voice ahead while only silence has arrived"
+            );
+            assert!(
+                first_ahead + 2 <= first_voiced,
+                "{name}: voice seen {} pulls ahead",
+                first_voiced - first_ahead
+            );
+            assert!(
+                ahead[first_ahead..first_voiced].iter().all(|a| *a),
+                "{name}: the voice stays ahead until it plays"
+            );
+            assert!(
+                ahead[last_voiced..].iter().all(|a| !a),
+                "{name}: nothing ahead once the voice has played"
+            );
+        }
     }
 
     /// The stand's synthetic stream: 20 s of 1.7 s phrases and 300 ms pauses (ending on a

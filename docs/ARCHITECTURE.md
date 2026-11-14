@@ -152,8 +152,12 @@ Owns the formats, queues and conversions shared by everything else.
   `MediaSource` for the `RawAdapter` fallback. A producer with its own clock-free buffer (the Codex call's jitter
   buffer) attaches as a `FrameProvider`: while attached, `PcmSource` pulls one frame from it
   per read before the queue, flush and mute changes reset it, and a muted read still pulls
-  and discards so the provider's playout keeps time. `OutputHandle::push` stays for the stub
-  assistant and the tests.
+  and discards so the provider's playout keeps time. A provider also says whether voice is
+  ahead (`FrameProvider::voice_ahead`, `false` by default): the call's jitter buffer sets it
+  after each pull from the samples its playout has decoded ahead of the frame just played
+  (up to `LOOKAHEAD`, 100 ms; in practice two to four frames) against `SIGNAL_PEAK` (256),
+  so the output can turn sending toward Discord on before that voice plays (below).
+  `OutputHandle::push` stays for the stub assistant and the tests.
 - **Opus codecs** (`codec.rs`, change `opus-codec-experiment`): two Opus codecs built in
   side by side, chosen at run time by `diagnostics.opus_codec` (4.6): libopus 1.5 through
   `opus2` (C, built by `libopus_sys` with CMake; the default) and opus-rs 0.1.42, a
@@ -215,11 +219,34 @@ Owns the formats, queues and conversions shared by everything else.
 - **Source lifetime.** One output track per join. An empty queue (session over, nothing to
   say) produces silence, so a temporary underrun never ends the track. Only leaving the
   channel closes the source: `OutputHandle::close()` makes the next `read` return end of
-  stream, and the track ends with it. Nothing else may end it.
+  stream, and the track ends with it. Nothing else may end it. That silence is played but
+  not sent toward Discord (next item).
+- **Sending toward Discord** (change `transmit-only-when-speaking`): `PcmSource` decides, on
+  songbird's clock, whether anything should reach Discord. Each frame it notes whether
+  something is audible now (the assistant's frame played has a peak of `SIGNAL_PEAK` or
+  more, before the gain, as for `last_signal`) or ahead (the provider's `voice_ahead`, a
+  queued pushed frame with a signal, the peak stored at push, or earcon samples waiting).
+  While output is muted the assistant's frames never count, only earcons. The state goes
+  Silent → Opening → On → Silent:
+  - Silent: anything audible asks for sending and starts Opening for `SEND_LEAD` (2 frames,
+    40 ms). That is the time songbird needs to apply the driver's mute, which it does at
+    the start of a later tick, normally the next one.
+  - Opening: earcons wait, unmixed. The assistant's frames play on their clock: a voiced
+    one played before Opening is over counts once as a cut start.
+  - On: anything audible resets the hangover. After `SEND_HANGOVER` (25 frames, 500 ms)
+    with nothing audible, it asks for silence. That is longer than any pause inside an
+    answer in the recorded calls (at most 300 ms).
+
+  The source starts Silent. The wish is a `tokio::sync::watch` channel
+  (`OutputHandle::sending()`), sent only on a change. The session applies it to songbird's
+  driver (4.2). `OutputCounters` carry `sending`, `sends_started`, `frames_not_sent` and
+  `cut_starts`. Playout, gains, mute, earcons, latency lines and the Opus encoder run
+  exactly as while sending.
 - **Earcons**: four tones generated in Rust, mixed into the output even
   while muted, at volume 0.18 by default: session start 523.25, 659.25 and 783.99 Hz (70, 70,
   110 ms), session end 659.25 then 392 Hz (80, 130 ms), mute 660 then 440 Hz (90, 110 ms),
-  unmute 440 then 660 Hz (90, 110 ms), each note with a 6 ms fade at both ends.
+  unmute 440 then 660 Hz (90, 110 ms), each note with a 6 ms fade at both ends. An earcon
+  requested while nothing is sent waits `SEND_LEAD` (40 ms) and then plays whole.
 - **Gains** (`gain.rs`): `audio.input_gain` and `audio.output_gain`, 0.0 to 4.0, default
   1.0. `AudioGains` holds one `GainStage` per direction (the gain
   in an atomic, a clip counter, the peak of the last second), owned by the
@@ -294,6 +321,22 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   `RawAdapter<PcmSource>` (f32 PCM, songbird encodes, no FEC) with a warning. The crate
   that owns the track enables symphonia's `pcm` feature; without it songbird cannot decode
   the raw stream and the fallback fails with "no compatible track found".
+- **Sending only while audible** (change `transmit-only-when-speaking`). Before
+  `play_only` the driver is muted with `songbird::Driver::mute(true)`. It is never
+  `Call::mute`, which also sets the bot's self-mute in Discord's voice state, so members
+  would see the bot muted.
+  - A task per join (`session::apply_sending`) applies each change of
+    `OutputHandle::sending()` (4.1) as `Driver::mute(!on)`. It is kept in
+    `VoiceSession.sending_task` and aborted at the leave, before the call is removed.
+  - A muted driver still pulls the track every 20 ms. It sends five `F8 FF FE` silence
+    frames and then nothing; the mute takes effect at the start of a later mixer tick,
+    normally the next one (hence `SEND_LEAD`).
+  - songbird moves the RTP sequence number and timestamp on every tick, sent or not, so
+    the timestamp of the first packet after a pause is on time.
+  - Its speaking flag (op 5) stays set while the track lives. There is no API to clear it.
+  - The encoder and the loss path do not read the state. Every frame is still encoded,
+    and `packets_encoded` includes the packets the muted driver dropped; the output's
+    `frames_not_sent` sits next to it.
 - **The leg toward Discord** (`delivery.rs`): a `DeliveryHandler` for `DriverConnect`,
   `DriverReconnect` and `RtcpPacket` is registered before the join. It keeps the voice
   server's host and our SSRC (never the session id or token). Each RTCP packet is cut at
@@ -304,7 +347,8 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   and `c-sin19-5f0d7996.discord.media` (region `sin`): the region is the letters of the
   first dash-separated part that is letters then a digit, else the label's leading letters.
   `VoiceChannelStatus.delivery` (`DeliveryCounters`) carries them with the encoder's
-  counters and the last report, and the leave logs one line with them.
+  counters and the last report, and the leave logs one line with them and the output's
+  sending counters (times sending turned on, time nothing was sent, cut starts).
 - Changing the token restarts the client; a running client never keeps stale credentials.
 
 ### 4.3 Session gate (`gate.rs`)
@@ -1085,8 +1129,10 @@ Codex: remote track ─► RTP packets ─► JitterBuffer (by sequence number, 
    ◄─ pulled as FrameProvider: decode, FEC, concealment, 20 ms frames
 stub assistant, tests ─► OutputHandle.push(Frame) ─► OutputQueue (jitter 3..8 frames)
    both ─► PcmSource::fill_frame (flush epoch, mute, gain, earcons)
+      └─► sending wish (audible now or ahead; off after 500 ms with nothing audible)
+          ─► watch ─► session task ─► songbird Driver::mute(!on)
    ─► OpusOutput: Opus with FEC (expected loss from Discord's reports) ◄─ songbird mixer thread
-   ─► songbird passthrough, DAVE ─► Discord
+   ─► songbird passthrough, DAVE ─► Discord (while muted: five silence frames, then nothing)
 Discord RTCP receiver reports on our SSRC ─► DeliveryShared::on_report ─► expected loss
 ```
 
@@ -1128,6 +1174,7 @@ Values that are known to work. Change them only with a measurement or a corpus r
 | Call playout (`playout.rs`) | depth 60..500 ms from the 95th percentile of the relative arrival delay (2 s window, 20 ms buckets, forgetting 0.9983 per packet) + 20 ms; a call starts from the guild's last learnt depth, the first from a 200 ms prior (30 % of the mass at 160–180 ms); pauses first (±20 ms, at most 25 stretches without a new packet, at least 60 ms of a pause kept); speech by one pitch period below half or above twice the depth, at most once per 60 ms, correlation ≥ 0.5; bridging at most 3 frames |
 | Queue toward Discord | 8 frames (~160 ms), drop oldest; jitter target 3..8 frames (stub and tests; the call uses its own jitter buffer) |
 | Opus toward Discord | 48 kHz stereo VOIP, 128 kbit/s, complexity 10, in-band FEC; expected loss from Discord's reports (envelope, forgetting 0.9983 per packet sent), default 10 %; songbird passes the packets through |
+| Sending toward Discord | on while the assistant's frame played now or seen ahead has a peak ≥ 256, or an earcon plays or waits; off after 25 frames (500 ms) with nothing audible; an earcon from silence waits 2 frames (40 ms); applied with `songbird::Driver::mute`, never `Call::mute` |
 | Gains | input and output 0.0..4.0, default 1.0; input applied at the gate's send, output in `PcmSource` before earcons |
 | Speech threshold | peak ≥ 700 (measured on the unscaled channel audio) |
 | Utterance gap | 700 ms |

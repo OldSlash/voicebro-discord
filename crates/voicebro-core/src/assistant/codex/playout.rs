@@ -338,6 +338,14 @@ impl Playout {
         self.buf.len().saturating_sub(self.pos)
     }
 
+    /// The highest absolute sample among the decoded samples not yet played (0 when none).
+    pub fn future_peak(&self) -> i32 {
+        self.buf
+            .get(self.pos..)
+            .and_then(|future| future.iter().map(|sample| sample.unsigned_abs()).max())
+            .map_or(0, i32::from)
+    }
+
     /// Whether more decoded samples would help the decision.
     pub fn wants_more(&self) -> bool {
         self.future_len() < LOOKAHEAD
