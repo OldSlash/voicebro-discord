@@ -4244,7 +4244,7 @@ dependencies = [
 
 [[package]]
 name = "probe"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4270,7 +4270,7 @@ dependencies = [
 
 [[package]]
 name = "probe-hotkey"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "chrono",
  "tauri",
@@ -7302,7 +7302,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voicebro-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7329,7 +7329,7 @@ dependencies = [
 
 [[package]]
 name = "voicebro-desktop"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "log",
  "serde",
