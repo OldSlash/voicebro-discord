@@ -102,7 +102,7 @@
           <div class="panel-toolbar">
             <!-- The switch is the diagnostics.performance setting, saved like every Settings
                  field; the Diagnostics card on the Settings tab mirrors it. -->
-            <label class="checkbox"><input type="checkbox" id="performance-monitoring" data-path="diagnostics.performance" data-kind="bool"> Performance monitoring</label>
+            <label class="switch-field">Performance monitoring <span class="switch-row"><input type="checkbox" role="switch" class="switch" id="performance-monitoring" data-path="diagnostics.performance" data-kind="bool"><span class="switch-state" id="performance-monitoring-label">Off</span></span></label>
             <span class="toolbar-inline" id="performance-live">
               <label>Window
                 <select id="performance-window">
@@ -182,28 +182,89 @@
         </section>
 
         <section class="tab-panel" data-panel="settings" role="tabpanel">
-          <!-- Every control has its help line (what it affects, when a change applies, the
-               default); the message line under it holds a validation error only. -->
+          <!-- The window's own settings. Every control has its help line (what it affects,
+               when a change applies, the default); the message line under it holds a
+               validation error only. The bot's settings are on the Config tab. Each card
+               folds to its title, as on the Config tab (ui.collapsed_cards). -->
           <div class="settings-column">
-            <div class="card settings-section"><h2>Appearance</h2>
+            <div class="card settings-section collapsible" data-card="appearance">
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-appearance-body"><span class="chevron" aria-hidden="true"></span>Appearance</button></h2>
+              <div class="card-body" id="card-appearance-body">
               <div class="form-grid">
                 <label>Theme<select id="setting-theme" data-path="ui.theme" data-kind="string"><option value="dark">Dark</option><option value="darcula">Darcula</option><option value="light">Light</option><option value="intellij">IntelliJ</option></select><small class="field-help">The window's colours. Applies at once. Default: Dark.</small><small class="field-message" data-for="setting-theme"></small></label>
                 <label>Font size<input id="setting-font-size" type="number" min="11" max="20" data-path="ui.font_size" data-kind="number"><small class="field-help">The window's text, 11 to 20 px. Applies at once. Default: 13.</small><small class="field-message" data-for="setting-font-size"></small></label>
               </div>
               <p class="form-note">Both are stored in settings.json, so they travel with the app folder.</p>
+              </div>
             </div>
 
-            <div class="card settings-section"><h2>Audio</h2>
+            <div class="card settings-section collapsible" data-card="diagnostics">
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-diagnostics-body"><span class="chevron" aria-hidden="true"></span>Diagnostics</button></h2>
+              <div class="card-body" id="card-diagnostics-body">
+              <div class="form-grid">
+                <label>Performance monitoring <span class="switch-row"><input id="diagnostics-performance" type="checkbox" role="switch" class="switch" data-path="diagnostics.performance" data-kind="bool"><span class="switch-state" id="diagnostics-performance-label">Off</span></span><small class="field-help">Samples the status once a second and keeps five minutes of it for the Performance tab's charts and cards. While on it costs one status read per second and the kept samples in the window. The same switch is on the Performance tab. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-performance"></small></label>
+                <label>Memory measurement <span class="switch-row"><input id="diagnostics-memory" type="checkbox" role="switch" class="switch" data-path="diagnostics.memory" data-kind="bool"><span class="switch-state" id="diagnostics-memory-label">Off</span></span><small class="field-help">Reads the private working set of the app, its WebView2 processes and Codex every 3 seconds for the status bar and the System tab. While on it costs a scan of the process list every 3 seconds. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-memory"></small></label>
+                <label>Verbose log <span class="switch-row"><input id="diagnostics-verbose-log" type="checkbox" role="switch" class="switch" data-path="diagnostics.verbose_log" data-kind="bool"><span class="switch-state" id="diagnostics-verbose-log-label">Off</span></span><small class="field-help">Also writes to the log file what the recognizer heard, the latency and call counters, the chat text and warnings of the libraries, for diagnosing a problem. The Console shows all of it either way. The log folder stays within about 2 MB. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-verbose-log"></small></label>
+                <label class="wide">Opus codec (experiment)<select id="diagnostics-opus-codec" data-path="diagnostics.opus_codec" data-kind="string"><option value="libopus">libopus (C library)</option><option value="opus-rs">opus-rs (Rust)</option></select><small class="field-help">Which Opus implementation encodes and decodes the voice: the assistant's voice toward Discord, your speech toward Codex and its answer, and the people in the channel. libopus is the C library VoiceBro has always used; opus-rs is written in Rust and is being tried as its replacement. Applies at the next /join and the next call; one already running keeps its codec. Default: libopus.</small><small class="field-help" id="opus-codec-in-use">In use: none.</small><small class="field-message" data-for="diagnostics-opus-codec"></small></label>
+              </div>
+              </div>
+            </div>
+            <div class="settings-actions"><span class="form-feedback" id="settings-feedback" data-autosave="Changes save automatically.">Changes save automatically.</span></div>
+          </div>
+        </section>
+
+        <section class="tab-panel" data-panel="config" role="tabpanel">
+          <!-- The bot's settings. "Discord and Codex" waits for Save changes; the cards below
+               it save each change at once, like the Settings tab. Each card folds to its
+               title (ui.collapsed_cards). -->
+          <div class="settings-column">
+            <article class="card collapsible" data-card="discord">
+              <header class="card-title-row">
+                <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-discord-body"><span class="chevron" aria-hidden="true"></span>Discord and Codex</button></h2>
+                <span class="badge ok" id="config-autostart-badge">Auto-start enabled</span>
+              </header>
+              <div class="card-body" id="card-discord-body">
+                <p class="muted card-lead">The bot token, the server and the Codex program. A stored token is never shown again.</p>
+                <div class="form-grid config-grid">
+                  <label>Discord bot token <span class="badge" id="token-badge">unknown</span>
+                    <small class="field-help">To get one, open discord.com/developers/applications, pick or create your application, go to Bot and press Reset Token; copy the token right away and keep it private. A new token replaces the stored one and the Discord connection restarts with it.</small>
+                    <input type="password" id="config-token" placeholder="****************" autocomplete="off" spellcheck="false">
+                    <span class="row-actions"><button type="button" class="button" id="token-clear">Clear stored token</button></span>
+                  </label>
+                  <label>Discord guild ID
+                    <small class="field-help">Turn on Developer Mode (User Settings → Advanced), then right-click your server and pick Copy Server ID. Slash commands are registered globally and in this server too, where they show up at once. Applies at the next connection. Empty by default: global registration only.</small>
+                    <input type="text" id="config-guild-id" inputmode="numeric" spellcheck="false" data-config-path="discord.guild_id">
+                  </label>
+                  <label class="wide">Codex executable
+                    <small class="field-help">Empty finds Codex CLI by itself (npm install -g @openai/codex). Applies at the next start of Codex: the next /join after the bot has left every channel. Default: automatic.</small>
+                    <input type="text" id="config-codex-executable" spellcheck="false" placeholder="Automatic" data-config-path="codex.executable">
+                  </label>
+                </div>
+                <p class="form-note">These three fields wait for Save changes; the cards below save each change at once. Enter a token to replace the stored one; leave the field empty to keep it. The token is kept in the Windows Credential Manager, never in settings.json. VoiceBro connects to Discord at every start while a token is stored.</p>
+                <div class="config-actions">
+                  <button type="button" class="button primary" id="config-save">Save changes</button>
+                  <button type="button" class="button" id="config-reset">Reset</button>
+                  <span class="form-feedback" id="config-feedback"></span>
+                </div>
+              </div>
+            </article>
+
+            <div class="card settings-section collapsible" data-card="audio">
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-audio-body"><span class="chevron" aria-hidden="true"></span>Audio</button></h2>
+              <div class="card-body" id="card-audio-body">
               <div class="form-grid">
                 <label>What the assistant hears <output id="input-gain-label" for="input-gain">100 %</output><input id="input-gain" type="range" min="0" max="400" step="1" data-path="audio.input_gain" data-kind="percent"><small class="field-help">Multiplies what the assistant receives during a session; the wake word and the speech detection hear the channel unchanged. 100 % is unchanged. Applies at once, also in a running call. Default: 100 %.</small><small class="field-help" id="input-gain-level"></small><small class="field-message" data-for="input-gain"></small></label>
                 <label>How loud the assistant speaks <output id="output-gain-label" for="output-gain">100 %</output><input id="output-gain" type="range" min="0" max="400" step="1" data-path="audio.output_gain" data-kind="percent"><small class="field-help">Multiplies the assistant's voice played into Discord; earcons keep their own volume. 100 % is unchanged. Applies at once. Default: 100 %.</small><small class="field-help" id="output-gain-level"></small><small class="field-message" data-for="output-gain"></small></label>
-                <label>Earcons <output id="earcons-label" for="earcons">on</output><input id="earcons" type="checkbox" data-path="session.earcons" data-kind="bool"><small class="field-help">The short tones at session start and end, mute and unmute; they play while muted too. Applies at once. Default: on.</small><small class="field-message" data-for="earcons"></small></label>
+                <label class="beside-slider">Earcons <span class="switch-row"><input id="earcons" type="checkbox" role="switch" class="switch" data-path="session.earcons" data-kind="bool"><span class="switch-state" id="earcons-label">On</span></span><small class="field-help">The short tones at session start and end, mute and unmute; they play while muted too. Applies at once. Default: on.</small><small class="field-message" data-for="earcons"></small></label>
                 <label>Earcon volume <output id="earcon-volume-label" for="earcon-volume">18 %</output><input id="earcon-volume" type="range" min="0" max="100" step="1" data-path="session.earcon_volume" data-kind="percent"><small class="field-help">The tones' volume, independent of how loud the assistant speaks. Applies at once. Default: 18 %.</small><small class="field-message" data-for="earcon-volume"></small></label>
               </div>
               <p class="form-note">A slider saves when you release it.</p>
+              </div>
             </div>
 
-            <div class="card settings-section"><h2>Assistant</h2>
+            <div class="card settings-section collapsible" data-card="assistant">
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-assistant-body"><span class="chevron" aria-hidden="true"></span>Assistant</button></h2>
+              <div class="card-body" id="card-assistant-body">
               <div class="form-grid">
                 <label>Engine<select id="assistant-engine" data-path="assistant.engine" data-kind="string"><option value="codex">Codex CLI (official app-server)</option></select><small class="field-help">Codex CLI through its app-server with your ChatGPT sign-in; no API key. The only engine today. Applies at once.</small><small class="field-message" data-for="assistant-engine"></small></label>
                 <label>Activation<select id="session-mode" data-path="session.mode" data-kind="string"><option value="wake_word">Wake word (offline, Vosk)</option><option value="always">Always listening</option></select><small class="field-help">Wake word: a session starts when someone says an activation phrase and ends at a deactivation phrase or the auto-stop; nothing is sent to the assistant between sessions. Always listening: the assistant hears the channel and the call runs the whole time the bot is in it. Applies at once. Default: wake word.</small><small class="field-message" data-for="session-mode"></small></label>
@@ -227,72 +288,38 @@
                   <button type="button" class="button" id="open-models-folder">Open models folder</button>
                 </div>
               </div>
+              </div>
             </div>
 
-            <div class="card settings-section"><h2>Codex</h2>
+            <div class="card settings-section collapsible" data-card="codex">
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-codex-body"><span class="chevron" aria-hidden="true"></span>Codex</button></h2>
+              <div class="card-body" id="card-codex-body">
               <div class="form-grid">
+                <label>Refresh the lists at start <span class="switch-row"><input id="codex-refresh-lists" type="checkbox" role="switch" class="switch" data-path="codex.refresh_lists_at_start" data-kind="bool"><span class="switch-state" id="codex-refresh-lists-label">Off</span></span><small class="field-help">While on, every start of VoiceBro runs Codex for a moment to read the models, reasoning levels and voices of your account, and Codex stops again a minute later. While off, the lists saved from the last read are shown and Codex does not start with the app; the first /join of each run reads them again. Applies from the next start. Default: off.</small><small class="field-message" data-for="codex-refresh-lists"></small></label>
+                <div class="field"><span class="field-name">Lists</span><span class="lists-row"><button type="button" class="button" id="codex-lists-refresh">Refresh lists</button><span class="lists-read" id="codex-lists-read" role="status">Never read</span></span><small class="field-help">The Model, Reasoning and Voice lists below come from the last read, saved next to the app in codex-lists.json. Refresh lists reads them now: Codex starts and stops again a minute later unless the bot is in a voice channel. Check Codex and /join read them too.</small></div>
                 <label>Model<select id="codex-model-select" class="listed" data-for="codex-model"></select><input id="codex-model" type="text" spellcheck="false" list="codex-model-list" placeholder="account default" data-path="codex.model" data-kind="string"><datalist id="codex-model-list"></datalist><small class="field-help">For the work the voice assistant hands to Codex (searching, longer reasoning). The voice itself stays the realtime voice model. Applies from the next call, which opens a new thread. Default: the account's default model.</small><small class="field-message" data-for="codex-model"></small></label>
                 <label>Reasoning<select id="codex-effort-select" class="listed" data-for="codex-effort"></select><input id="codex-effort" type="text" spellcheck="false" list="codex-effort-list" placeholder="model default" data-path="codex.reasoning_effort" data-kind="string"><datalist id="codex-effort-list"></datalist><small class="field-help">How long Codex thinks about a handed-off task. Higher levels answer better but take longer. Applies from the next call, which opens a new thread. Default: the model's default.</small><small class="field-message" data-for="codex-effort"></small></label>
                 <label>Voice<select id="codex-voice-select" class="listed" data-for="codex-voice"></select><input id="codex-voice" type="text" spellcheck="false" list="codex-voice-list" placeholder="server default" data-path="codex.voice" data-kind="string"><datalist id="codex-voice-list"></datalist><small class="field-help">The voice the realtime call speaks with. Empty is the server's default voice. Applies from the next call.</small><small class="field-message" data-for="codex-voice"></small></label>
                 <label>Answer handoff<select id="codex-handoff" data-path="codex.handoff_mode" data-kind="string"><option value="items">Conversation items (recommended)</option><option value="commentary">Commentary</option><option value="bem_tags">Tagged channels</option><option value="thinking">Built-in (thinking)</option></select><small class="field-help" id="codex-handoff-hint"></small><small class="field-message" data-for="codex-handoff"></small></label>
                 <label>Speaker names<select id="speaker-labels" data-path="assistant.speaker_labels" data-kind="string"><option value="start">At call start (recommended)</option><option value="changes">At call start and when the speaker changes</option><option value="off">Off</option></select><small class="field-help">At call start the assistant gets the people in the voice channel and who said the activation phrase. Discord nicknames go to OpenAI. Applies from the next session. Default: at call start.</small><small class="field-message" data-for="speaker-labels"></small></label>
-                <label>Save chat history <output id="save-chat-history-label" for="save-chat-history">off</output><input id="save-chat-history" type="checkbox" data-path="assistant.save_chat_history" data-kind="bool"><small class="field-help">While on, every chat entry is appended to logs\codex-chat-&lt;date&gt;.log next to the app. While off, nothing of the chat is saved and the Codex chat tab still shows it. Files saved earlier stay. Applies at once. Default: off.</small><small class="field-message" data-for="save-chat-history"></small></label>
+                <label>Save chat history <span class="switch-row"><input id="save-chat-history" type="checkbox" role="switch" class="switch" data-path="assistant.save_chat_history" data-kind="bool"><span class="switch-state" id="save-chat-history-label">Off</span></span><small class="field-help">While on, every chat entry is appended to logs\codex-chat-&lt;date&gt;.log next to the app. While off, nothing of the chat is saved and the Codex chat tab still shows it. Files saved earlier stay. Applies at once. Default: off.</small><small class="field-message" data-for="save-chat-history"></small></label>
                 <label class="wide">Instructions<textarea id="codex-instructions" class="prompt-input" rows="5" data-path="codex.instructions" data-kind="string"></textarea><small class="field-help">Your instructions for the assistant: sent to the voice at every call start and to the Codex agent as its developer instructions. There is no built-in default. The voice follows a change from the next call, the agent from the next /join.</small><small class="field-message" data-for="codex-instructions"></small></label>
               </div>
               <p class="form-note">Threads are read-only and ephemeral, the shell tool is disabled, and VoiceBro declines every request to run commands or change files. The agent may search the web. Codex starts at /join and stops when the bot leaves its last voice channel.</p>
+              </div>
             </div>
 
-            <div class="card settings-section"><h2>Hotkey</h2>
+            <div class="card settings-section collapsible" data-card="hotkey">
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-hotkey-body"><span class="chevron" aria-hidden="true"></span>Hotkey</button></h2>
+              <div class="card-body" id="card-hotkey-body">
               <div class="form-grid">
                 <label>Mute hotkey<input id="hotkey-mute" type="text" spellcheck="false" placeholder="Ctrl+Alt+M" data-path="hotkey.mute" data-kind="string"><small class="field-help">Works system-wide, also in games. Empty disables it. Mutes both what the assistant hears and what it says, and ends the session. Applies at once. Default: Ctrl+Alt+M.</small><small class="field-message" data-for="hotkey-mute"></small></label>
               </div>
-            </div>
-
-            <div class="card settings-section"><h2>Diagnostics</h2>
-              <div class="form-grid">
-                <label>Performance monitoring <output id="diagnostics-performance-label" for="diagnostics-performance">off</output><input id="diagnostics-performance" type="checkbox" data-path="diagnostics.performance" data-kind="bool"><small class="field-help">Samples the status once a second and keeps five minutes of it for the Performance tab's charts and cards. While on it costs one status read per second and the kept samples in the window. The same switch is on the Performance tab. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-performance"></small></label>
-                <label>Memory measurement <output id="diagnostics-memory-label" for="diagnostics-memory">off</output><input id="diagnostics-memory" type="checkbox" data-path="diagnostics.memory" data-kind="bool"><small class="field-help">Reads the private working set of the app, its WebView2 processes and Codex every 3 seconds for the status bar and the System tab. While on it costs a scan of the process list every 3 seconds. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-memory"></small></label>
-                <label>Verbose log <output id="diagnostics-verbose-log-label" for="diagnostics-verbose-log">off</output><input id="diagnostics-verbose-log" type="checkbox" data-path="diagnostics.verbose_log" data-kind="bool"><small class="field-help">Also writes to the log file what the recognizer heard, the latency and call counters, the chat text and warnings of the libraries, for diagnosing a problem. The Console shows all of it either way. The log folder stays within about 2 MB. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-verbose-log"></small></label>
-                <label class="wide">Opus codec (experiment)<select id="diagnostics-opus-codec" data-path="diagnostics.opus_codec" data-kind="string"><option value="libopus">libopus (C library)</option><option value="opus-rs">opus-rs (Rust)</option></select><small class="field-help">Which Opus implementation encodes and decodes the voice: the assistant's voice toward Discord, your speech toward Codex and its answer, and the people in the channel. libopus is the C library VoiceBro has always used; opus-rs is written in Rust and is being tried as its replacement. Applies at the next /join and the next call; one already running keeps its codec. Default: libopus.</small><small class="field-help" id="opus-codec-in-use">In use: none.</small><small class="field-message" data-for="diagnostics-opus-codec"></small></label>
               </div>
             </div>
-            <div class="settings-actions"><span class="form-feedback" id="settings-feedback">Changes save automatically.</span></div>
+            <div class="settings-actions"><span class="form-feedback" id="config-autosave-feedback" data-autosave="Audio, Assistant, Codex and Hotkey save each change automatically.">Audio, Assistant, Codex and Hotkey save each change automatically.</span></div>
+            <p class="muted settings-file">Settings file: <span class="path-value" id="config-path">—</span></p>
           </div>
-        </section>
-
-        <section class="tab-panel" data-panel="config" role="tabpanel">
-          <article class="card config-card">
-            <header class="card-title-row">
-              <div><h2>Discord and Codex</h2><p class="muted">The bot token, the server and the Codex program. A stored token is never shown again.</p></div>
-              <span class="badge ok" id="config-autostart-badge">Auto-start enabled</span>
-            </header>
-            <div class="form-grid config-grid">
-              <label>Discord bot token <span class="badge" id="token-badge">unknown</span>
-                <small class="field-help">To get one, open discord.com/developers/applications, pick or create your application, go to Bot and press Reset Token; copy the token right away and keep it private. A new token replaces the stored one and the Discord connection restarts with it.</small>
-                <input type="password" id="config-token" placeholder="****************" autocomplete="off" spellcheck="false">
-                <span class="row-actions"><button type="button" class="button" id="token-clear">Clear stored token</button></span>
-              </label>
-              <label>Discord guild ID
-                <small class="field-help">Turn on Developer Mode (User Settings → Advanced), then right-click your server and pick Copy Server ID. Slash commands are registered globally and in this server too, where they show up at once. Applies at the next connection. Empty by default: global registration only.</small>
-                <input type="text" id="config-guild-id" inputmode="numeric" spellcheck="false" data-config-path="discord.guild_id">
-              </label>
-              <label class="wide">Codex executable
-                <small class="field-help">Empty finds Codex CLI by itself (npm install -g @openai/codex). Applies at the next start of Codex: the next /join after the bot has left every channel. Default: automatic.</small>
-                <input type="text" id="config-codex-executable" spellcheck="false" placeholder="Automatic" data-config-path="codex.executable">
-              </label>
-            </div>
-            <p class="form-note">Enter a token to replace the stored one; leave the field empty to keep it. The token is kept in the Windows Credential Manager, never in settings.json. VoiceBro connects to Discord at every start while a token is stored.</p>
-            <div class="config-actions">
-              <button type="button" class="button primary" id="config-save">Save changes</button>
-              <button type="button" class="button" id="config-reset">Reset</button>
-              <span class="form-feedback" id="config-feedback"></span>
-            </div>
-            <div class="stored-config">
-              <h3>Settings file</h3>
-              <pre id="config-preview">Waiting for the runtime...</pre>
-              <p class="muted">Location: <span class="path-value" id="config-path">—</span></p>
-            </div>
-          </article>
         </section>
 
       </main>

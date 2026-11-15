@@ -753,6 +753,57 @@ mod tests {
         again.shutdown();
     }
 
+    /// Change `config-tab-and-codex-lists`: the lists switch and the collapsed cards are
+    /// stored and restart nothing; the wake engine and the gates are left alone.
+    #[test]
+    fn the_lists_switch_and_the_collapsed_cards_restart_nothing() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        let gate_settings = runtime
+            .host
+            .gate_settings
+            .lock()
+            .expect("gate settings lock")
+            .clone();
+        let mut events = runtime.events().subscribe();
+        runtime
+            .save_settings(&json!({ "codex": { "refresh_lists_at_start": true } }))
+            .unwrap();
+        runtime
+            .save_settings(&json!({ "ui": { "collapsed_cards": ["audio", "hotkey"] } }))
+            .unwrap();
+        let mut changes = 0;
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(event, AppEvent::Wake(_)),
+                "the wake engine is not reconfigured"
+            );
+            if matches!(event, AppEvent::SettingsChanged) {
+                changes += 1;
+            }
+        }
+        assert_eq!(changes, 2, "each save tells the window");
+        assert_eq!(
+            *runtime
+                .host
+                .gate_settings
+                .lock()
+                .expect("gate settings lock"),
+            gate_settings,
+            "the gates keep their settings"
+        );
+        runtime.shutdown();
+
+        let again = super::tests::runtime(&dir, &tokio_rt);
+        again.start().unwrap();
+        let stored = again.settings();
+        assert!(stored.codex.refresh_lists_at_start);
+        assert_eq!(stored.ui.collapsed_cards, ["audio", "hotkey"]);
+        again.shutdown();
+    }
+
     /// A Discord stand-in: the guilds the bot is in, and the leaves asked for.
     struct FakeVoice {
         channels: Mutex<std::collections::HashMap<u64, (String, String)>>,

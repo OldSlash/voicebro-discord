@@ -250,7 +250,7 @@ const scenarios = [
       const fromDialog = { calls: calls("open_assets_folder").length, open: dialog.open };
       $("wake-install-secondary").click(); await sleep(300);
       $("wake-download-assets").click(); await sleep(300);
-      return { fromDialog, total: calls("open_assets_folder").length, feedback: $("settings-feedback").textContent };`);
+      return { fromDialog, total: calls("open_assets_folder").length, feedback: $("config-autosave-feedback").textContent };`);
     expect(r.fromDialog.calls === 1 && r.fromDialog.open, JSON.stringify(r.fromDialog));
     expect(r.total === 2, `${r.total} calls`);
     expect(r.feedback === "Opened C:\\VoiceBro\\assets", r.feedback);

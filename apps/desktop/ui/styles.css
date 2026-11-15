@@ -271,7 +271,7 @@ output { float: right; color: var(--accent); font-weight: 600; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; }
 .form-grid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .form-grid label.wide { grid-column: 1 / -1; }
-.form-grid label input[type="checkbox"] { align-self: flex-start; margin: 2px 0 6px; }
+.form-grid label input[type="checkbox"]:not(.switch) { align-self: flex-start; margin: 2px 0 6px; }
 .form-grid label .badge { align-self: flex-start; }
 .field-help { color: var(--ink-dim); font-size: 0.85em; line-height: 1.4; }
 /* A field's validation error; nothing else is written there, so a save moves nothing. */
@@ -293,10 +293,95 @@ label.is-saving { color: var(--ink-dim); }
 .row-actions { display: flex; gap: 6px; }
 select.listed:empty { display: none; }
 textarea.prompt-input { min-height: 80px; line-height: 1.45; }
-.config-card { max-width: 920px; margin: 0 auto; }
 .config-grid { margin-top: 10px; }
-.stored-config { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
-.stored-config pre { max-height: 260px; overflow: auto; margin: 6px 0; padding: 8px 10px; border-radius: var(--radius); background: var(--log-bg); color: var(--log-ink); font: 12px/1.45 Consolas, monospace; }
+.card-lead { margin: 0; }
+.settings-file { margin: 2px 2px 0; font-size: 0.88em; overflow-wrap: anywhere; }
+
+/* A field that is not a label (the Codex lists): the same column as the labels. */
+.form-grid > .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lists-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 26px; }
+.lists-read { color: var(--ink-dim); }
+.lists-read.is-error { color: var(--bad); }
+
+/* ---- Collapsible cards (Config tab): the title is the button; the body hides. */
+.collapsible > .card-heading,
+.collapsible > .card-title-row .card-heading { margin: 0; font-size: 1.08em; font-weight: 600; }
+.card-title-row .card-heading { flex: 1; min-width: 0; }
+.collapsible > .card-title-row { align-items: center; }
+.card-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: calc(100% + 12px);
+  margin: -5px -6px;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  font-weight: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.card-toggle:hover { background: var(--hover); }
+.card-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chevron {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 3px 3px 2px;
+  border-right: 2px solid var(--ink-dim);
+  border-bottom: 2px solid var(--ink-dim);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+.card-toggle[aria-expanded="false"] .chevron { transform: rotate(-45deg); margin-bottom: 0; }
+.card-toggle:hover .chevron { border-color: var(--ink); }
+.collapsible > .card-body { margin-top: 12px; }
+.card-body[hidden] { display: none; }
+
+/* ---- Switches: every on/off setting. A native checkbox (keyboard, change events and the
+   label click stay as they are), drawn as a 46 x 26 px track with its On/Off text. */
+.switch-row { display: inline-flex; align-items: center; gap: 10px; align-self: flex-start; cursor: pointer; }
+.form-grid label .switch-row { margin: 1px 0 4px; }
+/* A switch next to a slider (Earcons) skips the slider's value line, so both controls sit
+   on one line. */
+.form-grid label.beside-slider .switch-row { margin-top: calc(1.4em + 4px); }
+input.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: none;
+  width: 46px;
+  height: 26px;
+  margin: 0;
+  border: 1px solid var(--ink-dim);
+  border-radius: 999px;
+  background: var(--field);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+input.switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--ink-dim);
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+input.switch:hover { border-color: var(--ink); }
+input.switch:checked { background: var(--accent-deep); border-color: var(--accent-deep); }
+input.switch:checked:hover { background: var(--accent); border-color: var(--accent); }
+input.switch:checked::before { transform: translateX(20px); background: var(--accent-ink); }
+input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch-state { min-width: 2.2em; font-weight: 600; color: var(--ink-dim); user-select: none; }
+input.switch:checked + .switch-state { color: var(--accent); }
+.switch-field { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+@media (prefers-reduced-motion: reduce) {
+  input.switch, input.switch::before, .chevron { transition: none; }
+}
 
 /* ---- Status line */
 .status-bar {

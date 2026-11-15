@@ -121,6 +121,11 @@ pub struct UiSettings {
     pub theme: String,
     /// Pixels, within [`FONT_SIZES`].
     pub font_size: u32,
+    /// The ids of the collapsed cards of the Settings tab (`appearance`, `diagnostics`) and
+    /// the Config tab (`discord`, `audio`, `assistant`, `codex`, `hotkey`); empty, every card
+    /// expanded, by default. Only the window reads it, and an id it does not know is kept
+    /// and ignored, so no validation beyond the type.
+    pub collapsed_cards: Vec<String>,
 }
 
 impl Default for UiSettings {
@@ -128,6 +133,7 @@ impl Default for UiSettings {
         Self {
             theme: "dark".to_owned(),
             font_size: 13,
+            collapsed_cards: Vec::new(),
         }
     }
 }
@@ -313,6 +319,10 @@ pub struct CodexSettings {
     pub instructions: String,
     /// One of [`HANDOFF_MODES`].
     pub handoff_mode: String,
+    /// Every start reads the models, reasoning efforts and voices from Codex and saves them
+    /// (change `config-tab-and-codex-lists`). Off by default: the saved lists are shown, and
+    /// Codex starts at app start only while none are saved. Read once, at start.
+    pub refresh_lists_at_start: bool,
 }
 
 impl Default for CodexSettings {
@@ -324,6 +334,7 @@ impl Default for CodexSettings {
             voice: String::new(),
             instructions: String::new(),
             handoff_mode: DEFAULT_HANDOFF_MODE.to_owned(),
+            refresh_lists_at_start: false,
         }
     }
 }
@@ -771,6 +782,61 @@ mod tests {
         assert_eq!(settings.validate().unwrap_err().field, "ui.font_size");
         settings.ui.font_size = 11;
         settings.validate().expect("11 is the smallest size");
+    }
+
+    /// Change `config-tab-and-codex-lists`: a settings file of 1.0.1 has neither field.
+    const SETTINGS_1_0_1: &str = r#"{ "version": 2, "codex": { "model": "gpt-6-luna", "handoff_mode": "items" }, "ui": { "theme": "light", "font_size": 14 } }"#;
+
+    #[test]
+    fn the_lists_refresh_switch_defaults_to_off_and_changes_only_codex() {
+        let older: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
+        assert!(!older.codex.refresh_lists_at_start);
+        assert_eq!(
+            older.codex.model, "gpt-6-luna",
+            "the rest of the section stays"
+        );
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(
+            written["codex"]["refresh_lists_at_start"], false,
+            "the next save writes it"
+        );
+
+        let on = older
+            .with_patch(&json!({ "codex": { "refresh_lists_at_start": true } }))
+            .unwrap();
+        on.validate().expect("a boolean is valid");
+        assert!(on.codex.refresh_lists_at_start);
+        assert_eq!(older.changed_sections(&on), vec!["codex"]);
+
+        assert!(older
+            .with_patch(&json!({ "codex": { "refresh_lists_at_start": "yes" } }))
+            .is_err());
+    }
+
+    #[test]
+    fn collapsed_cards_default_to_none_and_keep_unknown_ids() {
+        let older: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
+        assert!(older.ui.collapsed_cards.is_empty());
+        assert_eq!((older.ui.theme.as_str(), older.ui.font_size), ("light", 14));
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(
+            written["ui"]["collapsed_cards"],
+            json!([]),
+            "written by the next save"
+        );
+
+        let patched = older
+            .with_patch(&json!({ "ui": { "collapsed_cards": ["audio", "later-card"] } }))
+            .unwrap();
+        patched.validate().expect("any ids are valid");
+        assert_eq!(older.changed_sections(&patched), vec!["ui"]);
+        let text = serde_json::to_string(&patched).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.ui.collapsed_cards, ["audio", "later-card"]);
+
+        assert!(older
+            .with_patch(&json!({ "ui": { "collapsed_cards": 3 } }))
+            .is_err());
     }
 
     #[test]

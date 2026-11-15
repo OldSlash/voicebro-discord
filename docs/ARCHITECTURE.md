@@ -698,7 +698,8 @@ assistant is given, so the app never panics on an unknown engine setting.
   the stop. Barge-in is left to the realtime server (it stops its own output when the user
   speaks); the app does not flush its output on the user's speech.
 - `CodexAssistant` (`codex/mod.rs`) owns the process, the account, the voices and models,
-  the conversations per guild and the chat log. **Nothing of Codex runs before `/join`.**
+  the conversations per guild and the chat log. **Nothing of Codex runs before `/join`,
+  Sign in, Check or Refresh lists, except the read of the lists at start** (below).
   `prepare(guild)` (`Assistant::prepare`, awaited by the `/join` handler through
   `VoiceHost::prepare_join`) starts the app-server if it is not running, reads the account
   and opens or reuses the guild's thread, so the first activation only places the call. Its
@@ -709,9 +710,32 @@ assistant is given, so the app never panics on an unknown engine setting.
   while the bot is in no channel (re-armed while a sign-in waits for
   `account/login/completed`, at most ten minutes), and at app exit (`stop` kills the child
   after stopping every call). A preparation or a newer stop cancels a pending stop.
+- **Saved lists** (change `config-tab-and-codex-lists`, `codex/lists.rs`): every
+  successful `model/list` that returns at least one model replaces the models held, marks
+  the lists as read in this run (`lists_fresh`), sets the read time and writes
+  `codex-lists.json` in the data folder (`SavedLists`: `version` 1, `read_at_ms`,
+  `codex_version`, `models`, `voices`, `default_voice`; a temporary file renamed over the
+  old one) with the voices held at that moment. An empty answer or a failed read changes
+  neither the lists held nor the file. `CodexAssistant::new` loads the file (a file with no
+  model, or one that does not parse, counts as none; what the load found, the saved read's
+  time or the parse warning, is logged by `read_lists_at_start`, because the assistant is
+  built before the desktop shell's log is up), so
+  `capabilities()` offers the saved models and voices, with `lists_read_at_ms`, before any
+  process runs. Check (`check()`, behind Check Codex, Refresh lists and the read at start)
+  reads the voices and the models every time (`refresh_voices(force)`); a join preparation
+  reads both when they were not read in this run, so the first join after a start without a
+  read renews the saved lists and later joins reuse them.
+- **The read at start**: `read_lists_at_start(enabled)`, called by the desktop shell right
+  after `Runtime::start` with `codex.refresh_lists_at_start`. Without an executable it does
+  nothing (no error; the status already says "codex not found"). With one it spawns
+  `check()` when the setting is on or no lists were saved, and logs "Codex: reading the
+  lists at start (the setting is on | no saved lists)"; otherwise nothing starts. `check()`
+  schedules the stop a minute later like any Check, and a `/join` meanwhile reuses the
+  server and cancels that stop.
 - Tests: `testdata/fake-codex` is a Node stand-in for the app-server (handshake, account,
-  voices, models, `thread/start`; `fake_codex_signed_out.cmd` reports no account). The
-  tests that use it check nothing where Node is not installed.
+  voices, two models, `thread/start`; `fake_codex_signed_out.cmd` reports no account;
+  `--log <file>` records each request's method, `--models a,b|none` sets the model list).
+  The tests that use it check nothing where Node is not installed.
   `VOICEBRO_CODEX_SMOKE=1 cargo test -p voicebro-core real_codex_starts` runs the real
   start at a preparation and the stop after the last leave.
 - Live check: `VOICEBRO_CODEX_CALL_WAV=<q1.wav> [VOICEBRO_CODEX_EXPECT1="a|b"
@@ -742,9 +766,9 @@ pub struct Settings {
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation, deactivation } }
     pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off, save_chat_history (default false)
-    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default), handoff_mode: items (default) | commentary | bem_tags | thinking
+    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default), handoff_mode: items (default) | commentary | bem_tags | thinking, refresh_lists_at_start (default false, read at start)
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
-    pub ui: UiSettings,                    // theme: dark | darcula | light | intellij (default dark); font_size: 11..=20 (default 13)
+    pub ui: UiSettings,                    // theme: dark | darcula | light | intellij (default dark); font_size: 11..=20 (default 13); collapsed_cards: ids of the collapsed cards of the Settings and Config tabs (default empty; unknown ids kept, ignored by the window)
     pub diagnostics: DiagnosticsSettings,  // performance, memory, verbose_log: all default false, read by the window and the desktop shell; opus_codec: libopus (default) | opus-rs, read by the core at each join and each call
     pub extra: Map<String, Value>,         // flattened: unknown fields from a newer version, kept as they are
 }
@@ -782,7 +806,8 @@ recognizes; the code ships none.
   `is_set: bool`. Secrets never appear in `Settings`, in the status snapshot, in events or in
   the log. Codex's own ChatGPT sign-in is stored by Codex itself (`~/.codex`), not by the app.
 - The app is portable: its data directory is the folder the executable runs from
-  (`VOICEBRO_DATA_DIR` overrides it for tests). It holds `settings.json`, `logs\`, `assets\`
+  (`VOICEBRO_DATA_DIR` overrides it for tests). It holds `settings.json`,
+  `codex-lists.json` (the Codex models and voices of the last read, 4.5), `logs\`, `assets\`
   (the Vosk library and the catalog models the app downloaded), `models\` (Vosk models the
   user added, only read), `codex-workspace\` (the empty, read-only cwd for Codex
   threads) and `webview-data\` (the window's WebView2 data, cache and component downloads,
@@ -804,7 +829,10 @@ recognizes; the code ships none.
 the settings store and the event bus. It is the only place that knows every subsystem.
 Start-up: load settings, read secrets, start Discord whenever a token is set, load the wake
 engine if the mode is wake-word. The assistant's process is not started: it starts at the
-first `/join` (`GateHost::prepare_join` calls `Assistant::prepare`). Shutdown: stop the assistant (and its child process), leave every call, stop
+first `/join` (`GateHost::prepare_join` calls `Assistant::prepare`). The one exception is
+the read of the Codex lists at start (4.5), which the desktop shell starts right after
+`Runtime::start` when `codex.refresh_lists_at_start` is on or no lists were saved, and only
+when Codex is installed. Shutdown: stop the assistant (and its child process), leave every call, stop
 the wake worker. `Runtime::toggle_mute` is the single entry for all three mute sources.
 
 **Codec failures** (change `opus-codec-experiment`): `Runtime::start` spawns a task that
@@ -915,24 +943,37 @@ changed. A report for a guild the bot is no longer in is logged and dropped.
     while `diagnostics.memory` is off the card says the measurement is off and where to
     turn it on, the status bar has no memory item, and the window does not call
     `memory_status`) and the files (data folder, `settings.json`, the Codex CLI path).
-  - Settings has the cards Appearance, Audio, Assistant, Codex (with the "Save chat
-    history" switch, `assistant.save_chat_history`), Hotkey and Diagnostics (Performance
-    monitoring, Memory measurement and Verbose log, `diagnostics.verbose_log`, and the
+  - Settings holds the window's own settings (change `config-tab-and-codex-lists`): the
+    cards Appearance and Diagnostics (Performance monitoring, Memory measurement and
+    Verbose log, `diagnostics.verbose_log`, and the
     "Opus codec (experiment)" list, `diagnostics.opus_codec`, with a line under it,
     `#opus-codec-in-use`, that `renderStatus` fills from `VoiceChannelStatus.opus_codec` and
     `CallStatus.opus_codec`: "In use: Discord <label>; call <label>", or none while the bot
-    is in no channel; it is not a form field),
+    is in no channel; it is not a form field). The bot's cards (Audio, Assistant, Codex with
+    the "Save chat history" switch, `assistant.save_chat_history`, and Hotkey) are on the
+    Config tab, below "Discord and Codex", and behave as described here: the form code
+    finds every control by `data-path`, whatever its tab. There is
     one control per field with its JSON path (`data-path`) and kind (string, number, bool,
     list, percent), and under every control a help line saying what the setting affects,
     when a change applies (at once, from the next call, from the next session, at the next
     connection) and the default. Each control saves itself on `change` with one
     `save_settings` patch (text when leaving the field or on Enter, sliders on release,
     selects and switches at once). A save changes no geometry: the field's name takes the
-    success colour for two seconds and the tab's one feedback line reads "Saved: <field>"
-    for the same time; the line under the field holds the validation message only, which
-    stays, with the rejected value, until the field is corrected. A switch has an on/off
-    value line where a slider has its percentage, so a row of a switch and a slider lines
-    up. Two controls may share a `data-path` (the Performance tab's switch and the
+    success colour for two seconds and the feedback line of the control's tab
+    (`.form-feedback[data-autosave]`: `#settings-feedback` on Settings,
+    `#config-autosave-feedback` at the bottom of Config; none on Performance) reads
+    "Saved: <field>" for the same time, then its `data-autosave` text again; "Open models
+    folder" and "Open assets folder" write their result there for six seconds. The line
+    under the field holds the validation message only, which
+    stays, with the rejected value, until the field is corrected. **Switches**: every
+    `data-kind="bool"` control is a native checkbox with `role="switch"` and class `switch`,
+    drawn by `styles.css` as a 46 × 26 px track (`appearance: none`, the knob a `::before`,
+    the accent colour when on, a 2 px focus outline), followed by its "On"/"Off" text
+    (`#<id>-label`, written by `percentLabel`) inside the field's `<label>`, so the switch,
+    its text and the field's name all toggle it and Space works as on any checkbox. The
+    Earcons field (`label.beside-slider`) moves its switch down by a slider's value line so
+    it lines up with the Earcon volume slider next to it. Two controls may share a
+    `data-path` (the Performance tab's switch and the
     Diagnostics card): a save from one fills the other at once. Lists: the wake engine
     and model come from `wake_models` (the catalog with its download state, then the local
     models), each model labelled "<language> — <name> · downloaded | to download, N MB |
@@ -955,8 +996,9 @@ changed. A report for a guild the bot is no longer in is logged and dropped.
     nothing missing saves at once; otherwise the install dialog opens with the `choice`
     reason and nothing is saved until its Download (which saves, then calls
     `wake_download`); Cancel puts the list back on the stored model. The Codex model, reasoning effort and
-    voice are selects filled from `capabilities` when the engine has them and text inputs
-    with a datalist otherwise; the effort list follows the chosen model. The Codex card's
+    voice are selects filled from `capabilities` when the engine has lists, read in this
+    run or saved from the last read (`codex-lists.json`, 4.5), and text inputs with a
+    datalist only while none was ever read; the effort list follows the chosen model. The Codex card's
     "Answer handoff" list (`codex.handoff_mode`) offers Conversation items (recommended),
     Commentary, Tagged channels and Built-in (thinking); the hint under it says what the
     chosen mode does and how it behaved in the 2026-11-10 tests. Phrases are one
@@ -1003,11 +1045,36 @@ changed. A report for a guild the bot is no longer in is logged and dropped.
     are built when their source changes: the wake catalog once, the Codex lists when
     `capabilities` differ from the last ones; a rebuild that would hit an open list waits
     for it to close and keeps the selection.
-  - Config holds the Discord token (write-only, with help on getting one, a stored badge and
+  - Config holds the bot's settings. Its first card, "Discord and Codex", has the Discord
+    token (write-only, with help on getting one, a stored badge and
     Clear stored token), the guild id (with help on copying it) and the Codex executable,
     an "Auto-start enabled" badge, Save changes (one settings patch for the edited fields
-    plus `set_secret` when a token was typed) and Reset (back to the stored values), and the
-    stored `settings.json` read-only with its path. The token is never in that view.
+    plus `set_secret` when a token was typed) and Reset (back to the stored values); its
+    fields (`data-config-path`) are the only ones that wait for Save changes. Below it come
+    the Audio, Assistant, Codex and Hotkey cards, which save each change at once, then the
+    tab's feedback line and one line with the path of `settings.json` (`#config-path`),
+    outside every card. The tab never shows the contents of the settings file.
+  - **Collapsible cards** (Settings and Config): each of the seven cards has `data-card`
+    (`appearance`, `diagnostics` on Settings; `discord`, `audio`, `assistant`, `codex`,
+    `hotkey` on Config), its title inside a `<button class=
+    "card-toggle" aria-expanded aria-controls>` with a CSS chevron, and its body in
+    `.card-body`, which `hidden` hides; "Discord and Codex" keeps its badge in the title
+    row. A click, Enter or Space toggles the card at once and saves the whole list with one
+    `save_settings` patch `{ ui: { collapsed_cards } }`: the ids this window does not know
+    first, as stored, then its own collapsed ids. It is not a form field (no saved mark,
+    no feedback line). `fillForm` applies the stored list on load and on every settings
+    change, except while a toggle's save is in flight, so quick toggles do not undo each
+    other. Fields keep their values and unsaved edits while their card is folded.
+  - **Codex lists** (Config → Codex, first row): the "Refresh the lists at start" switch
+    (`codex.refresh_lists_at_start`, read by the desktop shell at the next start) and the
+    "Lists" field: a **Refresh lists** button and `#codex-lists-read`, "Read <YYYY-MM-DD
+    HH:MM>" in local time from `Capabilities.lists_read_at_ms`, or "Never read". The button
+    calls `codex_check` (the same command as Check Codex: account, voices and models, saved
+    to `codex-lists.json`), then `capabilities`; meanwhile it is disabled and the line reads
+    "Reading…"; a failure leaves the lists and shows "Not read: <error>" in the error
+    colour. `loadCapabilities` writes the read time on every load (the start read and a
+    join publish an `assistant` event, which loads them) and rebuilds the lists only when
+    the models or voices changed, keeping the stored choice.
   - Codex chat shows the chat log entries (pulled at start,
     then one `chat` event per entry, at most 600 rows), one row each with the time, a
     coloured source label and the text. Labels: the speaker's name for a user transcript,
@@ -1028,10 +1095,16 @@ changed. A report for a guild the bot is no longer in is logged and dropped.
   shipped) holds `mock.js`, a stand-in for every command the page calls and its events
   (an in-memory settings document with the app's validation messages for the timeout,
   phrase overlap, gains, theme and font size; status events every second;
-  `window.__mock` with the calls made, the stored document and a capabilities change),
+  `window.__mock` with the calls made, the stored document, a capabilities change,
+  `failNextCheck` and `nextCheckAddsModel`; `?nolists` starts with no Codex lists and
+  `?collapsed=<ids>` with those cards stored as collapsed),
   `make.mjs`, which writes `ui-dev/index.html` from `ui/index.html` with the mock loaded
   first, and `serve.mjs`, which serves it on `http://127.0.0.1:5174/` for browsers that do
-  not run scripts from `file://`.
+  not run scripts from `file://`. Two headless checks drive the mock in Edge and stop at
+  the first failure: `check-wake-dialog.mjs` (the install dialog) and
+  `check-config-tab.mjs` (which cards each tab holds, the two ways of saving on Config,
+  the collapsible cards of both tabs, the switches' size, label and keyboard, the Codex lists and
+  Refresh lists).
 - Window lifecycle: destroying the main window exits the app, which stops `codex.exe`.
 
 ### 4.9 Probe binary (`apps/probe`)

@@ -146,12 +146,11 @@
   function sameValue(a, b) {
     return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
   }
-  // The value line between a field's name and its control: the percentage of a slider,
-  // "on" or "off" for a switch, so a switch column has the same rows as a slider column.
+  // A slider's percentage on its name line; a switch's "On" or "Off" next to the switch.
   function percentLabel(control) {
     const label = $(`${control.id}-label`);
     if (!label) return;
-    label.textContent = control.dataset.kind === "bool" ? (control.checked ? "on" : "off") : `${control.value} %`;
+    label.textContent = control.dataset.kind === "bool" ? (control.checked ? "On" : "Off") : `${control.value} %`;
   }
   function writeControl(control, value) {
     if (control.dataset.kind === "percent") {
@@ -197,7 +196,20 @@
   }
   const SAVED_MARK_MS = 2000;
   const savedTimers = new Map();
-  let feedbackTimer = 0;
+  const feedbackTimers = new Map();
+  // The feedback line of the tab that holds `node` (Settings and Config each have one for
+  // their automatically saved fields); none on the other tabs.
+  const tabFeedback = (node) => node.closest(".tab-panel")?.querySelector(".form-feedback[data-autosave]") || null;
+  // A line in a tab's feedback line, back to its resting text after two seconds.
+  function showTabFeedback(node, text, ms = SAVED_MARK_MS) {
+    const feedback = tabFeedback(node);
+    if (!feedback) return;
+    feedback.textContent = text;
+    clearTimeout(feedbackTimers.get(feedback.id));
+    feedbackTimers.set(feedback.id, setTimeout(() => {
+      feedback.textContent = feedback.dataset.autosave;
+    }, ms));
+  }
   function markSaved(control) {
     const label = control.closest("label");
     if (label) {
@@ -205,12 +217,7 @@
       clearTimeout(savedTimers.get(control.id));
       savedTimers.set(control.id, setTimeout(() => label.classList.remove("is-saved"), SAVED_MARK_MS));
     }
-    const feedback = $("settings-feedback");
-    feedback.textContent = `Saved: ${fieldName(control)}`;
-    clearTimeout(feedbackTimer);
-    feedbackTimer = setTimeout(() => {
-      feedback.textContent = "Changes save automatically.";
-    }, SAVED_MARK_MS);
+    showTabFeedback(control, `Saved: ${fieldName(control)}`);
   }
   // The listed text fields (Codex model, effort, voice) are edited through their select.
   const listedSelect = (id) => document.querySelector(`select.listed[data-for="${id}"]`);
@@ -245,9 +252,51 @@
     showPhraseModel();
     fillConfig(false);
     applyAppearance(stored?.ui);
+    applyCollapsedCards();
     handoffHint();
     applyDiagnostics();
-    $("config-preview").textContent = stored ? JSON.stringify(stored, null, 2) : "";
+  }
+
+  // ---------- Collapsible cards on the Settings and Config tabs (`ui.collapsed_cards`) ----------
+  // The title button folds a card to its title row. The state is saved like the theme; ids
+  // this window does not know (from a newer build) are kept in the stored list. Not a form
+  // field: no saved mark, no feedback line.
+  const collapsibleCards = [...document.querySelectorAll(".collapsible[data-card]")];
+  const cardIds = collapsibleCards.map((card) => card.dataset.card);
+  let collapsedCards = new Set();
+  let collapseSaves = 0; // saves in flight: the window's own state wins until they return
+  function showCollapsed() {
+    for (const card of collapsibleCards) {
+      const collapsed = collapsedCards.has(card.dataset.card);
+      card.classList.toggle("is-collapsed", collapsed);
+      card.querySelector(".card-toggle").setAttribute("aria-expanded", String(!collapsed));
+      card.querySelector(".card-body").hidden = collapsed;
+    }
+  }
+  function applyCollapsedCards() {
+    if (collapseSaves > 0) return;
+    const ids = Array.isArray(stored?.ui?.collapsed_cards) ? stored.ui.collapsed_cards : [];
+    collapsedCards = new Set(ids.filter((id) => cardIds.includes(id)));
+    showCollapsed();
+  }
+  async function toggleCard(id) {
+    if (collapsedCards.has(id)) collapsedCards.delete(id);
+    else collapsedCards.add(id);
+    showCollapsed();
+    if (!invoke) return;
+    const unknown = (stored?.ui?.collapsed_cards || []).filter((other) => !cardIds.includes(other));
+    const list = unknown.concat(cardIds.filter((other) => collapsedCards.has(other)));
+    collapseSaves += 1;
+    try {
+      stored = await invoke("save_settings", { patch: { ui: { collapsed_cards: list } } });
+    } catch (error) {
+      appendLog(`collapsed cards not saved: ${error}`);
+    } finally {
+      collapseSaves -= 1;
+    }
+  }
+  for (const card of collapsibleCards) {
+    card.querySelector(".card-toggle").addEventListener("click", () => toggleCard(card.dataset.card));
   }
 
   // What each answer handoff mode does, and how it behaved in the tests of 2026-11-10.
@@ -468,11 +517,51 @@
     if (pending.includes("wake")) buildWakeLists();
     if (pending.includes("codex")) buildCodexLists();
   }
-  // Rebuilds the Codex lists only when what the engine offers has changed.
+  // When the lists were read: "Read 2026-11-14 18:30" in local time, or "Never read".
+  const pad2 = (n) => String(n).padStart(2, "0");
+  function readTime(ms) {
+    const at = new Date(ms);
+    return `${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())} ${pad2(at.getHours())}:${pad2(at.getMinutes())}`;
+  }
+  let listsBusy = false; // Refresh lists is reading
+  function showListsRead(text, error) {
+    const line = $("codex-lists-read");
+    line.textContent = text;
+    line.classList.toggle("is-error", Boolean(error));
+  }
+  function renderListsRead() {
+    if (listsBusy) return;
+    const ms = capabilities.lists_read_at_ms;
+    showListsRead(ms ? `Read ${readTime(ms)}` : "Never read");
+  }
+  // Refresh lists: what Check Codex does (account, voices, models, saved to the file),
+  // then the lists again. A failure keeps the lists and shows why next to the button.
+  $("codex-lists-refresh").addEventListener("click", async () => {
+    if (!invoke || listsBusy) return;
+    const button = $("codex-lists-refresh");
+    listsBusy = true;
+    button.disabled = true;
+    showListsRead("Reading…");
+    let failure = "";
+    try {
+      await invoke("codex_check");
+    } catch (error) {
+      failure = String(error);
+    }
+    listsBusy = false;
+    button.disabled = false;
+    await loadCapabilities();
+    if (failure) showListsRead(`Not read: ${failure}`, true);
+    refresh();
+  });
+  // Rebuilds the Codex lists only when what the engine offers has changed; the read time
+  // is shown every time.
   async function loadCapabilities() {
     if (!invoke) return;
     try {
       const next = await invoke("capabilities");
+      capabilities.lists_read_at_ms = next.lists_read_at_ms;
+      renderListsRead();
       const key = JSON.stringify({ models: next.models, voices: next.voices, default_voice: next.default_voice });
       if (key === capabilitiesKey) return;
       capabilitiesKey = key;
@@ -551,7 +640,6 @@
       fillConfig(true);
       feedback.textContent = "Saved.";
       feedback.className = "form-feedback";
-      $("config-preview").textContent = JSON.stringify(stored, null, 2);
     } catch (error) {
       feedback.textContent = String(error);
       feedback.className = "form-feedback error-text";
@@ -741,8 +829,10 @@
       report(`Could not open the assets folder: ${error}`);
     }
   }
+  // What a button of the Assistant card did goes to the Config tab's feedback line.
+  const OPENED_MS = 6000;
   $("wake-download-assets").addEventListener("click", () => openAssetsFolder((line) => {
-    $("settings-feedback").textContent = line;
+    showTabFeedback($("wake-download-assets"), line, OPENED_MS);
   }));
   $("wake-install-assets").addEventListener("click", () => openAssetsFolder(appendLog));
 
@@ -817,11 +907,12 @@
   });
   $("open-models-folder").addEventListener("click", async () => {
     if (!invoke) return;
+    const button = $("open-models-folder");
     try {
       const path = await invoke("open_models_folder");
-      $("settings-feedback").textContent = `Opened ${path}`;
+      showTabFeedback(button, `Opened ${path}`, OPENED_MS);
     } catch (error) {
-      $("settings-feedback").textContent = `Could not open the models folder: ${error}`;
+      showTabFeedback(button, `Could not open the models folder: ${error}`, OPENED_MS);
     }
   });
 
@@ -879,7 +970,7 @@
     $("wake-install-error").hidden = true;
     $("wake-install-note").textContent = reason === "choice"
       ? `Nothing is downloaded until you press Download. Cancel keeps ${installNames(install.previous)}.`
-      : "Nothing is downloaded until you press Download. Not now keeps the notice under Wake model in Settings → Assistant.";
+      : "Nothing is downloaded until you press Download. Not now keeps the notice under Wake model in Config → Assistant.";
     installButtons("Download", reason === "choice" ? "Cancel" : "Not now");
     installDialog.showModal();
     // The window may come to the front while the user types elsewhere: a stray Enter or
@@ -1014,7 +1105,7 @@
       case "off": text = "off (the session mode is not wake word)"; break;
       case "no_phrases": text = "no phrases configured"; break;
       case "needs_download":
-        text = `waiting for your OK to download ${(state.items || []).map((item) => `the ${item.label} (${megabytes(item.bytes)} MB)`).join(" and ")}: Settings → Assistant`;
+        text = `waiting for your OK to download ${(state.items || []).map((item) => `the ${item.label} (${megabytes(item.bytes)} MB)`).join(" and ")}: Config → Assistant`;
         break;
       case "downloading": text = `downloading the ${state.label}: ${state.percent}%`; break;
       case "installing": text = `checking and unpacking the ${state.label}`; break;

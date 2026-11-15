@@ -196,7 +196,7 @@ fn capabilities(state: State<'_, AppState>) -> Capabilities {
     state.runtime.assistant().capabilities()
 }
 
-/// The wake models for the Settings tab: the catalog with whether each is downloaded, and
+/// The wake models for the Config tab: the catalog with whether each is downloaded, and
 /// the models folder's models found at start.
 #[tauri::command]
 fn wake_models(state: State<'_, AppState>) -> Vec<voicebro_core::wake::ModelInfo> {
@@ -642,6 +642,11 @@ fn main() {
             if let Err(error) = runtime.start() {
                 log::error!("runtime start: {error}");
                 runtime.set_connection_error("runtime", Some(error.to_string()));
+            }
+            // The Codex lists at start (change `config-tab-and-codex-lists`): read when the
+            // setting is on or none were saved yet, and only when Codex is installed.
+            if let Some(codex) = app.state::<AppState>().codex.as_ref() {
+                codex.read_lists_at_start(runtime.settings().codex.refresh_lists_at_start);
             }
             // Debug builds only: a panic in a background task after start, to check the
             // panic hook in the real app (design D11). A release build has no such switch.

@@ -6,7 +6,9 @@
 //
 // `window.__mock` exposes what a check needs: `calls` (every command with its arguments),
 // `settings()` (the stored document), `changeCapabilities()` (the engine offers a new
-// model list, as after a sign-in) and `emit(name, payload)`.
+// model list, as after a sign-in), `capabilities()`, `failNextCheck(message)` (the next
+// Check Codex or Refresh lists fails) and `emit(name, payload)`. `?nolists` starts with no
+// Codex lists ever read.
 (() => {
   const THEMES = ["dark", "darcula", "light", "intellij"];
   const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -22,10 +24,11 @@
       phrases: { "vosk-model-small-ru-0.22": { activation: ["alpha"], deactivation: ["omega"] } },
     },
     assistant: { engine: "codex", speaker_labels: "start", save_chat_history: false },
-    // `handoff_mode` as the app fills it for a file without the field: the default.
-    codex: { executable: "", model: "", reasoning_effort: "", voice: "", instructions: "Answer briefly.", handoff_mode: "items" },
+    // `handoff_mode` and `refresh_lists_at_start` as the app fills them for a file without
+    // the fields: the defaults.
+    codex: { executable: "", model: "", reasoning_effort: "", voice: "", instructions: "Answer briefly.", handoff_mode: "items", refresh_lists_at_start: false },
     hotkey: { mute: "Ctrl+Alt+M" },
-    ui: { theme: "dark", font_size: 13 },
+    ui: { theme: "dark", font_size: 13, collapsed_cards: [] },
     // All off and libopus, as the app fills them for a file without the section.
     diagnostics: { performance: false, memory: false, verbose_log: false, opus_codec: "libopus" },
   };
@@ -44,7 +47,17 @@
     voices: ["cove", "juniper", "maple"],
     default_voice: "cove",
     signed_in: true,
+    // The saved lists were read on 2026-11-14 at 18:30 local time.
+    lists_read_at_ms: new Date(2026, 10, 14, 18, 30).getTime(),
   };
+  // `?nolists`: nothing was ever read, as on a PC without Codex (the lists are free text).
+  if (new URLSearchParams(location.search).has("nolists")) {
+    capabilities = { models: [], voices: [], default_voice: null, signed_in: false, lists_read_at_ms: null };
+  }
+  // `__mock.failNextCheck(message)`: the next Check Codex (or Refresh lists) fails with it.
+  let failNextCheck = null;
+  // `__mock.nextCheckAddsModel()`: Codex offers a new model at the next Check.
+  let checkAddsModel = false;
   // As `wake_models` answers: the catalog with its download state, then the models folder.
   // `asset` is the mock's own: the label the app gives the model's archive.
   const catalog = [
@@ -78,6 +91,9 @@
   }
   // `?always`: the session mode starts as always listening.
   if (new URLSearchParams(location.search).has("always")) settings.session.mode = "always";
+  // `?collapsed=audio,hotkey`: the stored `ui.collapsed_cards`, as after a restart.
+  const collapsedParam = new URLSearchParams(location.search).get("collapsed");
+  if (collapsedParam) settings.ui.collapsed_cards = collapsedParam.split(",").filter(Boolean);
   // `?joined`: the bot is in a voice channel when the page loads, also with `?fresh` (as
   // after a reload of the window while the bot is in use).
   let inVoice = !FRESH || new URLSearchParams(location.search).has("joined");
@@ -280,6 +296,12 @@
     if (typeof doc.assistant.save_chat_history !== "boolean") {
       throw "invalid type: expected a boolean at assistant.save_chat_history";
     }
+    if (typeof doc.codex.refresh_lists_at_start !== "boolean") {
+      throw "invalid type: expected a boolean at codex.refresh_lists_at_start";
+    }
+    if (!Array.isArray(doc.ui.collapsed_cards) || doc.ui.collapsed_cards.some((id) => typeof id !== "string")) {
+      throw "invalid type: expected a sequence of strings at ui.collapsed_cards";
+    }
   }
 
   function emit(name, payload) {
@@ -405,8 +427,26 @@
     toggle_mute: () => (muted = !muted),
     discord_connect: () => {},
     discord_disconnect: () => {},
-    codex_check: () => {
+    // Like the app's Check: reads the account and, signed in, the lists with a new read time.
+    // Answers after 300 ms, as the app-server takes a moment.
+    codex_check: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (failNextCheck) {
+        const message = failNextCheck;
+        failNextCheck = null;
+        throw message;
+      }
       codex.accountRead = true;
+      if (codex.installed && codex.signedIn && capabilities.models.length) {
+        capabilities = { ...clone(capabilities), lists_read_at_ms: Date.now() };
+        if (checkAddsModel) {
+          checkAddsModel = false;
+          capabilities.models.push({
+            id: "model-c", display_name: "Model C", description: "", reasoning_efforts: ["minimal", "low"],
+            default_reasoning_effort: "low", is_default: false,
+          });
+        }
+      }
       return { signed_in: codex.signedIn, kind: codex.signedIn ? "chatgpt" : null, email: null, plan: codex.signedIn ? "plus" : null };
     },
     codex_install_info: () => ({
@@ -545,6 +585,14 @@
       });
       emit("app-event", { event: "discord" });
     },
+    failNextCheck(message = "codex not found: press Install Codex on the Status tab, or set the path of codex.exe in Config") {
+      failNextCheck = message;
+    },
+    nextCheckAddsModel() {
+      checkAddsModel = true;
+    },
+    // What `capabilities` answers now (the lists and their read time).
+    capabilities: () => clone(capabilities),
     changeCapabilities() {
       capabilities = clone(capabilities);
       capabilities.models.push({
