@@ -23,7 +23,7 @@ $corpus = @{
     "ru" = @{
         voices = @("Microsoft Irina Desktop")
         lines  = [ordered]@{
-            "ru-positive" = "Братан, сколько сейчас времени в Москве?"
+            "ru-positive" = "Братан, сколько сейчас времени в Бангкоке?"
             "ru-negative" = "Пойдём к замку и подождём остальных."
             "ru-goodbye"  = "Спасибо за помощь. Отбой."
         }

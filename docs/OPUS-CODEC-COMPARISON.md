@@ -186,7 +186,7 @@ as "от боли", "братан" as "награждён", "brother" as "rather
 a is q1 "Запомни число сорок два", then in a second call q2 "Какое число я просил тебя
 запомнить?" (it must answer forty-two), then q3 "Сколько сейчас стоит видеокарта RTX
 5090?", which the voice hands to the Codex agent (web search) and retells; run b is q1 and
-"Какая погода будет завтра в Москве?". The questions were made with the Windows Irina voice
+"Какая погода будет завтра в Бангкоке?". The questions were made with the Windows Irina voice
 at 48 kHz. The codec encodes our speech and decodes the answer in each call. Every call was
 recorded (`VOICEBRO_CODEX_RECORD`).
 
