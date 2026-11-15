@@ -8,7 +8,7 @@ pub mod codex;
 
 use crate::audio::AudioPorts;
 use crate::settings::Settings;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -26,8 +26,9 @@ pub enum AssistantError {
     Unavailable(String),
 }
 
-/// A model the assistant can run, with the reasoning efforts it accepts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// A model the assistant can run, with the reasoning efforts it accepts. Also read back from
+/// the saved lists (`codex-lists.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub id: String,
     pub display_name: String,
@@ -37,13 +38,17 @@ pub struct ModelInfo {
     pub is_default: bool,
 }
 
-/// What the engine offers right now; the Settings tab fills its lists from this.
+/// What the engine offers right now, read in this run or saved from the last read; the
+/// Config tab's Codex card fills its lists from this.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Capabilities {
     pub models: Vec<ModelInfo>,
     pub voices: Vec<String>,
     pub default_voice: Option<String>,
     pub signed_in: bool,
+    /// When the models and voices were read from the engine, in Unix milliseconds; `None`
+    /// when they were never read.
+    pub lists_read_at_ms: Option<u64>,
 }
 
 /// One guild's call, as the status shows it.

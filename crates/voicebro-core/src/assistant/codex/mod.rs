@@ -5,6 +5,7 @@ pub mod account;
 pub mod app_server;
 pub mod conversation;
 pub mod jitter;
+pub mod lists;
 pub mod pacing;
 pub mod playout;
 pub mod rtc;
@@ -29,7 +30,7 @@ use crate::status::ConnectionErrors;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
@@ -109,6 +110,19 @@ struct Inner {
     account: Arc<Mutex<Option<AccountInfo>>>,
     voices: Arc<Mutex<Option<Voices>>>,
     models: Mutex<Vec<ModelInfo>>,
+    /// `codex-lists.json`: the models and voices of the last read, loaded at start and
+    /// written after every successful `model/list`.
+    lists_path: PathBuf,
+    /// When the models held were read from Codex (Unix ms); from the file until a read in
+    /// this run replaces it.
+    lists_read_at_ms: Mutex<Option<u64>>,
+    /// The models were read from Codex in this run; until then a join reads them again.
+    lists_fresh: AtomicBool,
+    /// The file held at least one model at start: the read at start then depends on the
+    /// setting only.
+    lists_saved_at_start: bool,
+    /// What loading the file found, logged by `read_lists_at_start` once the log is up.
+    lists_load_note: Mutex<Option<(log::Level, String)>>,
     last_error: Mutex<Option<String>>,
     /// Joins being prepared right now; the app-server is not stopped under them.
     preparing: AtomicUsize,
@@ -144,6 +158,24 @@ impl CodexAssistant {
         data_dir: &std::path::Path,
         settings: &Settings,
     ) -> Self {
+        // This runs before the desktop shell's log is up: what the load found is logged by
+        // `read_lists_at_start`.
+        let lists_path = crate::paths::codex_lists_path(data_dir);
+        let (saved, load_note) = match lists::load(&lists_path) {
+            Ok(Some(saved)) if !saved.models.is_empty() => {
+                let note = format!(
+                    "Codex lists: {} models and {} voices saved from the read of {}",
+                    saved.models.len(),
+                    saved.voices.len(),
+                    chrono::DateTime::from_timestamp_millis(saved.read_at_ms as i64)
+                        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                        .unwrap_or_else(|| saved.read_at_ms.to_string())
+                );
+                (Some(saved), Some((log::Level::Info, note)))
+            }
+            Ok(_) => (None, None),
+            Err(message) => (None, Some((log::Level::Warn, message))),
+        };
         Self {
             inner: Arc::new(Inner {
                 handle,
@@ -160,8 +192,18 @@ impl CodexAssistant {
                 conversations: Mutex::new(HashMap::new()),
                 learned_depths: Mutex::new(HashMap::new()),
                 account: Arc::new(Mutex::new(None)),
-                voices: Arc::new(Mutex::new(None)),
-                models: Mutex::new(Vec::new()),
+                voices: Arc::new(Mutex::new(saved.as_ref().and_then(|saved| saved.voices()))),
+                models: Mutex::new(
+                    saved
+                        .as_ref()
+                        .map(|saved| saved.models.clone())
+                        .unwrap_or_default(),
+                ),
+                lists_path,
+                lists_read_at_ms: Mutex::new(saved.as_ref().map(|saved| saved.read_at_ms)),
+                lists_fresh: AtomicBool::new(false),
+                lists_saved_at_start: saved.is_some(),
+                lists_load_note: Mutex::new(load_note),
                 last_error: Mutex::new(None),
                 preparing: AtomicUsize::new(0),
                 stop_epoch: AtomicU64::new(0),
@@ -239,8 +281,12 @@ impl CodexAssistant {
         if !account.signed_in {
             return Err(PrepareError::SignedOut);
         }
-        self.refresh_voices(&server).await;
-        if self.inner.models.lock().expect("models lock").is_empty() {
+        // The first join of a run reads the lists again even when the saved ones were loaded;
+        // later joins reuse what this run read.
+        let fresh = self.inner.lists_fresh.load(Ordering::Acquire)
+            && !self.inner.models.lock().expect("models lock").is_empty();
+        self.refresh_voices(&server, !fresh).await;
+        if !fresh {
             if let Err(error) = self.refresh_models(&server).await {
                 log::warn!("Codex: model/list failed: {error}");
             }
@@ -404,8 +450,10 @@ impl CodexAssistant {
         Ok(account)
     }
 
-    async fn refresh_voices(&self, server: &AppServer) {
-        if self.inner.voices.lock().expect("voices lock").is_some() {
+    /// Reads the voices when none are held, or always with `force` (Check, Refresh lists,
+    /// the read at start, the first join of a run). A failed read keeps what is held.
+    async fn refresh_voices(&self, server: &AppServer, force: bool) {
+        if !force && self.inner.voices.lock().expect("voices lock").is_some() {
             return;
         }
         match server
@@ -440,8 +488,49 @@ impl CodexAssistant {
                 break;
             }
         }
+        // An empty answer replaces nothing: the lists held and the file stay, and the next
+        // join reads again.
+        if models.is_empty() {
+            log::warn!("Codex: model/list returned no models; the lists held are kept");
+            return Ok(models);
+        }
         *self.inner.models.lock().expect("models lock") = models.clone();
+        self.save_lists(server, &models);
         Ok(models)
+    }
+
+    /// After a successful `model/list`: the lists count as read in this run, and the file
+    /// gets them with the voices held now. A failed write is logged; the lists stay in use.
+    fn save_lists(&self, server: &AppServer, models: &[ModelInfo]) {
+        let read_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_millis() as u64)
+            .unwrap_or_default();
+        *self
+            .inner
+            .lists_read_at_ms
+            .lock()
+            .expect("lists read time lock") = Some(read_at);
+        self.inner.lists_fresh.store(true, Ordering::Release);
+        let voices = self.inner.voices.lock().expect("voices lock").clone();
+        let saved = lists::SavedLists::new(
+            read_at,
+            server.version.clone(),
+            models.to_vec(),
+            voices.as_ref(),
+        );
+        match lists::save(&self.inner.lists_path, &saved) {
+            Ok(()) => log::info!(
+                "Codex lists: {} models and {} voices saved to {}",
+                saved.models.len(),
+                saved.voices.len(),
+                self.inner.lists_path.display()
+            ),
+            Err(error) => log::warn!(
+                "Codex lists: could not write {}: {error}",
+                self.inner.lists_path.display()
+            ),
+        }
     }
 
     /// Starts the app-server if needed and reads the account, voices and models. Outside a
@@ -451,7 +540,7 @@ impl CodexAssistant {
         let result = async {
             let server = self.server().await?;
             let account = self.refresh_account(&server).await?;
-            self.refresh_voices(&server).await;
+            self.refresh_voices(&server, true).await;
             if let Err(error) = self.refresh_models(&server).await {
                 log::warn!("Codex: model/list failed: {error}");
             }
@@ -521,6 +610,43 @@ impl CodexAssistant {
         self.after_on_demand_use();
         let server = self.server().await?;
         self.refresh_models(&server).await
+    }
+
+    /// At app start (change `config-tab-and-codex-lists`): reads the account and the lists
+    /// as Check does when `enabled` (`codex.refresh_lists_at_start`) or when no lists were
+    /// saved, and only when a Codex executable is found; without one nothing starts and no
+    /// error is reported. Returns whether the read was started; it runs in the background
+    /// and the app-server stops a minute later unless a join needs it.
+    pub fn read_lists_at_start(&self, enabled: bool) -> bool {
+        let note = self
+            .inner
+            .lists_load_note
+            .lock()
+            .expect("lists note lock")
+            .take();
+        if let Some((level, message)) = note {
+            log::log!(level, "{message}");
+        }
+        if find_codex(&self.config().executable).is_none() {
+            return false;
+        }
+        let reason = if enabled {
+            "the setting is on"
+        } else if !self.inner.lists_saved_at_start {
+            "no saved lists"
+        } else {
+            return false;
+        };
+        self.inner
+            .events
+            .log(format!("Codex: reading the lists at start ({reason})"));
+        let assistant = self.clone();
+        self.inner.handle.spawn(async move {
+            if let Err(error) = assistant.check().await {
+                log::warn!("Codex: the read at start failed: {error}");
+            }
+        });
+        true
     }
 
     fn conversation(&self, guild: u64) -> Arc<Mutex<Conversation>> {
@@ -648,6 +774,11 @@ impl Assistant for CodexAssistant {
                 .expect("account lock")
                 .as_ref()
                 .is_some_and(|account| account.signed_in),
+            lists_read_at_ms: *self
+                .inner
+                .lists_read_at_ms
+                .lock()
+                .expect("lists read time lock"),
         }
     }
 
@@ -887,6 +1018,226 @@ mod tests {
         let refused = runtime.block_on(assistant.prepare_guild(1));
         assert_eq!(refused, Err(PrepareError::SignedOut));
         assert!(refused.unwrap_err().to_string().contains("Sign in"));
+        assistant.stop_blocking();
+    }
+
+    /// The Node fake behind a `codex.cmd` in `dir` that logs every request's method to
+    /// `requests.txt` there; `None` without Node.
+    fn logging_fake(dir: &std::path::Path) -> Option<String> {
+        fake_codex("fake_codex.cmd")?;
+        let script = format!(
+            "{}/testdata/fake-codex/fake_codex.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let path = dir.join("codex.cmd");
+        std::fs::write(
+            &path,
+            format!(
+                "@node \"{script}\" --log \"{}\" %*\r\n",
+                dir.join("requests.txt").display()
+            ),
+        )
+        .unwrap();
+        Some(path.display().to_string())
+    }
+
+    /// How many requests of `method` the logging fake answered.
+    fn requests(dir: &std::path::Path, method: &str) -> usize {
+        std::fs::read_to_string(dir.join("requests.txt"))
+            .map(|text| text.lines().filter(|line| *line == method).count())
+            .unwrap_or(0)
+    }
+
+    fn saved_sample(dir: &std::path::Path) -> lists::SavedLists {
+        let saved = lists::SavedLists::new(
+            1_763_141_400_000,
+            Some("codex-cli 0.167.0".to_owned()),
+            vec![ModelInfo {
+                id: "saved-model".to_owned(),
+                display_name: "Saved model".to_owned(),
+                description: String::new(),
+                reasoning_efforts: vec!["medium".to_owned()],
+                default_reasoning_effort: Some("medium".to_owned()),
+                is_default: true,
+            }],
+            Some(&Voices {
+                all: vec!["saved-voice".to_owned()],
+                default: Some("saved-voice".to_owned()),
+            }),
+        );
+        lists::save(&crate::paths::codex_lists_path(dir), &saved).unwrap();
+        saved
+    }
+
+    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+        let started = Instant::now();
+        while !done() {
+            assert!(started.elapsed() < Duration::from_secs(15), "{what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn saved_lists_are_offered_at_start_and_start_nothing() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let saved = saved_sample(dir.path());
+        let missing = assistant_with(&runtime, dir.path(), "Z:/nowhere/codex.exe");
+        let offered = missing.capabilities();
+        assert_eq!(offered.models, saved.models);
+        assert_eq!(offered.voices, ["saved-voice"]);
+        assert_eq!(offered.default_voice.as_deref(), Some("saved-voice"));
+        assert_eq!(offered.lists_read_at_ms, Some(saved.read_at_ms));
+        assert!(
+            !missing.read_lists_at_start(true),
+            "no executable: no read, whatever the switch"
+        );
+        assert_eq!(missing.status().error, None, "and no error for it");
+        assert!(!missing.status().running);
+
+        let Some(fake) = logging_fake(dir.path()) else {
+            return;
+        };
+        let assistant = assistant_with(&runtime, dir.path(), &fake);
+        assert!(
+            !assistant.read_lists_at_start(false),
+            "saved lists and the switch off: Codex does not start"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!assistant.status().running);
+        assert_eq!(requests(dir.path(), "initialize"), 0);
+
+        // A file that is not a lists file is no lists: the read at start runs.
+        std::fs::write(crate::paths::codex_lists_path(dir.path()), "{ broken").unwrap();
+        let broken = assistant_with(&runtime, dir.path(), "Z:/nowhere/codex.exe");
+        assert!(broken.capabilities().models.is_empty());
+        assert_eq!(broken.capabilities().lists_read_at_ms, None);
+    }
+
+    #[test]
+    fn the_read_at_start_runs_without_saved_lists_or_with_the_switch_on() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let Some(fake) = logging_fake(dir.path()) else {
+            return;
+        };
+        let file = crate::paths::codex_lists_path(dir.path());
+        let first = assistant_with(&runtime, dir.path(), &fake);
+        assert_eq!(first.capabilities().lists_read_at_ms, None);
+        assert!(first.read_lists_at_start(false), "nothing saved yet");
+        wait_for("the read at start saves the lists", || {
+            first.capabilities().lists_read_at_ms.is_some()
+        });
+        let saved = lists::load(&file).unwrap().expect("the file was written");
+        let ids: Vec<&str> = saved.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["fake-model-a", "fake-model-b"]);
+        assert_eq!(saved.voices, ["fake-cove", "fake-juniper"]);
+        assert_eq!(saved.codex_version.as_deref(), Some("codex-cli 0.0.0-fake"));
+        assert!(first.status().running, "it stops a minute later");
+        assert_eq!(first.status().error, None);
+        first.stop_blocking();
+
+        let second = assistant_with(&runtime, dir.path(), &fake);
+        assert_eq!(
+            second.capabilities().models,
+            saved.models,
+            "loaded at start"
+        );
+        assert!(!second.read_lists_at_start(false));
+        assert!(second.read_lists_at_start(true), "the switch is on");
+        wait_for("the switch reads the lists again", || {
+            requests(dir.path(), "model/list") == 2
+        });
+        wait_for("and saves them", || {
+            second.capabilities().lists_read_at_ms > Some(saved.read_at_ms)
+        });
+        second.stop_blocking();
+    }
+
+    #[test]
+    fn check_reads_the_lists_every_time_and_a_join_once_per_run() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let Some(fake) = logging_fake(dir.path()) else {
+            return;
+        };
+        let saved = saved_sample(dir.path());
+        let assistant = assistant_with(&runtime, dir.path(), &fake);
+
+        runtime
+            .block_on(assistant.prepare_guild(1))
+            .expect("the fake prepares");
+        assert_eq!(
+            (
+                requests(dir.path(), "model/list"),
+                requests(dir.path(), "thread/realtime/listVoices")
+            ),
+            (1, 1),
+            "the first join of the run reads the saved lists again"
+        );
+        let offered = assistant.capabilities();
+        assert_eq!(offered.models[0].id, "fake-model-a");
+        assert_eq!(offered.voices, ["fake-cove", "fake-juniper"]);
+        assert!(offered.lists_read_at_ms > Some(saved.read_at_ms));
+        let file = lists::load(&crate::paths::codex_lists_path(dir.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(file.models, offered.models, "and saves them");
+
+        runtime
+            .block_on(assistant.prepare_guild(2))
+            .expect("a second join");
+        assert_eq!(
+            (
+                requests(dir.path(), "model/list"),
+                requests(dir.path(), "thread/realtime/listVoices")
+            ),
+            (1, 1),
+            "a later join of the run reuses them"
+        );
+
+        for round in 2..=3 {
+            runtime.block_on(assistant.check()).expect("check");
+            assert_eq!(
+                requests(dir.path(), "model/list"),
+                round,
+                "check reads the models"
+            );
+            assert_eq!(
+                requests(dir.path(), "thread/realtime/listVoices"),
+                round,
+                "and the voices"
+            );
+        }
+        assistant.stop_blocking();
+    }
+
+    #[test]
+    fn an_empty_model_list_keeps_the_saved_lists() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        if logging_fake(dir.path()).is_none() {
+            return;
+        }
+        let saved = saved_sample(dir.path());
+        let script = format!(
+            "{}/testdata/fake-codex/fake_codex.js",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let empty = dir.path().join("codex-empty.cmd");
+        std::fs::write(&empty, format!("@node \"{script}\" --models none %*\r\n")).unwrap();
+        let assistant = assistant_with(&runtime, dir.path(), &empty.display().to_string());
+        runtime.block_on(assistant.check()).expect("check");
+        assert_eq!(assistant.capabilities().models, saved.models);
+        assert_eq!(
+            assistant.capabilities().lists_read_at_ms,
+            Some(saved.read_at_ms)
+        );
+        assert_eq!(
+            lists::load(&crate::paths::codex_lists_path(dir.path())),
+            Ok(Some(saved)),
+            "the file stays"
+        );
         assistant.stop_blocking();
     }
 

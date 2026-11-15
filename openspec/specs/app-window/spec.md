@@ -43,18 +43,24 @@ settings file.
 - **THEN** the window turns light at once, and after a restart it opens in Light
 
 ### Requirement: Config tab
-The Config tab SHALL hold the Discord token (masked, write-only, with help on getting one),
-the guild id (with help on copying it), the Codex executable, an "Auto-start enabled" note,
-Save changes and Reset, and a read-only view of the stored settings with the file location.
-The view SHALL never contain the token.
+The Config tab SHALL hold the "Discord and Codex" card with the Discord token (masked,
+write-only, with help on getting one), the guild id (with help on copying it), the Codex
+executable, an "Auto-start enabled" note, Save changes and Reset; below it the bot's
+Audio, Assistant, Codex and Hotkey cards; and at the bottom one line with the location of
+the settings file. The tab SHALL NOT show the contents of the settings file, and SHALL never
+show the token.
 
 #### Scenario: Stored settings view
 - **WHEN** the user opens the Config tab
-- **THEN** the stored settings and the path of `settings.json` are shown and no secret appears in them
+- **THEN** the path of `settings.json` is shown at the bottom of the tab, and neither the file's contents nor any secret appears on the tab
 
 #### Scenario: Reset
 - **WHEN** the user edits fields on the Config tab and presses Reset
 - **THEN** the fields return to the stored values and nothing is saved
+
+#### Scenario: Location with every card collapsed
+- **WHEN** every card of the Config tab is collapsed
+- **THEN** the location of the settings file is still shown
 
 ### Requirement: Window data stays with the app
 The window's browser engine SHALL keep its data in a folder next to the executable; the app
@@ -101,7 +107,7 @@ size and site. One dialog at most SHALL be open.
 
 #### Scenario: Start on a clean folder
 - **WHEN** the app starts for the first time in an empty folder
-- **THEN** no dialog opens, and the Status tab's Wake word line and the notice under Wake model in Settings → Assistant say that the Vosk library and the English model are needed
+- **THEN** no dialog opens, and the Status tab's Wake word line and the notice under Wake model in Config → Assistant say that the Vosk library and the English model are needed
 
 #### Scenario: The bot joins with files missing
 - **WHEN** the app runs in wake-word mode with the selected model's files missing and the bot joins a voice channel
@@ -122,6 +128,10 @@ size and site. One dialog at most SHALL be open.
 #### Scenario: Files on disk
 - **WHEN** the bot joins a voice channel in wake-word mode and the selected model and the Vosk library are on disk
 - **THEN** no dialog opens
+
+#### Scenario: Assistant card collapsed
+- **WHEN** the Assistant card is collapsed and the user presses Not now in the dialog
+- **THEN** the dialog closes, the card stays collapsed, and expanding it shows the download notice
 
 ### Requirement: The install dialog downloads only on Download
 The dialog's Download button SHALL start the download of the named model and show each

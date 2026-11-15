@@ -106,11 +106,14 @@ use Codex on this PC, **Check Codex** finds that sign-in: VoiceBro uses your nor
 installation.
 
 Codex runs only while the bot is in a voice channel, and for a minute after **Sign in to
-Codex** or **Check Codex**.
+Codex**, **Check Codex** or **Refresh lists**. **Check Codex** also reads the models,
+reasoning levels and voices of your account; VoiceBro saves them in `codex-lists.json`, so
+the lists in **Config → Codex** are there at the next start without starting Codex. The
+first start after installing reads them once on its own when Codex is installed.
 
 ## 5. Set the wake phrase
 
-Open **Settings → Assistant**.
+Open **Config → Assistant**.
 
 ![The Assistant settings with the English model, the phrases and the download notice](images/wake-settings.png)
 
@@ -126,7 +129,7 @@ Open **Settings → Assistant**.
   them: one per line, or separated by commas. Words the model does not know are listed
   under the field.
 - When the wake word's files are not on this PC, the notice under **Wake model** in
-  **Settings → Assistant** says so, and so does **Wake word** on the **Status** tab. It
+  **Config → Assistant** says so, and so does **Wake word** on the **Status** tab. It
   lists what is needed: the Vosk recognizer, 15 MB from github.com, once, and the model,
   32 to 53 MB depending on the language, from alphacephei.com. Starting VoiceBro does not
   interrupt you with it.
@@ -172,7 +175,7 @@ language that is not in the **Wake model** list.
 
 1. Download a **small** model for your language, for example
    `vosk-model-small-ca-0.4` for Catalan.
-2. In **Settings → Assistant**, press **Open models folder** and extract the zip there, so
+2. In **Config → Assistant**, press **Open models folder** and extract the zip there, so
    that you get `models\vosk-model-small-ca-0.4\am\final.mdl`.
 3. Restart VoiceBro. The model appears in **Wake model**, marked "models folder".
 
@@ -191,25 +194,30 @@ you add comes with its own license, shown on the models page.
 
 **Mute** ends the current session at once and sends nothing until you unmute. Use the
 **Mute GPT** button in Discord, the button on the **Status** tab, or the hotkey
-**Ctrl+Alt+M**, which works system-wide (change it in **Settings → Hotkey**).
+**Ctrl+Alt+M**, which works system-wide (change it in **Config → Hotkey**).
 
 In the window, **Codex chat** shows what the assistant heard, said and looked up, and
 **Console** shows what the app is doing.
 
 ## 8. Settings
 
-Settings save as soon as you change them. Each one has a short explanation under it in
-the window.
+The **Settings** tab holds the window's own settings; the **Config** tab holds the bot's.
+Settings save as soon as you change them, except the three fields of **Config → Discord
+and Codex**, which wait for **Save changes**. Each one has a short explanation under it in
+the window. On both tabs, click a card's title to fold it away or open it again; VoiceBro
+remembers which cards are folded.
 
 | Where | What you set |
 |---|---|
 | Settings → Appearance | Theme and font size. |
-| Settings → Audio | How loud the assistant hears the channel and how loud it speaks; the short tones at session start and end. |
-| Settings → Assistant | Wake word or always listening, the phrases, the auto-stop time, the wake model and its download. |
-| Settings → Codex | The model and reasoning effort for looked-up answers, the voice, your instructions for the assistant, whether it gets the names of the people in the channel, **Save chat history**. |
-| Settings → Hotkey | The mute hotkey. |
 | Settings → Diagnostics | **Performance monitoring**, **Memory measurement**, **Verbose log**. All are off by default and cost nothing while off. **Opus codec (experiment)**: which Opus implementation encodes and decodes the voice (the assistant toward Discord, your speech toward Codex and its answer, the people in the channel): libopus, the C library VoiceBro has always used and the default, or opus-rs, written in Rust and being tried as its replacement. A change applies at the next `/join` and the next call; the line under the list shows the codec in use. |
-| Config | The Discord bot token, the server ID, the path of `codex.exe` when it is not found on its own. |
+| Config → Discord and Codex | The Discord bot token, the server ID, the path of `codex.exe` when it is not found on its own. Press **Save changes**. |
+| Config → Audio | How loud the assistant hears the channel and how loud it speaks; the short tones at session start and end. |
+| Config → Assistant | Wake word or always listening, the phrases, the auto-stop time, the wake model and its download. |
+| Config → Codex | The model and reasoning effort for looked-up answers, the voice, your instructions for the assistant, whether it gets the names of the people in the channel, **Save chat history**. The model, reasoning and voice lists come from the last time VoiceBro read them from Codex; the card says when that was. **Refresh lists** reads them now, and **Refresh the lists at start** (off by default) reads them at every start of VoiceBro. |
+| Config → Hotkey | The mute hotkey. |
+
+The bottom of the **Config** tab shows where `settings.json` is.
 
 ## 9. Privacy and your files
 
@@ -220,7 +228,7 @@ What leaves your PC:
   assistant's answer is played in the channel. With **Always listening**, a session runs
   the whole time the bot is in the channel.
 - **The names of the people in the channel** go to OpenAI at the start of a call, unless
-  you turn this off in **Settings → Codex → Speaker names**.
+  you turn this off in **Config → Codex → Speaker names**.
 - **Questions the assistant looks up** go to Codex, which may search the web.
 
 Everything VoiceBro stores is in its own folder, next to `voicebro.exe`:
@@ -228,6 +236,7 @@ Everything VoiceBro stores is in its own folder, next to `voicebro.exe`:
 | Item | Contents |
 |---|---|
 | `settings.json` | Your settings. |
+| `codex-lists.json` | The Codex models, reasoning levels and voices of your account, from the last time VoiceBro read them. |
 | `logs\` | The app log, at most about 2 MB, without what people said. The chat history too, if you turned on **Save chat history**. |
 | `assets\` | The Vosk recognizer and the models VoiceBro downloaded. |
 | `models\` | Models you added yourself. |
@@ -258,7 +267,7 @@ need it.
 |---|---|
 | The commands do not show up in Discord | Put your server's ID into **Config → Discord guild ID**, or wait up to an hour. |
 | `/join` replies "Codex CLI is not installed" or "not signed in" | Do [step 4](#4-set-up-codex); the **Status** tab shows what is missing. |
-| The wake phrase does nothing | Look at **Wake word** on the **Status** tab: it says when the model still waits for its download (press **Download** under **Wake model** in **Settings → Assistant**, or put the files there yourself as section 5 describes), when no phrases are set, or which words the model does not know. The **Console** shows a "heard:" line for everything the recognizer understood, so you can pick phrases it hears correctly. |
+| The wake phrase does nothing | Look at **Wake word** on the **Status** tab: it says when the model still waits for its download (press **Download** under **Wake model** in **Config → Assistant**, or put the files there yourself as section 5 describes), when no phrases are set, or which words the model does not know. The **Console** shows a "heard:" line for everything the recognizer understood, so you can pick phrases it hears correctly. |
 | The bot joins but does not hear or speak | Check that the bot has **Connect** and **Speak** in that channel, and look for errors in the **Console**. |
 | The assistant's voice stutters in places | The ping from the PC that runs VoiceBro to the channel's Discord voice server is probably too high: at around 300 ms or more the voice can break up. Set the channel's **Region Override** (**Edit Channel → Overview**) to a region close to that PC. See [Limitations](../README.md#limitations). |
 | A window says "The bot left the voice channel" and "opus-rs failed while …" | The Opus codec opus-rs, which you chose in **Settings → Diagnostics → Opus codec (experiment)**, failed, so the bot left that channel instead of playing broken sound. The window names the server, the channel and the error. Run `/join` to bring it back, or choose libopus there to go back to the default codec. Please attach `logs\voicebro.log` (**Open log folder** in that window) to a [GitHub issue](https://github.com/OldSlash/voicebro-discord/issues). |

@@ -38,6 +38,12 @@ pub fn codex_workspace_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("codex-workspace")
 }
 
+/// The Codex models, reasoning efforts and voices from the last read, so the window offers
+/// them before any Codex process runs (change `config-tab-and-codex-lists`).
+pub fn codex_lists_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("codex-lists.json")
+}
+
 /// The window's WebView2 data (cache, local storage), kept with the app instead of under
 /// `%LOCALAPPDATA%`.
 pub fn webview_data_dir(data_dir: &Path) -> PathBuf {
@@ -58,6 +64,7 @@ mod tests {
             codex_workspace_dir(dir),
             Path::new("X:/data/codex-workspace")
         );
+        assert_eq!(codex_lists_path(dir), Path::new("X:/data/codex-lists.json"));
         assert_eq!(webview_data_dir(dir), Path::new("X:/data/webview-data"));
     }
 

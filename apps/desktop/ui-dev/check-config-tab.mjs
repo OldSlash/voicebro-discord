@@ -1,0 +1,434 @@
+// Runs every scenario of the Settings and Config tabs (change `config-tab-and-codex-lists`)
+// against the command mock in a headless Edge and stops at the first failure with its name
+// (exit code 1): which cards each tab holds, the two ways of saving on the Config tab, the
+// collapsible cards of both tabs, the switches and the Codex lists. Each scenario loads the page afresh.
+// Needs Node 24 (built-in WebSocket) and Microsoft Edge; writes its browser profile under
+// target\. Local only; never shipped.
+//
+//   node apps/desktop/ui-dev/check-config-tab.mjs
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repo = join(here, "..", "..", "..");
+const PAGE_PORT = 5182;
+const DEBUG_PORT = 9232;
+const EDGE = [
+  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+  "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+].find((path) => existsSync(path));
+if (!EDGE) {
+  console.error("Microsoft Edge not found");
+  process.exit(2);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function waitFor(check, what, ms = 15000) {
+  const until = Date.now() + ms;
+  for (;;) {
+    try {
+      const value = await check();
+      if (value) return value;
+    } catch {}
+    if (Date.now() > until) throw new Error(`timed out waiting for ${what}`);
+    await sleep(150);
+  }
+}
+
+const server = spawn(process.execPath, [join(here, "serve.mjs")], {
+  env: { ...process.env, PORT: String(PAGE_PORT) },
+  stdio: "ignore",
+});
+const profile = join(repo, "target", "ui-check-config-profile");
+mkdirSync(profile, { recursive: true });
+const edge = spawn(EDGE, [
+  "--headless=new", `--remote-debugging-port=${DEBUG_PORT}`, `--user-data-dir=${profile}`,
+  "--window-size=1280,800", "--no-first-run", "--disable-extensions", "about:blank",
+], { stdio: "ignore" });
+const stop = () => {
+  edge.kill();
+  server.kill();
+};
+
+let ws;
+let nextId = 0;
+const pending = new Map();
+// Uncaught exceptions and console errors of the page; any of them fails the scenario.
+const pageErrors = [];
+function send(method, params = {}) {
+  return new Promise((resolve, reject) => {
+    const id = ++nextId;
+    pending.set(id, { resolve, reject });
+    ws.send(JSON.stringify({ id, method, params }));
+  });
+}
+async function connect() {
+  const pages = await waitFor(async () => {
+    const list = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json`)).json();
+    return list.find((page) => page.type === "page") ? list : null;
+  }, "the headless Edge");
+  ws = new WebSocket(pages.find((page) => page.type === "page").webSocketDebuggerUrl);
+  ws.onmessage = (message) => {
+    const data = JSON.parse(message.data);
+    if (data.method === "Runtime.exceptionThrown") {
+      pageErrors.push(data.params.exceptionDetails.exception?.description || data.params.exceptionDetails.text);
+    } else if (data.method === "Runtime.consoleAPICalled" && data.params.type === "error") {
+      pageErrors.push(data.params.args.map((arg) => arg.value ?? arg.description).join(" "));
+    }
+    const waiter = pending.get(data.id);
+    if (!waiter) return;
+    pending.delete(data.id);
+    if (data.error) waiter.reject(new Error(data.error.message));
+    else waiter.resolve(data.result);
+  };
+  await new Promise((resolve) => (ws.onopen = resolve));
+  await send("Page.enable");
+  await send("Runtime.enable");
+}
+// Evaluates an async function body in the page with helpers in scope; returns its value.
+async function page(body) {
+  const helpers = `
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const $ = (id) => document.getElementById(id);
+    const until = async (check, ms = 8000) => { const t = Date.now(); while (Date.now() - t < ms) { if (check()) return true; await sleep(100); } return false; };
+    const calls = (name) => window.__mock.calls.filter((c) => c.name === name);
+    const stored = () => window.__mock.settings();
+    const tab = (name) => { document.querySelector('[data-tab="' + name + '"]').click(); };
+    const titles = (name) => [...document.querySelector('[data-panel="' + name + '"]').querySelectorAll(".card")].map((card) => card.querySelector("h2").textContent.trim());
+    const card = (id) => document.querySelector('[data-card="' + id + '"]');
+    const collapsed = (id) => card(id).querySelector(".card-body").hidden && card(id).querySelector(".card-toggle").getAttribute("aria-expanded") === "false";
+    const toggle = async (id) => { card(id).querySelector(".card-toggle").click(); await sleep(250); };
+    const box = (node) => { const r = node.getBoundingClientRect(); return { top: r.top, mid: (r.top + r.bottom) / 2, width: r.width, height: r.height }; };
+    const setValue = async (id, value, events = ["input", "change"]) => { const c = $(id); c.value = value; for (const e of events) c.dispatchEvent(new Event(e, { bubbles: true })); await sleep(300); };
+  `;
+  const result = await send("Runtime.evaluate", {
+    expression: `(async () => { ${helpers} ${body} })()`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+  return result.result.value;
+}
+async function load(query = "") {
+  await send("Page.navigate", { url: `http://127.0.0.1:${PAGE_PORT}/ui-dev/index.html${query}` });
+  await waitFor(() => page(`return Boolean(window.__mock) && document.readyState === "complete";`), "the page");
+  // The window's own start: settings, model lists, first status.
+  await sleep(1200);
+}
+async function press(key) {
+  const keys = {
+    Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
+    Space: { key: " ", code: "Space", windowsVirtualKeyCode: 32, text: " " },
+  }[key];
+  await send("Input.dispatchKeyEvent", { type: "keyDown", ...keys });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: keys.key, code: keys.code, windowsVirtualKeyCode: keys.windowsVirtualKeyCode });
+  await sleep(350);
+}
+function expect(condition, message) {
+  if (!condition) throw new Error(message);
+}
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const CARDS = ["discord", "audio", "assistant", "codex", "hotkey"];
+const SETTINGS_CARDS = ["appearance", "diagnostics"];
+const SWITCHES = [
+  ["config", "earcons"], ["config", "codex-refresh-lists"], ["config", "save-chat-history"],
+  ["settings", "diagnostics-performance"], ["settings", "diagnostics-memory"], ["settings", "diagnostics-verbose-log"],
+  ["performance", "performance-monitoring"],
+];
+
+const scenarios = [
+  // ---- Layout
+  ["the Settings tab holds Appearance and Diagnostics, the Config tab the bot's five cards", async () => {
+    await load();
+    const r = await page(`
+      const path = $("config-path");
+      return { settings: titles("settings"), config: titles("config"), preview: Boolean($("config-preview")),
+        pathText: path.textContent, pathInCard: Boolean(path.closest(".card")), pathTab: path.closest(".tab-panel").dataset.panel,
+        pre: document.querySelectorAll('[data-panel="config"] pre').length };`);
+    expect(same(r.settings, ["Appearance", "Diagnostics"]), `Settings: ${r.settings}`);
+    expect(same(r.config, ["Discord and Codex", "Audio", "Assistant", "Codex", "Hotkey"]), `Config: ${r.config}`);
+    expect(!r.preview && r.pre === 0, "the settings file's contents are still on the tab");
+    expect(r.pathText === "C:\\VoiceBro\\settings.json", `path ${r.pathText}`);
+    expect(!r.pathInCard && r.pathTab === "config", "the path is inside a card or not on the Config tab");
+  }],
+  ["each tab's feedback line names the saves of its own tab", async () => {
+    await load();
+    const r = await page(`
+      const settingsLine = $("settings-feedback"); const configLine = $("config-autosave-feedback");
+      const configBefore = configLine.textContent;
+      tab("settings"); await setValue("setting-font-size", "15", ["input", "change"]);
+      const afterFont = { settings: settingsLine.textContent, config: configLine.textContent, stored: stored().ui.font_size };
+      tab("config"); await setValue("hotkey-mute", "Ctrl+Alt+K", ["input", "change"]);
+      const afterHotkey = { settings: settingsLine.textContent, config: configLine.textContent, stored: stored().hotkey.mute };
+      return { configBefore, afterFont, afterHotkey };`);
+    expect(r.afterFont.stored === 15, `font size stored ${r.afterFont.stored}`);
+    expect(r.afterFont.settings === "Saved: Font size", `Settings line: ${r.afterFont.settings}`);
+    expect(r.afterFont.config === r.configBefore, `the Config line changed: ${r.afterFont.config}`);
+    expect(r.afterHotkey.stored === "Ctrl+Alt+K", `hotkey stored ${r.afterHotkey.stored}`);
+    expect(r.afterHotkey.config === "Saved: Mute hotkey", `Config line: ${r.afterHotkey.config}`);
+    expect(r.afterHotkey.settings !== "Saved: Mute hotkey", "the Settings line named a Config save");
+  }],
+  ["two ways of saving on the Config tab: a gain at once, the guild id waits for Save changes", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      await setValue("config-guild-id", "123", ["input"]);
+      await setValue("output-gain", "150", ["input", "change"]);
+      return { gain: stored().audio.output_gain, guild: stored().discord.guild_id, field: $("config-guild-id").value,
+        dirty: $("config-guild-id").closest("label").classList.contains("is-dirty"), save: !$("config-save").disabled };`);
+    expect(r.gain === 1.5, `the gain was not saved at once: ${r.gain}`);
+    expect(r.guild === "1091401169441656933", `the guild id was saved without Save changes: ${r.guild}`);
+    expect(r.field === "123" && r.dirty && r.save, `the unsaved guild id: ${JSON.stringify(r)}`);
+  }],
+
+  // ---- Collapsible cards
+  ["first start: every card of the Settings and Config tabs is expanded", async () => {
+    await load();
+    const r = await page(`return ${JSON.stringify([...SETTINGS_CARDS, ...CARDS])}.map((id) => [id, Boolean(card(id)), collapsed(id)]);`);
+    expect(r.every(([, found, folded]) => found && !folded), `at start: ${JSON.stringify(r)}`);
+  }],
+  ["a Settings card folds, is saved, comes back folded after a restart, and its switches still work", async () => {
+    await load();
+    const r = await page(`
+      tab("settings");
+      const below = card("diagnostics");
+      const topBefore = box(below).top;
+      await toggle("appearance");
+      return { folded: collapsed("appearance"), moved: box(below).top < topBefore - 50, stored: stored().ui.collapsed_cards,
+        feedbackOutside: !$("settings-feedback").closest(".card") };`);
+    expect(r.folded && r.moved, `Appearance did not fold: ${JSON.stringify(r)}`);
+    expect(same(r.stored, ["appearance"]), `stored ${JSON.stringify(r.stored)}`);
+    expect(r.feedbackOutside, "the Settings feedback line is inside a card");
+    await load(`?collapsed=${r.stored.join(",")}`);
+    const again = await page(`
+      const folded = [collapsed("appearance"), collapsed("diagnostics")];
+      tab("settings"); await toggle("diagnostics"); await toggle("diagnostics");
+      $("diagnostics-memory-label").click(); await sleep(400);
+      return { folded, memory: stored().diagnostics.memory, list: stored().ui.collapsed_cards };`);
+    expect(same(again.folded, [true, false]), `after a restart: ${again.folded}`);
+    expect(again.memory === true, "a Diagnostics switch did not toggle after the card was expanded again");
+    expect(same(again.list, ["appearance"]), `stored ${JSON.stringify(again.list)}`);
+  }],
+  ["a card collapses and expands from its title, and the state is saved", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      const below = $("card-assistant-body").closest(".card");
+      const topBefore = box(below).top;
+      await toggle("audio");
+      const folded = { collapsed: collapsed("audio"), stored: stored().ui.collapsed_cards, moved: box(below).top < topBefore - 50,
+        saves: calls("save_settings").length };
+      await toggle("audio");
+      return { folded, open: !collapsed("audio"), stored: stored().ui.collapsed_cards, back: Math.abs(box(below).top - topBefore) < 1 };`);
+    expect(r.folded.collapsed, "the Audio card did not collapse");
+    expect(same(r.folded.stored, ["audio"]), `stored ${JSON.stringify(r.folded.stored)}`);
+    expect(r.folded.moved, "the cards below did not move up");
+    expect(r.open && same(r.stored, []) && r.back, `expanding: ${JSON.stringify(r)}`);
+  }],
+  ["keyboard: Enter and Space on the focused title collapse and expand the card", async () => {
+    await load();
+    await page(`tab("config"); card("hotkey").querySelector(".card-toggle").focus(); return true;`);
+    await press("Enter");
+    const afterEnter = await page(`return collapsed("hotkey");`);
+    await press("Space");
+    const afterSpace = await page(`return { collapsed: collapsed("hotkey"), focus: document.activeElement === card("hotkey").querySelector(".card-toggle") };`);
+    expect(afterEnter, "Enter did not collapse the Hotkey card");
+    expect(!afterSpace.collapsed, "Space did not expand it again");
+    expect(afterSpace.focus, "the title lost the focus");
+  }],
+  ["after a restart the collapsed cards are still collapsed", async () => {
+    await load();
+    const list = await page(`tab("config"); await toggle("assistant"); await toggle("hotkey"); return stored().ui.collapsed_cards;`);
+    expect(same(list, ["assistant", "hotkey"]), `stored ${JSON.stringify(list)}`);
+    await load(`?collapsed=${list.join(",")}`);
+    const r = await page(`return ${JSON.stringify(CARDS)}.map((id) => [id, collapsed(id)]);`);
+    expect(same(r, [["discord", false], ["audio", false], ["assistant", true], ["codex", false], ["hotkey", true]]), JSON.stringify(r));
+  }],
+  ["an id this window does not know is kept", async () => {
+    await load("?collapsed=audio,later-card");
+    const r = await page(`
+      const audio = collapsed("audio");
+      tab("config"); await toggle("hotkey");
+      return { audio, stored: stored().ui.collapsed_cards };`);
+    expect(r.audio, "the stored Audio card is not collapsed");
+    expect(same(r.stored, ["later-card", "audio", "hotkey"]), `stored ${JSON.stringify(r.stored)}`);
+  }],
+  ["an unsaved guild id survives collapsing and expanding its card", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      await setValue("config-guild-id", "4242", ["input"]);
+      await toggle("discord"); const folded = collapsed("discord"); await toggle("discord");
+      return { folded, value: $("config-guild-id").value, dirty: $("config-guild-id").closest("label").classList.contains("is-dirty"),
+        stored: stored().discord.guild_id };`);
+    expect(r.folded, "the card did not collapse");
+    expect(r.value === "4242" && r.dirty, `the edit was lost: ${JSON.stringify(r)}`);
+    expect(r.stored === "1091401169441656933", "the edit was saved");
+  }],
+  ["the settings file's location shows with every card collapsed", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      for (const id of ${JSON.stringify(CARDS)}) await toggle(id);
+      const path = $("config-path");
+      return { all: ${JSON.stringify(CARDS)}.every((id) => collapsed(id)), shown: path.offsetParent !== null && box(path).height > 0, text: path.textContent };`);
+    expect(r.all, "not every card collapsed");
+    expect(r.shown && r.text.endsWith("settings.json"), `the location: ${JSON.stringify(r)}`);
+  }],
+  ["Not now in the install dialog with the Assistant card collapsed", async () => {
+    await load("?fresh&collapsed=assistant");
+    const r = await page(`
+      const dialog = $("wake-install");
+      window.__mock.join(); await until(() => dialog.open, 3000);
+      const opened = dialog.open;
+      $("wake-install-secondary").click(); await sleep(300);
+      const still = collapsed("assistant");
+      tab("config"); await toggle("assistant");
+      return { opened, closed: !dialog.open, still, notice: !$("wake-download").hidden };`);
+    expect(r.opened && r.closed, `the dialog: ${JSON.stringify(r)}`);
+    expect(r.still, "the Assistant card expanded by itself");
+    expect(r.notice, "the download notice is not in the Assistant card");
+  }],
+
+  // ---- Switches
+  ["every switch is at least 44 x 24 px at the default font size", async () => {
+    await load();
+    const r = await page(`
+      const out = [];
+      for (const [name, id] of ${JSON.stringify(SWITCHES)}) { tab(name); await sleep(50); const b = box($(id)); out.push([id, Math.round(b.width), Math.round(b.height), $(id).getAttribute("role")]); }
+      return { sizes: out, font: getComputedStyle(document.body).fontSize };`);
+    expect(r.font === "13px", `font size ${r.font}`);
+    for (const [id, width, height, role] of r.sizes) {
+      expect(width >= 44 && height >= 24, `${id} is ${width} x ${height}`);
+      expect(role === "switch", `${id} has role ${role}`);
+    }
+  }],
+  ["a click on the Off text turns the switch on and saves it", async () => {
+    await load();
+    const r = await page(`
+      tab("settings");
+      const before = { checked: $("diagnostics-memory").checked, text: $("diagnostics-memory-label").textContent };
+      $("diagnostics-memory-label").click(); await sleep(400);
+      return { before, checked: $("diagnostics-memory").checked, text: $("diagnostics-memory-label").textContent, stored: stored().diagnostics.memory };`);
+    expect(!r.before.checked && r.before.text === "Off", JSON.stringify(r.before));
+    expect(r.checked && r.text === "On" && r.stored === true, JSON.stringify(r));
+  }],
+  ["Space on the focused switch toggles and saves it, with a visible focus mark", async () => {
+    await load();
+    await page(`tab("settings"); $("diagnostics-verbose-log").focus(); return true;`);
+    await press("Space");
+    const r = await page(`
+      const s = getComputedStyle($("diagnostics-verbose-log"));
+      return { checked: $("diagnostics-verbose-log").checked, stored: stored().diagnostics.verbose_log, outline: s.outlineStyle, outlineWidth: s.outlineWidth };`);
+    expect(r.checked && r.stored === true, `Space: ${JSON.stringify(r)}`);
+    expect(r.outline === "solid" && r.outlineWidth === "2px", `focus mark: ${r.outline} ${r.outlineWidth}`);
+  }],
+  ["the Earcons switch and the Earcon volume slider share their name line and their control line", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      const nameTop = (id) => { const label = $(id).closest("label"); const range = document.createRange(); range.selectNodeContents([...label.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim())); return range.getBoundingClientRect().top; };
+      return { names: [nameTop("earcons"), nameTop("earcon-volume")], controls: [box($("earcons")).mid, box($("earcon-volume")).mid] };`);
+    expect(Math.abs(r.names[0] - r.names[1]) < 1, `names ${r.names}`);
+    expect(Math.abs(r.controls[0] - r.controls[1]) <= 3, `controls ${r.controls}`);
+  }],
+  ["the Performance tab's switch and the Diagnostics card stay mirrored", async () => {
+    await load();
+    const r = await page(`
+      tab("performance"); $("performance-monitoring").click(); await sleep(400);
+      return { card: $("diagnostics-performance").checked, text: $("diagnostics-performance-label").textContent,
+        own: $("performance-monitoring-label").textContent, stored: stored().diagnostics.performance };`);
+    expect(r.card && r.text === "On" && r.own === "On" && r.stored === true, JSON.stringify(r));
+  }],
+
+  // ---- Codex lists
+  ["the saved lists fill the Model, Reasoning and Voice lists at load", async () => {
+    await load();
+    const r = await page(`
+      return { models: [...$("codex-model-select").options].map((o) => o.value), model: $("codex-model-select").value,
+        modelText: $("codex-model").style.display, voices: [...$("codex-voice-select").options].map((o) => o.value),
+        efforts: $("codex-effort-select").options.length, read: $("codex-lists-read").textContent, checks: calls("codex_check").length };`);
+    expect(same(r.models, ["", "model-a", "model-b"]), `models ${r.models}`);
+    expect(r.model === "" && r.modelText === "none", `the stored (empty) model is not selected in a list: ${JSON.stringify(r)}`);
+    expect(same(r.voices, ["", "cove", "juniper", "maple"]), `voices ${r.voices}`);
+    expect(r.efforts > 1, "no reasoning list");
+    expect(r.read === "Read 2026-11-14 18:30", `read time: ${r.read}`);
+    expect(r.checks === 0, "the window read Codex at load");
+  }],
+  ["never read: free text and \"Never read\"", async () => {
+    await load("?nolists");
+    const r = await page(`return { options: $("codex-model-select").options.length, text: $("codex-model").style.display, read: $("codex-lists-read").textContent };`);
+    expect(r.options === 0 && r.text === "", `the model is not free text: ${JSON.stringify(r)}`);
+    expect(r.read === "Never read", `read: ${r.read}`);
+  }],
+  ["Refresh lists: the button waits, then the new time and the new model, the choice kept", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      await setValue("codex-model-select", "model-b", ["change"]);
+      window.__mock.nextCheckAddsModel();
+      $("codex-lists-refresh").click(); await sleep(60);
+      const during = { disabled: $("codex-lists-refresh").disabled, text: $("codex-lists-read").textContent };
+      await until(() => !$("codex-lists-refresh").disabled, 4000); await sleep(200);
+      return { during, stored: stored().codex.model, models: [...$("codex-model-select").options].map((o) => o.value),
+        selected: $("codex-model-select").value, read: $("codex-lists-read").textContent, error: $("codex-lists-read").classList.contains("is-error"),
+        checks: calls("codex_check").length };`);
+    expect(r.stored === "model-b", `the choice was not saved: ${r.stored}`);
+    expect(r.during.disabled && r.during.text === "Reading…", `while reading: ${JSON.stringify(r.during)}`);
+    expect(r.checks === 1, `${r.checks} checks`);
+    expect(r.models.includes("model-c"), `the new model is missing: ${r.models}`);
+    expect(r.selected === "model-b", `the choice changed to ${r.selected}`);
+    expect(/^Read \d{4}-\d\d-\d\d \d\d:\d\d$/.test(r.read) && r.read !== "Read 2026-11-14 18:30" && !r.error, `read time: ${r.read}`);
+  }],
+  ["a failed refresh shows why and keeps the lists", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      window.__mock.failNextCheck();
+      $("codex-lists-refresh").click();
+      await until(() => !$("codex-lists-refresh").disabled && $("codex-lists-read").textContent !== "Reading…", 4000); await sleep(200);
+      return { read: $("codex-lists-read").textContent, error: $("codex-lists-read").classList.contains("is-error"),
+        models: $("codex-model-select").options.length, enabled: !$("codex-lists-refresh").disabled };`);
+    expect(r.read.startsWith("Not read: codex not found") && r.error, `the error: ${r.read}`);
+    expect(r.models === 3 && r.enabled, `the lists or the button: ${JSON.stringify(r)}`);
+  }],
+  ["turning the switch on saves it and reads nothing from Codex", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      const since = window.__mock.calls.length;
+      $("codex-refresh-lists").click(); await sleep(500);
+      const names = [...new Set(window.__mock.calls.slice(since).map((c) => c.name))];
+      return { names, stored: stored().codex.refresh_lists_at_start, text: $("codex-refresh-lists-label").textContent, feedback: $("config-autosave-feedback").textContent };`);
+    expect(r.stored === true && r.text === "On", JSON.stringify(r));
+    expect(!r.names.some((name) => ["codex_check", "codex_models", "codex_sign_in"].includes(name)), `called ${r.names}`);
+    expect(r.feedback === "Saved: Refresh the lists at start", `feedback: ${r.feedback}`);
+  }],
+];
+
+let failed = false;
+try {
+  await connect();
+  for (const [name, run] of scenarios) {
+    try {
+      pageErrors.length = 0;
+      await run();
+      expect(pageErrors.length === 0, `page errors: ${pageErrors.join("; ")}`);
+      console.log(`ok   ${name}`);
+    } catch (error) {
+      console.log(`FAIL ${name}: ${error.message}`);
+      failed = true;
+      break;
+    }
+  }
+} catch (error) {
+  console.log(`FAIL setup: ${error.message}`);
+  failed = true;
+} finally {
+  ws?.close();
+  stop();
+}
+console.log(failed ? "the Config tab check failed" : `all ${scenarios.length} Config tab scenarios passed`);
+process.exit(failed ? 1 : 0);
