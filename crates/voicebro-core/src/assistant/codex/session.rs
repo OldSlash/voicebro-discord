@@ -56,7 +56,15 @@ struct SessionState {
     last_error: Option<String>,
     last_user_text: Option<String>,
     last_assistant_text: Option<String>,
+    /// The people's transcript of the current turn, joined from its pieces, apart from the
+    /// voice's (change `voice-recognition-rework`, design D2), and the turn's number.
+    people_text: String,
+    people_turn: u64,
 }
+
+/// The transcript role of the people's speech (`role` of `thread/realtime/transcript/*`,
+/// checked in the Codex CLI 0.167.0 schema); the voice's own speech has another role.
+const PEOPLE_ROLE: &str = "user";
 
 /// The turn id of `turn/started` and `turn/completed` (`turn.id`, checked in the Codex CLI
 /// 0.167.0 schema).
@@ -288,6 +296,8 @@ impl CodexSession {
                 last_error: None,
                 last_user_text: None,
                 last_assistant_text: None,
+                people_text: String::new(),
+                people_turn: 0,
             }),
             rtc: Mutex::new(None),
             report: CallReport::with_learned(parts.guild, parts.learned_depth),
@@ -830,12 +840,51 @@ impl CodexSession {
                     let mut state = self.lock();
                     state.realtime = Realtime::Live;
                     state.last_error = None;
+                    // A new call starts a new turn of the people's transcript.
+                    if !state.people_text.is_empty() {
+                        state.people_text.clear();
+                        state.people_turn += 1;
+                    }
                 }
                 self.emit("voice session is live");
                 self.chat("system", None, "Call in progress.");
             }
+            "thread/realtime/transcript/delta" => {
+                let role = params.get("role").and_then(Value::as_str).unwrap_or("");
+                let delta = params.get("delta").and_then(Value::as_str).unwrap_or("");
+                if role != PEOPLE_ROLE || delta.is_empty() {
+                    return;
+                }
+                let joined = {
+                    let mut state = self.lock();
+                    if state.realtime != Realtime::Live {
+                        None
+                    } else {
+                        state.people_text.push_str(delta);
+                        Some((state.people_turn, state.people_text.clone()))
+                    }
+                };
+                // Outside the session's locks: the gate may end the session from inside.
+                if let Some((turn, text)) = joined {
+                    self.ports.heard.on_heard(self.guild, turn, &text, false);
+                }
+            }
             "thread/realtime/transcript/done" => {
                 let role = params.get("role").and_then(Value::as_str).unwrap_or("");
+                if role == PEOPLE_ROLE {
+                    let full = params.get("text").and_then(Value::as_str).unwrap_or("");
+                    let finished = {
+                        let mut state = self.lock();
+                        let turn = state.people_turn;
+                        let live = state.realtime == Realtime::Live;
+                        state.people_text.clear();
+                        state.people_turn += 1;
+                        live.then_some(turn)
+                    };
+                    if let Some(turn) = finished {
+                        self.ports.heard.on_heard(self.guild, turn, full, true);
+                    }
+                }
                 let text = params
                     .get("text")
                     .and_then(Value::as_str)
@@ -1207,6 +1256,7 @@ mod tests {
                 output,
                 failures: crate::audio::codec::CodecFailures::none(),
                 answers: crate::assistant::AnswerSink::none(),
+                heard: crate::assistant::no_heard(),
             },
             chat: Arc::clone(&chat),
             events: events.clone(),
@@ -1248,6 +1298,19 @@ mod tests {
         Arc<AppServer>,
         tokio::sync::mpsc::Receiver<AgentAnswer>,
     )> {
+        session_with_sinks(runtime, dir, crate::assistant::no_heard())
+    }
+
+    /// The same, handing the people's transcripts to `heard`.
+    fn session_with_sinks(
+        runtime: &tokio::runtime::Runtime,
+        dir: &std::path::Path,
+        heard: Arc<dyn crate::assistant::HeardSink>,
+    ) -> Option<(
+        Arc<CodexSession>,
+        Arc<AppServer>,
+        tokio::sync::mpsc::Receiver<AgentAnswer>,
+    )> {
         use crate::audio::{frame_channel, output_pair, INPUT_CAPACITY};
         let node = std::process::Command::new("node").arg("--version").output();
         if !node.is_ok_and(|output| output.status.success()) {
@@ -1283,6 +1346,7 @@ mod tests {
                 output,
                 failures: crate::audio::codec::CodecFailures::none(),
                 answers,
+                heard,
             },
             chat: Arc::new(ChatLog::new(events.clone(), dir.to_path_buf())),
             events: events.clone(),
@@ -1454,6 +1518,113 @@ mod tests {
             Some("Find the weather in Bangkok tomorrow (4)"),
             "the interrupted and the failed task sent nothing"
         );
+        server.kill();
+    }
+
+    /// Records what reaches the gate and, when given the session, ends it from inside the
+    /// call as the gate's deactivation does.
+    #[derive(Default)]
+    struct Heard {
+        seen: Mutex<Vec<(u64, String, bool)>>,
+        ends: Mutex<Option<Weak<CodexSession>>>,
+    }
+
+    impl crate::assistant::HeardSink for Heard {
+        fn on_heard(&self, guild: u64, turn: u64, text: &str, done: bool) {
+            assert_eq!(guild, 7);
+            self.seen
+                .lock()
+                .unwrap()
+                .push((turn, text.to_owned(), done));
+            let session = self.ends.lock().unwrap().as_ref().and_then(Weak::upgrade);
+            if let Some(session) = session {
+                session.session_wanted(false);
+            }
+        }
+    }
+
+    /// Task 5.5, the `codex-assistant` delta: the people's pieces reach the sink joined per
+    /// turn while the call is live, the voice's never do, nothing after a stop, and a sink
+    /// that ends the session from inside the call does not deadlock.
+    #[test]
+    fn the_peoples_transcript_reaches_the_gate_joined_per_turn_while_live() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let heard = Arc::new(Heard::default());
+        let Some((session, server, _answers)) =
+            session_with_sinks(&runtime, dir.path(), heard.clone())
+        else {
+            return;
+        };
+        server.map_thread("fake-thread", Arc::downgrade(&session));
+        let send = |method: &str, params: Value| {
+            runtime
+                .block_on(server.request(
+                    "fake/transcript",
+                    json!({ "threadId": "fake-thread", "method": method, "params": params }),
+                ))
+                .expect("the fake sends the notification");
+        };
+        let delta = |role: &str, text: &str| {
+            send(
+                "thread/realtime/transcript/delta",
+                json!({ "role": role, "delta": text }),
+            )
+        };
+        let wait_for = |count: usize| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while heard.seen.lock().unwrap().len() < count && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            heard.seen.lock().unwrap().clone()
+        };
+
+        delta("user", " before the call");
+        send(
+            "thread/realtime/started",
+            json!({ "realtimeSessionId": "rs-1" }),
+        );
+        assert!(wait_for(1).is_empty(), "nothing before the call is live");
+
+        delta("user", " Good");
+        delta("assistant", " Okay, goodbye");
+        delta("user", "bye");
+        send(
+            "thread/realtime/transcript/done",
+            json!({ "role": "assistant", "text": "Okay, goodbye" }),
+        );
+        send(
+            "thread/realtime/transcript/done",
+            json!({ "role": "user", "text": "Goodbye." }),
+        );
+        delta("user", " next");
+        assert_eq!(
+            wait_for(4),
+            vec![
+                (0, " Good".to_owned(), false),
+                (0, " Goodbye".to_owned(), false),
+                (0, "Goodbye.".to_owned(), true),
+                (1, " next".to_owned(), false),
+            ],
+            "joined per turn; the voice's pieces never"
+        );
+
+        // A sink that ends the session from inside the call.
+        *heard.ends.lock().unwrap() = Some(Arc::downgrade(&session));
+        delta("user", " отбой");
+        assert_eq!(wait_for(5).len(), 5);
+        assert_ne!(session.realtime(), Realtime::Live, "the session was ended");
+        *heard.ends.lock().unwrap() = None;
+
+        // After the stop nothing reaches the gate.
+        session.lock().realtime = Realtime::Idle;
+        delta("user", " late piece");
+        send(
+            "thread/realtime/transcript/done",
+            json!({ "role": "user", "text": "late" }),
+        );
+        assert_eq!(wait_for(6).len(), 5, "nothing after the stop");
         server.kill();
     }
 

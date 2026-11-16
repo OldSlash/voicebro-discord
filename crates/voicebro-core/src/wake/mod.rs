@@ -14,7 +14,7 @@ pub mod vosk;
 pub mod worker;
 
 use crate::events::{AppEvent, EventBus};
-use crate::settings::{local_model_folder, normalize_phrases, SessionMode, Settings};
+use crate::settings::{local_model_folder, phrase_words, SessionMode, Settings};
 use catalog::{Asset, ModelEntry};
 use local::LocalModel;
 use serde::Serialize;
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// 16 kHz mono: what every recognizer consumes.
 pub const RECOGNIZER_SAMPLE_RATE: u32 = 16_000;
@@ -124,9 +124,38 @@ pub trait WakeEngine: Send + Sync {
     fn load(&self, assets_dir: &Path, model_dir: &Path) -> Result<Box<dyn LoadedModel>, WakeError>;
 }
 
+/// What a confirmed phrase did, so the worker's decision line names the real reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhraseOutcome {
+    /// The session started or ended.
+    Applied,
+    /// An activation during a session, or a deactivation without one.
+    AlreadyInState,
+    /// An activation within [`REACTIVATION_GUARD`] of a deactivation from either source.
+    RightAfterDeactivation,
+    /// Muted, always mode, or no voice channel in that guild.
+    NotListening,
+}
+
+impl PhraseOutcome {
+    /// How the decision line words it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Applied => "applied",
+            Self::AlreadyInState => "ignored (the session is already in that state)",
+            Self::RightAfterDeactivation => "ignored right after a deactivation",
+            Self::NotListening => "ignored (not listening: muted, always mode or no voice channel)",
+        }
+    }
+}
+
+/// After a deactivation, from the wake engine or the call's transcript, activation phrases
+/// are ignored this long, so the end of a goodbye heard by another member's microphone does
+/// not start a new session. The gate keeps it.
+pub const REACTIVATION_GUARD: Duration = Duration::from_millis(1_500);
+
 /// Receives confirmed phrases. The session gate implements it.
 pub trait PhraseSink: Send + Sync {
-    /// Returns whether the phrase changed anything (so the worker can log it).
     fn on_phrase(
         &self,
         guild: u64,
@@ -134,29 +163,68 @@ pub trait PhraseSink: Send + Sync {
         phrase: &str,
         ssrc: u32,
         since_phrase_end: Duration,
-    ) -> bool;
+    ) -> PhraseOutcome;
 }
 
-/// Receives each speaker's 48 kHz stereo frames from the receive path.
+/// Receives each speaker's 48 kHz stereo frames from the receive path, numbered by the
+/// guild's receive tick, and the end of each tick. The engine counts a speaker's absence in
+/// these ticks, never by when it processes the audio (design D1).
 pub trait WakeFeed: Send + Sync {
-    fn feed(&self, guild: u64, ssrc: u32, frame: &[i16]);
+    /// One speaker's frame of receive tick `tick`.
+    fn feed(&self, guild: u64, ssrc: u32, tick: u64, frame: &[i16]);
+    /// Every speaker's frame of `tick` has been fed.
+    fn tick(&self, guild: u64, tick: u64);
 }
 
-/// Activation and deactivation phrases, normalized.
+/// A phrase as the user typed it (trimmed), for the log and the status, and its words in
+/// the matching form ([`crate::settings::phrase_words`]), which every comparison uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phrase {
+    pub text: String,
+    pub words: Vec<String>,
+}
+
+impl Phrase {
+    /// `None` for a phrase with no letter or digit: it is no phrase.
+    pub fn new(text: &str) -> Option<Self> {
+        let words = phrase_words(text);
+        (!words.is_empty()).then(|| Self {
+            text: text.trim().to_owned(),
+            words,
+        })
+    }
+
+    /// The phrases of a list, the empty ones dropped.
+    pub fn list(texts: &[String]) -> Vec<Phrase> {
+        texts.iter().filter_map(|text| Self::new(text)).collect()
+    }
+
+    /// The texts of `phrases`, as the status and the log show them.
+    pub fn texts(phrases: &[Phrase]) -> Vec<String> {
+        phrases.iter().map(|phrase| phrase.text.clone()).collect()
+    }
+}
+
+/// Activation and deactivation phrases in effect.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PhraseSet {
-    pub activation: Vec<String>,
-    pub deactivation: Vec<String>,
+    pub activation: Vec<Phrase>,
+    pub deactivation: Vec<Phrase>,
 }
 
 impl PhraseSet {
-    /// The selected model's phrases; other models' phrases are not spotted.
+    pub fn new(activation: &[String], deactivation: &[String]) -> Self {
+        Self {
+            activation: Phrase::list(activation),
+            deactivation: Phrase::list(deactivation),
+        }
+    }
+
+    /// The selected model's phrases, stored or default; other models' phrases are not
+    /// spotted.
     pub fn from_settings(settings: &Settings) -> Self {
         let selected = settings.wake.selected_phrases();
-        Self {
-            activation: normalize_phrases(&selected.activation),
-            deactivation: normalize_phrases(&selected.deactivation),
-        }
+        Self::new(&selected.activation, &selected.deactivation)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -242,6 +310,17 @@ pub struct ModelInfo {
     pub installed: bool,
     /// The size of the model's download; 0 for a local model.
     pub bytes: u64,
+    /// The phrases a list never set falls back to (a local model: its language's).
+    pub default_activation: Vec<String>,
+    pub default_deactivation: Vec<String>,
+}
+
+/// The default phrases of a model id as owned lists, empty when it has none.
+fn default_lists(model: &str) -> (Vec<String>, Vec<String>) {
+    let owned = |list: &[&str]| list.iter().map(|phrase| (*phrase).to_owned()).collect();
+    catalog::default_phrases(model)
+        .map(|(activation, deactivation)| (owned(activation), owned(deactivation)))
+        .unwrap_or_default()
 }
 
 /// Decimal megabytes, rounded, as the window shows sizes (41,205,931 bytes → 41).
@@ -287,7 +366,17 @@ pub(crate) enum WakeMessage {
     Audio {
         guild: u64,
         ssrc: u32,
+        /// The guild's receive tick the frame belongs to.
+        tick: u64,
+        /// When the gate fed it, for the lag line (design D5).
+        at: Instant,
         samples: Vec<i16>,
+    },
+    /// Every speaker's frame of `tick` was fed before this.
+    Tick {
+        guild: u64,
+        tick: u64,
+        at: Instant,
     },
     SetPhrases(PhraseSet),
     Stop,
@@ -414,25 +503,36 @@ impl WakeManager {
     /// Every model the window can offer: the catalog's, with whether each is downloaded,
     /// then the models folder's from the last scan.
     pub fn models(&self) -> Vec<ModelInfo> {
-        let catalog = catalog::entries().iter().map(|entry| ModelInfo {
-            id: entry.id.to_owned(),
-            engine: entry.engine.to_owned(),
-            language: entry.language.to_owned(),
-            display_name: entry.display_name.to_owned(),
-            license: entry.license.to_owned(),
-            source: "catalog",
-            installed: assets::is_installed(&self.inner.assets_dir, &entry.asset),
-            bytes: entry.asset.size,
+        let catalog = catalog::entries().iter().map(|entry| {
+            let (default_activation, default_deactivation) = default_lists(entry.id);
+            ModelInfo {
+                id: entry.id.to_owned(),
+                engine: entry.engine.to_owned(),
+                language: entry.language.to_owned(),
+                display_name: entry.display_name.to_owned(),
+                license: entry.license.to_owned(),
+                source: "catalog",
+                installed: assets::is_installed(&self.inner.assets_dir, &entry.asset),
+                bytes: entry.asset.size,
+                default_activation,
+                default_deactivation,
+            }
         });
-        let local = self.local_models().into_iter().map(|model| ModelInfo {
-            id: model.id(),
-            engine: catalog::VOSK_ENGINE.to_owned(),
-            display_name: model.folder.clone(),
-            language: model.language,
-            license: String::new(),
-            source: "local",
-            installed: true,
-            bytes: 0,
+        let local = self.local_models().into_iter().map(|model| {
+            let id = model.id();
+            let (default_activation, default_deactivation) = default_lists(&id);
+            ModelInfo {
+                id,
+                engine: catalog::VOSK_ENGINE.to_owned(),
+                display_name: model.folder.clone(),
+                language: model.language,
+                license: String::new(),
+                source: "local",
+                installed: true,
+                bytes: 0,
+                default_activation,
+                default_deactivation,
+            }
         });
         catalog.chain(local).collect()
     }
@@ -500,8 +600,8 @@ impl WakeManager {
             let mut status = self.inner.status.lock().expect("wake status lock");
             status.engine = settings.wake.engine.clone();
             status.model = settings.wake.model.clone();
-            status.activation_phrases = phrases.activation.clone();
-            status.deactivation_phrases = phrases.deactivation.clone();
+            status.activation_phrases = Phrase::texts(&phrases.activation);
+            status.deactivation_phrases = Phrase::texts(&phrases.deactivation);
         }
         if settings.session.mode != SessionMode::WakeWord {
             self.stop();
@@ -783,28 +883,53 @@ impl WakeManager {
     }
 }
 
-impl WakeFeed for WakeManager {
-    fn feed(&self, guild: u64, ssrc: u32, frame: &[i16]) {
+impl WakeManager {
+    /// Hands a message to the worker without waiting; returns `false` when the queue was
+    /// full.
+    fn send(&self, message: WakeMessage) -> bool {
         if !self.is_enabled() {
-            return;
+            return true;
         }
         let sender = self.inner.sender.lock().expect("sender lock").clone();
         let Some(sender) = sender else {
-            return;
+            return true;
         };
-        match sender.try_send(WakeMessage::Audio {
-            guild,
-            ssrc,
-            samples: frame.to_vec(),
-        }) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
-                self.inner.dropped.fetch_add(1, Ordering::Relaxed);
-            }
+        match sender.try_send(message) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => false,
             Err(TrySendError::Disconnected(_)) => {
                 self.inner.sender.lock().expect("sender lock").take();
+                true
             }
         }
+    }
+}
+
+impl WakeFeed for WakeManager {
+    fn feed(&self, guild: u64, ssrc: u32, tick: u64, frame: &[i16]) {
+        if !self.is_enabled() {
+            return;
+        }
+        let queued = self.send(WakeMessage::Audio {
+            guild,
+            ssrc,
+            tick,
+            at: Instant::now(),
+            samples: frame.to_vec(),
+        });
+        if !queued {
+            self.inner.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// A tick that finds the queue full is lost; the next one carries the count, so the
+    /// trailing silence is only late, never wrong (design D1).
+    fn tick(&self, guild: u64, tick: u64) {
+        self.send(WakeMessage::Tick {
+            guild,
+            tick,
+            at: Instant::now(),
+        });
     }
 }
 
@@ -815,9 +940,26 @@ mod tests {
 
     struct NoSink;
     impl PhraseSink for NoSink {
-        fn on_phrase(&self, _: u64, _: PhraseKind, _: &str, _: u32, _: Duration) -> bool {
-            false
+        fn on_phrase(&self, _: u64, _: PhraseKind, _: &str, _: u32, _: Duration) -> PhraseOutcome {
+            PhraseOutcome::NotListening
         }
+    }
+
+    fn lists(activation: &[&str], deactivation: &[&str]) -> crate::settings::ModelPhrases {
+        let owned = |list: &[&str]| Some(list.iter().map(|p| (*p).to_owned()).collect());
+        crate::settings::ModelPhrases {
+            activation: owned(activation),
+            deactivation: owned(deactivation),
+        }
+    }
+
+    /// The defaults with the selected model's two lists set to empty by the user.
+    fn without_phrases(mut settings: Settings) -> Settings {
+        settings
+            .wake
+            .phrases
+            .insert(settings.wake.model.clone(), lists(&[], &[]));
+        settings
     }
 
     #[test]
@@ -830,7 +972,7 @@ mod tests {
             EventBus::new(8),
             Arc::new(NoSink),
         );
-        let mut settings = Settings::default();
+        let mut settings = without_phrases(Settings::default());
         settings.session.mode = SessionMode::Always;
         manager.configure(&settings);
         assert_eq!(manager.status().state, WakeState::Off);
@@ -851,13 +993,10 @@ mod tests {
             Arc::new(NoSink),
         );
         let mut settings = Settings::default();
-        settings.wake.phrases.insert(
-            settings.wake.model.clone(),
-            crate::settings::ModelPhrases {
-                activation: vec!["alpha".to_owned()],
-                deactivation: Vec::new(),
-            },
-        );
+        settings
+            .wake
+            .phrases
+            .insert(settings.wake.model.clone(), lists(&["alpha"], &[]));
         manager.configure(&settings);
         for _ in 0..50 {
             if matches!(manager.status().state, WakeState::Error { .. }) {
@@ -872,8 +1011,10 @@ mod tests {
         );
     }
 
+    /// Scenario "Phrases of another model": the selected model's defaults are in effect,
+    /// the other model's phrases are not.
     #[test]
-    fn phrases_of_another_model_leave_the_selected_one_without_phrases() {
+    fn phrases_of_another_model_leave_the_selected_one_with_its_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let manager = WakeManager::new(
             Vec::new(),
@@ -885,16 +1026,40 @@ mod tests {
         let mut settings = Settings::default();
         settings.wake.phrases.insert(
             catalog::RUSSIAN_SMALL.to_owned(),
-            crate::settings::ModelPhrases {
-                activation: vec!["братан".to_owned()],
-                deactivation: vec!["спасибо братан".to_owned()],
-            },
+            lists(&["братан"], &["спасибо братан"]),
         );
         assert_ne!(settings.wake.model, catalog::RUSSIAN_SMALL);
         manager.configure(&settings);
         let status = manager.status();
-        assert_eq!(status.state, WakeState::NoPhrases);
-        assert!(status.activation_phrases.is_empty(), "{status:?}");
+        assert_eq!(status.activation_phrases, ["bro"], "{status:?}");
+        assert_eq!(status.deactivation_phrases, ["peace out"]);
+        assert_eq!(
+            PhraseSet::from_settings(&settings).activation[0].words,
+            ["bro"]
+        );
+    }
+
+    /// Scenario "No phrases configured", and "No phrases and no files" below it.
+    #[test]
+    fn both_lists_emptied_by_the_user_are_no_phrases() {
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, fetched) = counting_manager(dir.path());
+        let marker = dir
+            .path()
+            .join("assets")
+            .join(TEST_ASSET.directory)
+            .join(TEST_ASSET.marker);
+        manager.configure(&without_phrases(Settings::default()));
+        assert!(
+            matches!(manager.status().state, WakeState::NeedsDownload { .. }),
+            "files first: {:?}",
+            manager.status().state
+        );
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, b"").unwrap();
+        manager.configure(&without_phrases(Settings::default()));
+        assert_eq!(manager.status().state, WakeState::NoPhrases);
+        assert_eq!(fetched.load(Ordering::SeqCst), 0);
         assert!(!manager.is_enabled());
     }
 
@@ -944,13 +1109,10 @@ mod tests {
     fn local_settings(folder: &str) -> Settings {
         let mut settings = Settings::default();
         settings.wake.model = format!("local:{folder}");
-        settings.wake.phrases.insert(
-            settings.wake.model.clone(),
-            crate::settings::ModelPhrases {
-                activation: vec!["hallo".to_owned()],
-                deactivation: Vec::new(),
-            },
-        );
+        settings
+            .wake
+            .phrases
+            .insert(settings.wake.model.clone(), lists(&["hallo"], &[]));
         settings
     }
 
@@ -1060,13 +1222,10 @@ mod tests {
 
     fn english_with_phrases() -> Settings {
         let mut settings = Settings::default();
-        settings.wake.phrases.insert(
-            settings.wake.model.clone(),
-            crate::settings::ModelPhrases {
-                activation: vec!["bro".to_owned()],
-                deactivation: Vec::new(),
-            },
-        );
+        settings
+            .wake
+            .phrases
+            .insert(settings.wake.model.clone(), lists(&["bro"], &[]));
         settings
     }
 
@@ -1190,7 +1349,7 @@ mod tests {
     fn no_phrases_and_missing_files_ask_for_the_download_at_once() {
         let dir = tempfile::tempdir().unwrap();
         let (manager, fetched) = counting_manager(dir.path());
-        manager.configure(&Settings::default());
+        manager.configure(&without_phrases(Settings::default()));
         // Checked in `configure` itself: the window sees it right after a save or a start.
         assert!(
             matches!(&manager.status().state, WakeState::NeedsDownload { items } if items.len() == 1),
@@ -1212,9 +1371,15 @@ mod tests {
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::write(&marker, b"").unwrap();
         let (manager, fetched) = counting_manager(dir.path());
-        manager.configure(&Settings::default());
+        manager.configure(&without_phrases(Settings::default()));
         assert_eq!(manager.status().state, WakeState::NoPhrases);
         assert_eq!(fetched.load(Ordering::SeqCst), 0);
+        // Scenario "A new user": no settings file, the model on disk, the defaults load.
+        manager.configure(&Settings::default());
+        assert_eq!(
+            wait_for(&manager, |state| *state == WakeState::Ready),
+            WakeState::Ready
+        );
     }
 
     #[test]
@@ -1239,7 +1404,7 @@ mod tests {
     fn an_agreed_download_without_phrases_ends_in_no_phrases() {
         let dir = tempfile::tempdir().unwrap();
         let (manager, fetched) = counting_manager(dir.path());
-        manager.configure(&Settings::default());
+        manager.configure(&without_phrases(Settings::default()));
         manager
             .download(catalog::default_entry().id)
             .expect("waiting for the OK");
@@ -1303,7 +1468,11 @@ mod tests {
             "French is not the selected model"
         );
         manager.download(german).expect("German waits for the OK");
-        wait_for(&manager, |state| *state == WakeState::NoPhrases);
+        assert_eq!(
+            wait_for(&manager, |state| *state == WakeState::Ready),
+            WakeState::Ready,
+            "German loads with its default phrases"
+        );
         assert_eq!(*fetched.lock().unwrap(), [german]);
 
         settings.wake.model = french.to_owned();
@@ -1530,7 +1699,7 @@ mod tests {
             events,
             Arc::new(NoSink),
         );
-        manager.configure(&Settings::default());
+        manager.configure(&without_phrases(Settings::default()));
         manager.download(catalog::default_entry().id).unwrap();
         assert_eq!(
             wait_for(&manager, |state| *state == WakeState::NoPhrases),

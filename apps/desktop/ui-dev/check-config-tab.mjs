@@ -637,6 +637,72 @@ const scenarios = [
     expect(r.folded && r.open, JSON.stringify(r));
     expect(r.command === "/link K7QF-2M9X" && r.shown && r.countdown.endsWith("left"), JSON.stringify(r));
   }],
+
+  // ---- Phrase fields (change `voice-recognition-rework`)
+  ["phrases of several words between commas are saved in order and shown joined with commas", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      await setValue("deactivation-phrases", "Отбой братан, Заканчивай,  Братан всё ");
+      await setValue("activation-phrases", "братан\\nбро");
+      const model = stored().wake.phrases["vosk-model-small-ru-0.22"];
+      return { deactivation: model.deactivation, activation: model.activation,
+        shown: $("deactivation-phrases").value, shownActivation: $("activation-phrases").value };`);
+    expect(same(r.deactivation, ["Отбой братан", "Заканчивай", "Братан всё"]), `stored ${JSON.stringify(r.deactivation)}`);
+    expect(r.shown === "Отбой братан, Заканчивай, Братан всё", `shown ${r.shown}`);
+    expect(same(r.activation, ["братан", "бро"]) && r.shownActivation === "братан, бро", "a line break also separates");
+  }],
+  ["a first start shows the English model's default phrases and saves nothing for them", async () => {
+    await load("?fresh");
+    const r = await page(`
+      tab("config");
+      $("activation-phrases").focus(); $("activation-phrases").blur(); await sleep(300);
+      return { activation: $("activation-phrases").value, deactivation: $("deactivation-phrases").value,
+        stored: stored().wake.phrases, saves: calls("save_settings").length };`);
+    expect(r.activation === "bro" && r.deactivation === "peace out", JSON.stringify(r));
+    expect(same(r.stored, {}) && r.saves === 0, `an unchanged field saved: ${JSON.stringify(r)}`);
+  }],
+  ["an emptied field saves an empty list and the default does not come back", async () => {
+    await load("?fresh");
+    const r = await page(`
+      tab("config");
+      await setValue("deactivation-phrases", "");
+      window.__mock.emit("app-event", { event: "settings_changed" }); await sleep(600);
+      const english = stored().wake.phrases["vosk-model-small-en-us-0.15"];
+      return { english, field: $("deactivation-phrases").value, activation: $("activation-phrases").value };`);
+    expect(same(r.english, { deactivation: [] }), `stored ${JSON.stringify(r.english)}`);
+    expect(r.field === "" && r.activation === "bro", JSON.stringify(r));
+  }],
+  ["switching the model shows its phrases: defaults the first time, the stored ones after", async () => {
+    await load("?fresh");
+    const r = await page(`
+      tab("config");
+      window.__mock.setInstalled(["vosk-model-small-en-us-0.15", "vosk-model-small-ru-0.22"], true); await sleep(400);
+      const pick = async (id) => { const c = $("wake-model"); c.value = id; c.dispatchEvent(new Event("change", { bubbles: true })); await sleep(500); };
+      await pick("vosk-model-small-ru-0.22");
+      const russian = [$("activation-phrases").value, $("deactivation-phrases").value, document.querySelector("[data-model-name]").textContent];
+      await setValue("deactivation-phrases", "Отбой братан, Заканчивай");
+      await pick("vosk-model-small-en-us-0.15");
+      const english = [$("activation-phrases").value, $("deactivation-phrases").value];
+      await pick("vosk-model-small-ru-0.22");
+      const back = [$("activation-phrases").value, $("deactivation-phrases").value];
+      return { russian, english, back };`);
+    expect(same(r.russian.slice(0, 2), ["братан", "отбой"]) && r.russian[2].includes("Russian"), JSON.stringify(r.russian));
+    expect(same(r.english, ["bro", "peace out"]), JSON.stringify(r.english));
+    expect(same(r.back, ["братан", "Отбой братан, Заканчивай"]), JSON.stringify(r.back));
+  }],
+  ["the help under the phrase fields says commas, several words, the vocabulary and the defaults", async () => {
+    await load();
+    const r = await page(`
+      const help = (id) => $(id).closest("label").querySelector(".field-help").textContent;
+      return [help("activation-phrases"), help("deactivation-phrases")];`);
+    for (const text of r) {
+      for (const part of ["commas", "several words", "vocabulary", "default"]) {
+        expect(text.includes(part), `«${part}» missing in: ${text}`);
+      }
+      expect(!text.includes("Empty by default"), text);
+    }
+  }],
 ];
 
 let failed = false;

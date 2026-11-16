@@ -33,6 +33,29 @@ pub struct AgentAnswer {
 /// refusing or stalling for minutes; a seventeenth is dropped.
 pub const ANSWER_QUEUE: usize = 16;
 
+/// Receives the text of what the people in the channel said, as the assistant's own
+/// recognizer heard it (change `voice-recognition-rework`, design D2). Engine-independent:
+/// any engine hands it over through [`AudioPorts::heard`], and the gate looks for the
+/// deactivation phrase in it. A session hands over nothing of its own voice's speech.
+pub trait HeardSink: Send + Sync {
+    /// The people's speech of `turn` (numbered per session): the text so far, or with
+    /// `done` the turn's final text. Called without any of the session's locks held, since
+    /// the receiver may end the session from inside the call.
+    fn on_heard(&self, guild: u64, turn: u64, text: &str, done: bool);
+}
+
+/// A [`HeardSink`] that drops everything: the stub, the probes and the tests.
+pub struct NoHeard;
+
+impl HeardSink for NoHeard {
+    fn on_heard(&self, _: u64, _: u64, _: &str, _: bool) {}
+}
+
+/// The sink that drops everything, as [`AudioPorts::heard`] takes it.
+pub fn no_heard() -> Arc<dyn HeardSink> {
+    Arc::new(NoHeard)
+}
+
 /// Where a session sends its [`AgentAnswer`]s: a bounded channel to the runtime's handler.
 /// Sending never waits; a full channel drops the new answer with a warning and counts it.
 /// [`AnswerSink::none`] sends nowhere (tests, probes, a stub assistant).
@@ -388,6 +411,7 @@ mod tests {
                     output,
                     failures: CodecFailures::none(),
                     answers: AnswerSink::none(),
+                    heard: no_heard(),
                 },
             )
             .unwrap();
@@ -399,6 +423,7 @@ mod tests {
                     output: output_pair().0,
                     failures: CodecFailures::none(),
                     answers: AnswerSink::none(),
+                    heard: no_heard(),
                 }
             ),
             Err(AssistantError::AlreadyAttached(7))

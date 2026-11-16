@@ -1273,6 +1273,7 @@ mod tests {
                         output,
                         failures: CodecFailures::none(),
                         answers: crate::assistant::AnswerSink::none(),
+                        heard: crate::assistant::no_heard(),
                     },
                 )
                 .unwrap(),
@@ -1322,6 +1323,7 @@ mod tests {
                     output,
                     failures: CodecFailures::none(),
                     answers: crate::assistant::AnswerSink::none(),
+                    heard: crate::assistant::no_heard(),
                 },
             )
             .expect("attach after a preparation");
@@ -1378,27 +1380,7 @@ mod tests {
         samples: &[i16],
         limit: Duration,
     ) -> Option<String> {
-        let started = Instant::now();
-        let mut seed = 5u32;
-        for (index, chunk) in samples.chunks(FRAME_SAMPLES / 2).enumerate() {
-            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-            let jitter = ((seed >> 16) % 15) as i64 - 7;
-            let due = started + Duration::from_millis((20 * index as i64 + 10 + jitter) as u64);
-            if let Some(rest) = due.checked_duration_since(Instant::now()) {
-                std::thread::sleep(rest);
-            }
-            let mut stereo = Vec::with_capacity(FRAME_SAMPLES);
-            for sample in chunk {
-                stereo.push(*sample);
-                stereo.push(*sample);
-            }
-            stereo.resize(FRAME_SAMPLES, 0);
-            let frame = Frame::from_slice(&stereo);
-            if frame.peak() >= crate::gate::VOICE_PEAK_THRESHOLD {
-                latency.lock().unwrap().speech(Instant::now());
-            }
-            sender.send(frame);
-        }
+        feed_speech(sender, latency, samples);
         let deadline = Instant::now() + limit;
         loop {
             sender.send(Frame::silence());
@@ -1422,12 +1404,110 @@ mod tests {
         }
     }
 
-    /// Reads the output every 20 ms like songbird's mixer, counting the frames with signal,
-    /// until `stop` is set.
+    /// Feeds 48 kHz mono speech toward the call as songbird would, one frame per jittery
+    /// 20 ms tick; returns when its last frame was fed.
+    fn feed_speech(
+        sender: &crate::audio::FrameSender,
+        latency: &crate::latency::SharedLatency,
+        samples: &[i16],
+    ) -> Instant {
+        let started = Instant::now();
+        let mut seed = 5u32;
+        for (index, chunk) in samples.chunks(FRAME_SAMPLES / 2).enumerate() {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let jitter = ((seed >> 16) % 15) as i64 - 7;
+            let due = started + Duration::from_millis((20 * index as i64 + 10 + jitter) as u64);
+            if let Some(rest) = due.checked_duration_since(Instant::now()) {
+                std::thread::sleep(rest);
+            }
+            let mut stereo = Vec::with_capacity(FRAME_SAMPLES);
+            for sample in chunk {
+                stereo.push(*sample);
+                stereo.push(*sample);
+            }
+            stereo.resize(FRAME_SAMPLES, 0);
+            let frame = Frame::from_slice(&stereo);
+            if frame.peak() >= crate::gate::VOICE_PEAK_THRESHOLD {
+                latency.lock().unwrap().speech(Instant::now());
+            }
+            sender.send(frame);
+        }
+        Instant::now()
+    }
+
+    /// Records the people's transcript pieces the session hands to the gate, with the time
+    /// each arrived.
+    #[derive(Default)]
+    struct HeardLog(Mutex<Vec<(Instant, u64, String, bool)>>);
+
+    impl crate::assistant::HeardSink for HeardLog {
+        fn on_heard(&self, _: u64, turn: u64, text: &str, done: bool) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((Instant::now(), turn, text.to_owned(), done));
+        }
+    }
+
+    /// What the gate's rule (design D2 of change `voice-recognition-rework`) does with these
+    /// pieces: when the voice is silenced (the first match, held or not) and when the
+    /// session ends (a closed match or a turn's end, or a held match that got no newer
+    /// piece for the hold's time).
+    fn transcript_rule_decision(
+        pieces: &[(Instant, u64, String, bool)],
+        phrases: &[crate::wake::Phrase],
+    ) -> (Option<Instant>, Option<Instant>) {
+        let hold_time = crate::gate::TRANSCRIPT_HOLD;
+        let mut hold: Option<(u64, Instant)> = None;
+        let mut silenced = None;
+        let mut previous: Option<(u64, String, Instant)> = None;
+        for (at, turn, text, done) in pieces {
+            if let Some((held_turn, since)) = hold {
+                if *at >= since + hold_time {
+                    return (silenced, Some(since + hold_time));
+                }
+                if held_turn != *turn {
+                    return (silenced, Some(*at));
+                }
+            }
+            let (joined, earlier) = match previous.as_ref().filter(|(prior, _, ended)| {
+                prior != turn
+                    && at.saturating_duration_since(*ended) <= crate::gate::PREVIOUS_TURN_WINDOW
+            }) {
+                Some((_, prior, _)) => (
+                    format!("{prior} {text}"),
+                    crate::settings::phrase_words(prior).len(),
+                ),
+                None => (text.clone(), 0),
+            };
+            if *done {
+                previous = Some((*turn, text.clone(), *at));
+            }
+            match crate::wake::spotter::transcript_match_after(&joined, phrases, earlier) {
+                Some(found) if !found.open || *done => {
+                    return (silenced.or(Some(*at)), Some(*at));
+                }
+                Some(_) => {
+                    silenced = silenced.or(Some(*at));
+                    hold = Some((*turn, *at));
+                }
+                None => {
+                    // The word went on: the voice comes back.
+                    silenced = None;
+                    hold = None;
+                }
+            }
+        }
+        (silenced, hold.map(|(_, since)| since + hold_time))
+    }
+
+    /// Reads the output every 20 ms like songbird's mixer, counting the frames with signal
+    /// and keeping when each played, until `stop` is set.
     fn spawn_reader(
         mut source: crate::audio::PcmSource,
         stop: Arc<std::sync::atomic::AtomicBool>,
         voiced: Arc<std::sync::atomic::AtomicU64>,
+        voiced_at: Arc<Mutex<Vec<Instant>>>,
     ) -> std::thread::JoinHandle<()> {
         use std::io::Read as _;
         std::thread::spawn(move || {
@@ -1449,6 +1529,7 @@ mod tests {
                     .any(|sample| f32::from_le_bytes(*sample).abs() > 256.0 / 32_768.0);
                 if loud {
                     voiced.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    voiced_at.lock().unwrap().push(Instant::now());
                 }
                 if let Some(rest) = next.checked_duration_since(Instant::now()) {
                     std::thread::sleep(rest);
@@ -1516,7 +1597,14 @@ mod tests {
         output.use_latency(Arc::clone(&latency), 1);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let voiced = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let reader = spawn_reader(source, Arc::clone(&stop), Arc::clone(&voiced));
+        let voiced_at = Arc::new(Mutex::new(Vec::new()));
+        let reader = spawn_reader(
+            source,
+            Arc::clone(&stop),
+            Arc::clone(&voiced),
+            Arc::clone(&voiced_at),
+        );
+        let heard = Arc::new(HeardLog::default());
         // The answers the session hands over for posting (change `post-assistant-answers`).
         let (answers, mut answer_queue) = crate::assistant::AnswerSink::channel();
         let mut posted: Vec<crate::assistant::AgentAnswer> = Vec::new();
@@ -1539,6 +1627,7 @@ mod tests {
                     output: output.clone(),
                     failures: CodecFailures::none(),
                     answers,
+                    heard: heard.clone(),
                 },
             )
             .expect("attach");
@@ -1563,6 +1652,111 @@ mod tests {
         }
         eprintln!("ready after {:?}", started.elapsed());
         let chat = assistant.chat_log();
+        // Task 5.6 of change `voice-recognition-rework`: the deactivation phrase said 1.5 s
+        // into the answer. Prints, in ms after the phrase's last frame was fed, each piece
+        // of the people's transcript, when the gate's rule would end the session, and the
+        // first frame of the voice's reply; then ends the call.
+        if let Ok(phrase_wav) = std::env::var("VOICEBRO_CODEX_CALL_DEACTIVATE_WAV") {
+            let phrases = crate::wake::Phrase::list(
+                &std::env::var("VOICEBRO_CODEX_DEACTIVATE_PHRASES")
+                    .unwrap_or_else(|_| "goodbye, отбой братан".to_owned())
+                    .split(',')
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            );
+            let question_end = feed_speech(&sender, &latency, &wav_48k_mono(&wav));
+            let deadline = Instant::now() + Duration::from_secs(40);
+            let answer_start = loop {
+                sender.send(Frame::silence());
+                std::thread::sleep(Duration::from_millis(20));
+                let first = voiced_at
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .copied()
+                    .find(|at| *at > question_end);
+                if let Some(first) = first {
+                    break first;
+                }
+                assert!(Instant::now() < deadline, "the voice never answered");
+            };
+            while answer_start.elapsed() < Duration::from_millis(1_500) {
+                sender.send(Frame::silence());
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let phrase_start = Instant::now();
+            let phrase_end = feed_speech(&sender, &latency, &wav_48k_mono(&phrase_wav));
+            for _ in 0..300 {
+                sender.send(Frame::silence());
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let ms = |at: Instant| -> i64 {
+                if at >= phrase_end {
+                    (at - phrase_end).as_millis() as i64
+                } else {
+                    -((phrase_end - at).as_millis() as i64)
+                }
+            };
+            let pieces: Vec<(Instant, u64, String, bool)> = heard
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(at, ..)| *at >= phrase_start)
+                .cloned()
+                .collect();
+            for (at, turn, text, done) in &pieces {
+                eprintln!(
+                    "deactivation: piece at {} ms, turn {turn}{}: {text:?}",
+                    ms(*at),
+                    if *done { " (done)" } else { "" }
+                );
+            }
+            let (silenced, decision) = transcript_rule_decision(&pieces, &phrases);
+            // The reply: the first voiced frame after the phrase that follows 200 ms without
+            // one (the answer cut by the barge-in, then the reply).
+            let frames = voiced_at.lock().unwrap().clone();
+            let reply = frames
+                .iter()
+                .enumerate()
+                .filter(|(_, at)| **at > phrase_end)
+                .find(|(index, at)| {
+                    *index == 0
+                        || at.saturating_duration_since(frames[index - 1])
+                            >= Duration::from_millis(200)
+                })
+                .map(|(_, at)| *at);
+            let answer_cut = frames
+                .iter()
+                .rev()
+                .find(|at| **at < reply.unwrap_or(phrase_end + Duration::from_secs(60)))
+                .copied();
+            let shown = |at: Option<Instant>, none: &str| {
+                at.map(|at| ms(at).to_string())
+                    .unwrap_or_else(|| none.to_owned())
+            };
+            eprintln!(
+                "deactivation: answer started {} ms, last answer frame {} ms, the rule silences the voice at {} ms and ends the session at {} ms, the reply's first frame at {} ms; the rule {}",
+                ms(answer_start),
+                shown(answer_cut, "-"),
+                shown(silenced, "never"),
+                shown(decision, "never"),
+                shown(reply, "none"),
+                match (silenced, reply) {
+                    (Some(silenced), Some(reply)) if silenced < reply => "comes first",
+                    (Some(_), None) => "comes first (no reply)",
+                    (Some(_), Some(_)) => "comes after the reply started",
+                    (None, _) => "never matched",
+                }
+            );
+            session.session_wanted(false);
+            std::thread::sleep(Duration::from_millis(500));
+            stop.store(true, std::sync::atomic::Ordering::Release);
+            let _ = reader.join();
+            assistant.stop_blocking();
+            assert!(decision.is_some(), "the transcript held the phrase");
+            return;
+        }
         let answer = speak_and_wait(
             &sender,
             &output,

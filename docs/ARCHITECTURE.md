@@ -452,15 +452,50 @@ state machine. A `RelayRegistry` holds all gates and the single app-wide mute fl
   counts as activity, so a long answer is never cut.
 - In wake-word mode the output is muted whenever no session is active, so a deactivation is
   silent at once, and it flushes the answer in progress.
+- **One deactivation path** (`GateState::deactivate`, change `voice-recognition-rework`,
+  design D4) for both sources, the wake engine (`on_phrase`) and the call's transcript
+  (`on_heard`): it ends the session, flushes the output, queues the falling earcon (only
+  with earcons on; the Codex session's later flushes do not remove it, since `flush` and
+  `set_muted` leave the earcon queue alone), logs "deactivation phrase «x» from the wake
+  engine | the call's transcript; …" and sets `deactivated_at`. Activations within 1.5 s of
+  `deactivated_at` (`REACTIVATION_GUARD`) are ignored, so the end of a goodbye heard by
+  another member's microphone, or the wake word right after the phrase, starts nothing;
+  the guard lives in the gate and covers both sources. `on_phrase` returns a
+  `PhraseOutcome` (`Applied`, `AlreadyInState`, `RightAfterDeactivation`, `NotListening`)
+  for the worker's decision line; `on_phrase_at` takes the instant for tests.
+- **The call's transcript as a second source** (`on_heard(turn, text, done)`, design D2).
+  In wake-word mode, with mute off and a session active, the people's transcript of the
+  turn so far is checked for the selected model's deactivation phrases in effect
+  (`GateSettings.deactivation_phrases`, stored or default, in the matching form of 4.4;
+  no vocabulary check). `spotter::transcript_match` finds whole words in a row; a match
+  that ends before the last word, or at a last word followed by a space or punctuation, is
+  closed and ends the session at once. A match at the last word with nothing after it is
+  held (`HeardHold`), since the next piece may extend the word (" Good" + "bye", " stop" +
+  "watch"): the next piece of the turn re-evaluates the whole text, the turn's `done`
+  confirms it, a later turn confirms it, and `process_tick` confirms it once
+  `TRANSCRIPT_HOLD` (300 ms) passed without a newer piece. While a match is held the
+  output is muted (`output_muted` includes the hold), so the voice's reply to the phrase,
+  which in the live calls began 270 to 1 500 ms after the phrase, is discarded instead of
+  heard; if the word went on, the hold is dropped and the voice plays again (a few hundred
+  ms of it lost). The call's own voice detection may end a turn at a pause inside a
+  phrase ("Отбой" | ", братан" came as two turns in the live calls), so a turn that ended
+  less than `PREVIOUS_TURN_WINDOW` (2 s) before is read with the next one
+  (`HeardTurn`), and only a match that ends in the newer turn counts
+  (`transcript_match_after`). Always mode, mute, no session
+  and another model's phrases change nothing. A settings change of the phrases drops a
+  held match but never ends a session; the runtime reapplies `GateSettings` when the
+  `wake` section changes.
 - Activation counts only while waiting, deactivation only while active. Repeating the
   activation phrase during a session does nothing.
 - The gate tells the assistant `session_wanted`, `call_context(caller, participants)` before a
   session, and `speakers_changed(names)` when the set of talking people changes (the
   latter only with `speaker_labels: changes`; `start` sends names in the call context only).
 - The gate is the receive path's tick sink (`VoiceHost::on_tick` finds the guild's gate in
-  the registry) and the wake worker's `PhraseSink` (the registry routes `on_phrase` to the
-  guild's gate). In wake-word mode, when not muted, the gate forwards each speaker's frame
-  to the `WakeFeed`.
+  the registry), the wake worker's `PhraseSink` (the registry routes `on_phrase` to the
+  guild's gate) and the assistant's `HeardSink` (the registry routes `on_heard` the same
+  way). It numbers its receive ticks per guild (`u64` from 1). In wake-word mode, when not
+  muted, it forwards each speaker's frame with the tick's number to the `WakeFeed`, then
+  calls `WakeFeed::tick(guild, tick)` once per `process_tick`, after the frames.
 - `GateStatus` per guild: mode, muted, active, listening for the wake word, session wanted,
   assistant ready, last wake phrase, frames held for replay, and counters (input frames the
   assistant did not take, replay frames dropped, replay timeouts). Every transition is
@@ -498,16 +533,33 @@ pub trait WakeEngine: Send + Sync {
 
 pub struct Recognition { pub text: String, pub is_final: bool, pub words: Vec<Word> }
 
-/// Receives confirmed phrases (the session gate). Returns whether the phrase changed anything.
+/// Receives confirmed phrases (the session gate), and says what each one did.
 pub trait PhraseSink: Send + Sync {
-    fn on_phrase(&self, guild: u64, kind: PhraseKind, phrase: &str, ssrc: u32, since_phrase_end: Duration) -> bool;
+    fn on_phrase(&self, guild: u64, kind: PhraseKind, phrase: &str, ssrc: u32, since_phrase_end: Duration) -> PhraseOutcome;
+}
+pub enum PhraseOutcome { Applied, AlreadyInState, RightAfterDeactivation, NotListening }
+
+/// Receives each speaker's 48 kHz stereo frames from the receive path, numbered by the
+/// guild's receive tick, and the end of each tick (after its frames).
+pub trait WakeFeed: Send + Sync {
+    fn feed(&self, guild: u64, ssrc: u32, tick: u64, frame: &[i16]);
+    fn tick(&self, guild: u64, tick: u64);
 }
 
-/// Receives each speaker's 48 kHz stereo frames from the receive path.
-pub trait WakeFeed: Send + Sync {
-    fn feed(&self, guild: u64, ssrc: u32, frame: &[i16]);
-}
+/// A phrase as typed (trimmed) and its words in the matching form.
+pub struct Phrase { pub text: String, pub words: Vec<String> }
 ```
+
+- **One matching form** (`settings::phrase_words`, change `voice-recognition-rework`, design
+  D3): lower case, "ё" as "е", every character that is not a letter or a digit
+  (`char::is_alphanumeric`) a space, split on whitespace. A phrase is its word list, and a
+  phrase with no word is no phrase. The wake engine, the call's transcript (4.3) and the save
+  validation (4.6) compare in this form; `PhraseSet` holds `Phrase`s.
+  `spotter::find_occurrences` brings the recognizer's words to the same form, so a
+  recognized "по-моему" becomes two words with the original word's end time, and "Братан
+  всё" counts when the model writes "братан все". A phrase counts when its words appear in
+  a row as whole words (`phrase_occurrences`, the first phrase of the list that fits at a
+  place wins). The log and the status show phrases as the user typed them.
 
 - **`WakeManager`** owns the engines, the assets directory and the worker. `configure(settings)`
   is called at start and whenever the `session` or `wake` section changes. Outside
@@ -519,8 +571,10 @@ pub trait WakeFeed: Send + Sync {
   bytes, the archive's `file` name and the official `page` a person downloads it from by
   hand (`Asset.page`: the Vosk release page on GitHub for the library,
   `catalog::MODELS_PAGE` for every catalog model).
-  With everything on disk it stops the engine when both phrase lists of the selected model
-  are empty (`NoPhrases`), sends new phrases to the running worker when only the phrases
+  The phrases are those in effect for the selected model (`WakeSettings::selected_phrases`):
+  each list as stored, or the model's default phrases for a list never set. With everything
+  on disk it stops the engine when both lists in effect are empty, which only a user who
+  emptied both fields gets (`NoPhrases`), sends new phrases to the running worker when only the phrases
   changed, and otherwise loads and starts on a thread of its own (`Loading` → `Ready`, or
   `Error {message}`). An unknown model or engine, or a local folder that is gone, skips the
   check and ends in the loader's `Error`. `WakeManager::download(model)` (the Download
@@ -541,25 +595,47 @@ pub trait WakeFeed: Send + Sync {
   `Status.wake`. The manager implements `WakeFeed`; `feed` drops when the worker's queue is
   full and counts the drop.
 - **Model list** (`WakeManager::models`, command `wake_models`): the catalog entries with
-  whether each is downloaded and its size, then the local models. Sizes shown anywhere are
-  decimal megabytes from the bytes (`wake::megabytes`).
+  whether each is downloaded and its size, then the local models, each with its default
+  phrases (`default_activation`, `default_deactivation`; a local model's those of its
+  folder's language). Sizes shown anywhere are decimal megabytes from the bytes
+  (`wake::megabytes`).
 
 - **`PhraseSpotter`** is engine-independent. One recognizer per speaker, one detector per
-  phrase kind (activation, deactivation), whole-word matching on open-vocabulary text. A
-  phrase counts in a final result, or in 15 partials in a row for activation and 5 of the
-  last 10 for deactivation. Each occurrence is reported once per utterance; the recognizer is
-  never reset after a hit. An activation after a deactivation in the same utterance is
-  ignored, and activations are ignored for 1.5 s after any deactivation.
-- **Trailing silence.** Discord stops sending audio when a user stops talking. After 60 ms of
-  quiet the worker feeds up to 1.5 s of silence on its 20 ms tick so phrases at the end of a
-  sentence are finalized.
+  phrase kind (activation, deactivation), whole-word matching on open-vocabulary text in the
+  matching form. A phrase counts in a final result, or in 15 partials in a row for
+  activation and 5 of the last 10 for deactivation. Each occurrence is reported once per
+  utterance; the recognizer is never reset after a hit. An activation after a deactivation
+  in the same utterance is ignored (so "отбой братан" never also counts as the activation
+  "братан"); the 1.5 s guard after a deactivation is the gate's (4.3). The deactivation
+  `Detector` counts the partial results that held its next unreported occurrence; a final
+  result that confirms nothing new while that count is above 0 is a near miss
+  (`take_near_miss`), which the worker logs.
+- **Trailing silence, counted in receive ticks** (design D1). Discord stops sending audio
+  when a user stops talking, and the recognizer needs silence to end the utterance. Every
+  `Audio` message carries the guild's receive tick and the gate's `Instant`; a
+  `WakeMessage::Tick` follows each tick's frames. `SpeakerState` keeps the tick of the
+  speaker's last frame. On a `Tick`, `absent = tick - last_tick`: below
+  `SILENCE_AFTER_TICKS` (15 ticks, 300 ms) nothing is fed; from 15 on, silence is fed until
+  `min(absent, 75)` chunks of 20 ms (1.5 s) were fed, the owed chunks at once. A frame that
+  comes back sooner continues the stream with nothing inserted (a gap of 3 ticks or more is
+  counted as bridged). The reason is songbird's receive: a speaker whose playout buffer ran
+  empty after a late packet is reported silent until 5 packets (100 ms) are buffered again,
+  then the delayed audio plays; a late receive tick and a busy worker hold frames back the
+  same way. The old rule (60 ms by the worker's own clock) put zeros into the word each
+  time. A dropped `Tick` only delays the silence until the next one, since each carries its
+  number. Wall time is used only to drop a speaker's recognizer after 30 s without a frame.
 - A recognizer exists only while its speaker is talking and is dropped after 30 s idle. The
   whole engine is loaded only in wake-word mode.
 - **Model catalog** (`catalog.rs`): vetted entries with engine, language, display name,
-  download URLs, SHA-256 and license. The settings refer to a catalog id. The catalog
-  carries no phrases: the activation and deactivation phrases are the user's, live in the
-  settings file and start empty; the wake engine shows "no phrases configured" until the
-  user enters them.
+  download URLs, SHA-256, license and the model's **default phrases**
+  (`default_activation`, `default_deactivation`: the language's slang for "bro", a slang
+  farewell rare in game talk). The settings refer to a catalog id. A list the user never set
+  uses the defaults (`catalog::default_phrases`); a local model takes the defaults of the
+  catalog entry whose primary language subtag its folder name gives
+  (`entry_for_language`), or none. The user's lists replace the defaults list by list, and
+  an emptied list stays empty. The table of defaults is in `docs/user-guide.md`; every
+  default word is checked against its model's vocabulary by
+  `catalog_models_load_when_enabled` and in the corpus.
   Today ten small models, in the order the window lists them:
   `vosk-model-small-en-us-0.15` (the default of a new settings file),
   `vosk-model-small-ru-0.22`, then by language name `-cs-0.4-rhasspy` (MIT), `-nl-0.22`,
@@ -593,15 +669,22 @@ pub trait WakeFeed: Send + Sync {
   app starts without the DLL. Partial word timestamps are not requested (they delay
   partials by seconds). Grammar-restricted recognition is not used (it maps ordinary speech
   onto the wake words).
-- The worker logs every final result, every phrase decision, and dropped audio (once per
-  10 s, as seconds of skipped speech). Phrases with a word the model does not know are not
-  spotted; those words are listed in `WakeStatus.unknown_words` and in the "wake word ready"
-  log line.
+- The worker logs every final result (a detail line), every phrase decision, and dropped
+  audio (once per 10 s, as seconds of skipped speech). Phrases with a word the model does
+  not know are not spotted; those words are listed in `WakeStatus.unknown_words` and in the
+  "wake word ready" log line. A word counts as known in its lower-case form, its folded
+  form ("всё" or "все"), or, written with an apostrophe or a hyphen, piece by piece
+  (`spotter::word_known`). The diagnostic lines of design D5 are in section 7.
 - Corpus tests: `wake::vosk::tests::vosk_corpus_when_assets_are_provided` runs only when
   `VOICEBRO_VOSK_DIR` points at an assets directory, with `VOICEBRO_WAKE_PHRASES`,
   `VOICEBRO_WAKE_WAV`, `VOICEBRO_WAKE_EXPECT`, `VOICEBRO_WAKE_SEQUENCES` and
   `VOICEBRO_WAKE_NOISE` describing the samples (16 kHz mono WAV). Without the variables the
   test passes without doing anything, so the suite stays runnable on any machine.
+  `vosk_gaps_when_assets_are_provided` (same gate) feeds a WAV as a speaker whose frames go
+  missing for 6 ticks every 0.5 s (songbird's refill), with zeros in the holes (the old
+  worker), back to back, and through the ticks of design D1, in five phases; the D1 run must
+  hear what the back-to-back run hears. It also measures the time from the end of a
+  sentence to the deactivation, old worker against D1.
 
 ### 4.5 Assistant (`assistant/`)
 
@@ -629,16 +712,36 @@ pub struct AudioPorts {
     pub output: OutputHandle,
     pub failures: CodecFailures,
     pub answers: AnswerSink,
+    pub heard: Arc<dyn HeardSink>,
 }
 
 /// The final answer of a task the agent completed, as written (change `post-assistant-answers`).
 pub struct AgentAnswer { pub guild: u64, pub task: Option<String>, pub text: String }
+
+/// The text of the people's speech the assistant's own recognizer heard, per turn: the
+/// turn's text so far, or with `done` its final text (change `voice-recognition-rework`).
+pub trait HeardSink: Send + Sync {
+    fn on_heard(&self, guild: u64, turn: u64, text: &str, done: bool);
+}
 ```
 
 `AudioPorts` connect the gate and the assistant in process: the gate pushes gated
 frames into `input`, the assistant pushes decoded answer audio into `output` (the
 `OutputQueue` from 4.1) and can `flush` it. `Runtime::on_join` builds the ports and the gate,
 calls `attach`, and gives the session to the gate; `on_leave` calls `detach`.
+
+**The people's transcript to the gate** (change `voice-recognition-rework`, design D2):
+`heard` is the `RelayRegistry` in the app (it routes to the guild's gate, 4.3) and
+`assistant::no_heard()` for the stub, the probes and the tests. The Codex session keeps the
+people's pieces of the current turn apart from the voice's: on each
+`thread/realtime/transcript/delta` with `role: "user"` (the field that tells them apart in
+the Codex CLI 0.167.0 schema; the voice's pieces have another role) it appends the
+`delta` and hands the turn's joined text over; the people's `transcript/done` hands over its
+final `text` with `done` and starts the next turn; a new call (`realtime/started`) starts
+a new turn too. Nothing is handed over unless the call is `Live`, and always after the
+session's locks are released, because the gate may call `session_wanted(false)` from
+inside `on_heard`. The pieces come about 0.2 s after the audio, one per 200 ms window, and
+split words wherever a window ends ("Брат" + "ан").
 
 **Answers for Discord** (change `post-assistant-answers`): `AgentAnswer` and `AnswerSink`
 are engine-independent (`assistant/mod.rs`). A session sends each completed task's final
@@ -867,7 +970,7 @@ pub struct Settings {
     pub discord: DiscordSettings,          // guild_id (an older auto_connect is ignored and dropped at the next save); owner_only: only the linked owner's voice passes (4.11), default false, its own `owner` part in changed_sections
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
-    pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation, deactivation } }
+    pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation?, deactivation? } } (an absent list: the model's defaults)
     pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off, save_chat_history (default false), post_answers: off (default) | voice_channel | command_channel | channel, answers_channel (a channel id, digits or empty; required by channel, kept while another value is chosen)
     pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default), handoff_mode: items (default) | commentary | bem_tags | thinking, refresh_lists_at_start (default false, read at start)
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
@@ -878,17 +981,25 @@ pub struct Settings {
 ```
 
 Every string in the project (UI, log, notes to the model, code, docs) is English. The wake
-phrases are user data in the settings file, in whatever language the user's model
-recognizes; the code ships none.
+phrases are each catalog model's defaults (4.4) or the user's own in the settings file, in
+whatever language the user's model recognizes. The code ships no assistant instruction.
 
 - Stored as JSON at `settings.json` next to the executable. Written to a temp file and
   renamed over the old one. Unknown fields are kept; missing fields take defaults.
 - Schema version 2 keeps the wake phrases per model: `wake.phrases` maps a model id to its
   `activation` and `deactivation` lists, and only the selected model's lists are spotted.
+  `ModelPhrases` holds `Option<Vec<String>>` lists (change `voice-recognition-rework`,
+  design D7): a list absent from the file (`None`, never set) means the model's default
+  phrases, a present list, even empty, is the user's. Serde skips `None` when writing, so a
+  save that names one list writes only that one and the other keeps its default; the
+  defaults are never written into the file. `WakeSettings::selected_phrases()` and
+  `phrases_of(model)` return the lists in effect (`PhraseLists`). An entry written by an
+  earlier build has both lists present and stays the user's. Phrases are stored as typed.
   Loading a version-1 file runs `store::migrate_v1` on the JSON first. When it has a
   non-empty phrase list, its `activation_phrases` and `deactivation_phrases` move under the
   model the file names (or `vosk-model-small-ru-0.22`, the only model of version 1, which
-  is then written into `wake.model`), so those phrases keep working. When it has none,
+  is then written into `wake.model`), both of them, an empty one too, so those phrases keep
+  working and a list the user left empty stays empty. When it has none,
   `wake.model` becomes the default of a new file (English): version 1 only ever had the
   Russian model, so the model it names was never the user's choice. The old fields are
   removed either way, and the next save writes version 2.
@@ -898,7 +1009,9 @@ recognizes; the code ships none.
   `SettingsStore::load`), with the log line "settings: the stored Opus codec <value> is not
   in this build; libopus is used", so the file loads and later saves pass validation; the
   next save writes `libopus`. A save that sends such a name is still refused.
-- `Settings::validate()` is the only validator (one model's phrase lists must not overlap,
+- `Settings::validate()` is the only validator (one model's phrase lists in effect, the
+  defaults of a list never set included, must not share a phrase in the matching form of
+  4.4, so "Братан всё" against "братан  все" is refused naming the model and both lists,
   timeout range, the model is a catalog id or `local:<plain folder name>` of the engine,
   shortcut parses, `assistant.answers_channel` is digits and set when `post_answers` is
   `channel`). An unknown `assistant.post_answers` is refused while the document is read
@@ -1396,8 +1509,8 @@ Discord UDP ─► songbird (DAVE, Opus decode; with opus-rs only DAVE, and the
    ─► owner filter (4.11: everyone, nobody, or the owner's account only; the
       others counted as ignored_frames and not decoded with opus-rs)
    ─► mix (i32 sum, clamp) ─► RelayGate.process_tick(mixed, per_speaker)
-        ├─► per speaker ─► WakeFeed (bounded channel) ─► wake worker thread
-        │                     ─► 16 k mono ─► recognizer ─► PhraseSpotter ─► gate.on_phrase
+        ├─► per speaker (frame, tick n), then Tick n ─► WakeFeed (bounded channel)
+        │      ─► wake worker thread ─► 16 k mono ─► recognizer ─► PhraseSpotter ─► gate.on_phrase
         └─► if session active and not muted: Frame ─► AudioPorts.input (FIFO, 5 frames)
                ─► assistant (Codex: send thread, 20 ms clock, 2-frame prefill,
                   oldest frame or silence ─► downmix ─► Opus ─► RTP)
@@ -1425,8 +1538,11 @@ Discord RTCP receiver reports on our SSRC ─► DeliveryShared::on_report ─�
 phrase hit ─► gate: Waiting→Starting ─► assistant.call_context, session_wanted(true)
    ─► Codex: ensure thread, build initialItems, open RTC call ─► ready() = true
    ─► gate replays pre-roll from the end of the phrase, then live frames
-deactivation / idle timeout ─► gate: output muted + flushed, session_wanted(false)
+deactivation / idle timeout ─► gate: output muted + flushed, falling earcon, session_wanted(false)
    ─► Codex: thread/realtime/stop, keep thread and history for the next call
+the people's transcript (realtime/transcript/delta, role user; done) while the call is live
+   ─► CodexSession joins the turn's pieces ─► AudioPorts.heard ─► RelayRegistry
+   ─► gate.on_heard: a deactivation phrase (closed, or held 300 ms) ─► the same deactivation
 mute (app button | hotkey | Discord panel) ─► Runtime::toggle_mute ─► RelayRegistry
    ─► every gate: session ends (session_wanted(false)), nothing sent, output flushed,
       mute tone ─► AppEvent::MuteChanged ─► UI, panel
@@ -1442,7 +1558,7 @@ voice delegates a task ─► Codex agent: turn/started, items, turn/completed (
 
 ```text
 UI patch ─► command save_settings ─► Settings::validate ─► store ─► Runtime::apply(diff)
-   ─► gates (mode, timeout, earcons, labels), gains (shared atomics), wake engine (phrases, model),
+   ─► gates (mode, timeout, earcons, labels, deactivation phrases on a wake change), gains (shared atomics), wake engine (phrases, model),
       Codex (thread settings), Discord (restart on token change), hotkey (re-register);
       answer posting: nothing (read by the answer handler at the next answer)
 ```
@@ -1469,8 +1585,12 @@ Values that are known to work. Change them only with a measurement or a corpus r
 | Lookback without timing | 1 s + 80 ms margin |
 | Activation / deactivation partials | 15 in a row / 5 of the last 10; a final always counts |
 | Partial lag | ~150 ms |
-| Reactivation guard | 1.5 s after a deactivation |
-| Trailing silence | after 60 ms quiet, up to 1.5 s on a 20 ms tick |
+| Reactivation guard | 1.5 s after a deactivation from either source, kept by the gate |
+| Trailing silence | after 15 receive ticks (300 ms) of a speaker's absence, one 20 ms chunk per absent tick, caught up at once, up to 75 (1.5 s); counted in receive ticks, never on the worker's clock |
+| Bridged gap reported | 3 ticks or more, at most one line per speaker per 10 s |
+| Recognizer lag reported | over 500 ms, at most one line per 10 s |
+| Transcript hold | 300 ms for a deactivation phrase whose last word may go on; the voice is silenced meanwhile |
+| Previous transcript turn | read with the next turn when it ended less than 2 s before |
 | Speaker recognizer idle | dropped after 30 s |
 | Wake queue | 256 chunks, drop and count |
 | Idle timeout | default 60 s; 0 = off; 5..3600 |
@@ -1498,6 +1618,26 @@ Values that are known to work. Change them only with a measurement or a corpus r
 - Log the value that was actually used, never the one that was requested and replaced.
 - The wake worker logs what it heard; the UI shows the recognizer's results, not only the
   assistant's transcript.
+- **The phrase decisions and the wake engine's health** (change `voice-recognition-rework`,
+  design D5), at info level in every build and without recognized text (the text is only
+  in the `detail::wake` line `[wake] <g>/<ssrc> heard: …`), built by pure functions in
+  `wake/worker.rs` and `gate.rs`:
+
+  ```text
+  [wake] <g>/<ssrc>: activation|deactivation «<phrase>» <outcome>, <t> s after the phrase ended (<r> s recognizing, <q> s queued)
+  [wake] <g>/<ssrc>: deactivation «<phrase>» was in <n> partial results but was not confirmed
+  [wake] <g>/<ssrc>: <n> gaps in the audio bridged in the last 10 s, longest <ms> ms
+  [wake] the recognizer runs <ms> ms behind the audio
+  gate <g>: deactivation phrase «<phrase>» from the wake engine|the call's transcript; the session ended, waiting for the activation phrase
+  ```
+
+  The outcome is `applied`, `ignored (the session is already in that state)`, `ignored
+  right after a deactivation` or `ignored (not listening: muted, always mode or no voice
+  channel)`. "Recognizing" is the spotter's stream time from the phrase's end to the
+  result, "queued" the time from the gate's feed to the worker; the gate gets their sum as
+  `since_phrase_end`. The gaps line comes once 10 s passed since a speaker's first bridged
+  gap; the lag line when a message is processed more than 500 ms after the gate fed it;
+  each at most once per 10 s.
 - Connection errors (Codex process, RTC call, Discord) surface in the status snapshot, not
   only in the log. The source `answers` (change `post-assistant-answers`) is set when
   Discord refuses an answer's post, or the chosen channel is gone, and cleared by the next

@@ -835,6 +835,7 @@ mod tests {
             output: output.clone(),
             failures: CodecFailures::none(),
             answers: crate::assistant::AnswerSink::none(),
+            heard: crate::assistant::no_heard(),
         };
         let report = CallReport::new(0);
         let seconds = 10usize;
