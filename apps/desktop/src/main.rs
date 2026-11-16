@@ -182,6 +182,29 @@ async fn codex_check(state: State<'_, AppState>) -> Result<Value, String> {
     }))
 }
 
+/// Link in the Access card (change `owner-only-access`): Codex reads the account as Check
+/// does (and stops a minute later when the bot is in no channel), then the runtime issues
+/// a code bound to that account. Not signed in is refused with the reason.
+#[tauri::command]
+async fn owner_link_start(
+    state: State<'_, AppState>,
+) -> Result<voicebro_core::owner::PendingCode, String> {
+    codex(&state)?.check().await?;
+    state.runtime.start_link()
+}
+
+/// Cancel in the Access card; `false` when no code was waiting.
+#[tauri::command]
+fn owner_link_cancel(state: State<'_, AppState>) -> bool {
+    state.runtime.cancel_link()
+}
+
+/// Unlink in the Access card; `false` when nothing was linked.
+#[tauri::command]
+fn owner_unlink(state: State<'_, AppState>) -> Result<bool, String> {
+    state.runtime.unlink()
+}
+
 #[tauri::command]
 async fn codex_models(state: State<'_, AppState>) -> Result<Vec<Value>, String> {
     let models = codex(&state)?.models().await?;
@@ -719,6 +742,9 @@ fn main() {
             codex_install_info,
             codex_install,
             codex_models,
+            owner_link_start,
+            owner_link_cancel,
+            owner_unlink,
             capabilities,
             discord_text_channels,
             wake_models,

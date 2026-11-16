@@ -74,6 +74,9 @@ pub struct VoiceCounters {
     pub unnamed_sources: u64,
     /// Speakers' frames the app's own decoder failed on and concealed (pure-Rust codecs).
     pub decode_errors: u64,
+    /// Speakers' frames dropped because they are not the linked owner's (change
+    /// `owner-only-access`).
+    pub ignored_frames: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -152,6 +155,16 @@ pub trait VoiceHost: Send + Sync {
     fn codec_failures(&self, _guild: u64) -> CodecFailures {
         CodecFailures::none()
     }
+    /// Whose voice passes (change `owner-only-access`), read once per tick:
+    /// [`crate::owner::FILTER_EVERYONE`], [`crate::owner::FILTER_NOBODY`] or the owner's
+    /// Discord user id.
+    fn owner_filter(&self) -> u64 {
+        crate::owner::FILTER_EVERYONE
+    }
+    /// A `/link` from Discord: `user` is the id Discord put in the interaction.
+    fn complete_link(&self, _user: u64, _name: &str, _code: &str) -> crate::owner::CompleteOutcome {
+        crate::owner::CompleteOutcome::NoCode
+    }
     /// Every 20 ms while the bot is in a channel: the mix and each speaker's own frame.
     fn on_tick(&self, guild: u64, mixed: &Frame, speakers: &[(u32, &[i16])]);
     fn set_speaker_name(&self, guild: u64, ssrc: u32, name: &str);
@@ -186,6 +199,7 @@ pub(crate) struct Shared {
     pub(crate) malformed_frames: AtomicU64,
     pub(crate) unnamed_sources: AtomicU64,
     pub(crate) decode_errors: AtomicU64,
+    pub(crate) ignored_frames: AtomicU64,
 }
 
 impl Shared {
@@ -206,6 +220,7 @@ impl Shared {
             malformed_frames: self.malformed_frames.load(Ordering::Relaxed),
             unnamed_sources: self.unnamed_sources.load(Ordering::Relaxed),
             decode_errors: self.decode_errors.load(Ordering::Relaxed),
+            ignored_frames: self.ignored_frames.load(Ordering::Relaxed),
         }
     }
 
@@ -278,6 +293,7 @@ impl DiscordRuntime {
                 malformed_frames: AtomicU64::new(0),
                 unnamed_sources: AtomicU64::new(0),
                 decode_errors: AtomicU64::new(0),
+                ignored_frames: AtomicU64::new(0),
             }),
             task: Mutex::new(None),
             shard_manager: Arc::new(Mutex::new(None)),

@@ -249,6 +249,36 @@
               </div>
             </article>
 
+            <!-- Change `owner-only-access`: only the linked account's voice reaches the
+                 assistant while the switch is on; the commands and the answers stay open.
+                 The link part is status (redrawn from it), the switch is a form field. -->
+            <div class="card settings-section collapsible" data-card="access">
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-access-body"><span class="chevron" aria-hidden="true"></span>Access</button></h2>
+              <div class="card-body" id="card-access-body">
+              <div class="form-grid">
+                <label>Only my Discord account <span class="switch-row"><input id="owner-only" type="checkbox" role="switch" class="switch" data-path="discord.owner_only" data-kind="bool"><span class="switch-state" id="owner-only-label">Off</span></span><small class="field-help">While on, only the voice of the linked Discord account reaches the wake word and the assistant, for a subscription that is yours alone. Everyone can still use /join, /leave, /status and the Mute button, and everyone hears the answers. Applies at once. Default: off.</small><small class="field-help warning-text" id="owner-note"></small><small class="field-message" data-for="owner-only"></small></label>
+                <div class="field owner-link" id="owner-link">
+                  <span class="field-name">Linked Discord account</span>
+                  <span class="owner-state" id="owner-state">not linked</span>
+                  <small class="field-help warning-text" id="owner-reason"></small>
+                  <div class="owner-code" id="owner-code" hidden>
+                    <span>Send this in Discord, in a server with the bot or in a direct message to it:</span>
+                    <code id="owner-command">/link</code>
+                    <span class="owner-countdown" id="owner-countdown"></span>
+                  </div>
+                  <span class="row-actions">
+                    <button type="button" class="button" id="owner-link-start">Link my Discord account</button>
+                    <button type="button" class="button" id="owner-link-cancel" hidden>Cancel</button>
+                    <button type="button" class="button" id="owner-unlink" hidden>Unlink</button>
+                  </span>
+                  <small class="field-help">Link reads your Codex account and shows a one-time code for 10 minutes; send it with /link from your own Discord account. Five wrong codes end it. The link stays until you unlink, link another account, sign Codex into another account, or delete VoiceBro with its data. It is stored encrypted for your Windows user, never in settings.json.</small>
+                  <small class="field-help" id="owner-code-ended"></small>
+                  <small class="field-message" id="owner-message"></small>
+                </div>
+              </div>
+              </div>
+            </div>
+
             <div class="card settings-section collapsible" data-card="audio">
               <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-audio-body"><span class="chevron" aria-hidden="true"></span>Audio</button></h2>
               <div class="card-body" id="card-audio-body">

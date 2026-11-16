@@ -303,6 +303,12 @@ textarea.prompt-input { min-height: 80px; line-height: 1.45; }
 .lists-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 26px; }
 .lists-read { color: var(--ink-dim); }
 .lists-read.is-error { color: var(--bad); }
+/* The Access card's link part (change `owner-only-access`). */
+.owner-state { font-weight: 600; overflow-wrap: anywhere; }
+.owner-code { display: flex; flex-direction: column; gap: 4px; }
+.owner-code[hidden] { display: none; }
+.owner-code code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 1.25em; letter-spacing: 0.06em; user-select: all; }
+.owner-countdown { color: var(--ink-dim); font-size: 0.88em; }
 
 /* ---- Collapsible cards (Config tab): the title is the button; the body hides. */
 .collapsible > .card-heading,

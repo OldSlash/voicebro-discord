@@ -11,6 +11,7 @@ use crate::discord::{
 };
 use crate::events::{AppEvent, EventBus};
 use crate::gate::{ErrorReporter, GateSettings, RelayGate, RelayRegistry};
+use crate::owner::{CompleteOutcome, OwnerState, PendingCode};
 use crate::secrets::{SecretError, SecretKey, SecretStore};
 use crate::settings::store::{SettingsStore, StoreError};
 use crate::settings::{AssistantSettings, PostAnswers, SessionMode, Settings, ValidationError};
@@ -62,9 +63,27 @@ struct GateHost {
     codec_failures: Arc<CodecFailureHub>,
     /// Where every session sends its agent's answers for posting.
     answers: AnswerSink,
+    /// The owner link and the voice filter (change `owner-only-access`).
+    owner: Arc<OwnerState>,
+}
+
+/// The fingerprint of the assistant account a status reports (change `owner-only-access`,
+/// design D4); `None` while it is not signed in.
+fn signed_in_account(status: &crate::assistant::AssistantStatus) -> Option<String> {
+    status.signed_in.then(|| {
+        crate::owner::account_fingerprint(status.account_type.as_deref(), status.email.as_deref())
+    })
 }
 
 impl VoiceHost for GateHost {
+    fn owner_filter(&self) -> u64 {
+        self.owner.filter()
+    }
+
+    fn complete_link(&self, user: u64, name: &str, code: &str) -> CompleteOutcome {
+        self.owner.complete(user, name, code)
+    }
+
     fn opus_codec(&self) -> OpusCodec {
         *self.opus_codec.lock().expect("opus codec lock")
     }
@@ -79,6 +98,12 @@ impl VoiceHost for GateHost {
             match self.assistant.prepare(guild).await {
                 Ok(()) => {
                     self.errors.report("assistant", None);
+                    // The account was just read: a link made with another one ends here,
+                    // before the first frame of this join is filtered. The join goes on
+                    // (change `owner-only-access`, D4).
+                    if let Some(account) = signed_in_account(&self.assistant.status()) {
+                        self.owner.check_account(&account);
+                    }
                     Ok(())
                 }
                 Err(error) => {
@@ -374,6 +399,8 @@ pub struct Runtime {
     codec_failures: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<CodecFailure>>>,
     /// The agents' answers, taken by `start` for the answer handler task.
     answers: Mutex<Option<tokio::sync::mpsc::Receiver<AgentAnswer>>>,
+    /// The owner link and the voice filter, shared with the gate host.
+    owner: Arc<OwnerState>,
 }
 
 impl Runtime {
@@ -419,6 +446,10 @@ impl Runtime {
         );
         let (codec_failures, failure_reports) = CodecFailureHub::new();
         let (answers, answer_queue) = AnswerSink::channel();
+        let owner = Arc::new(OwnerState::new(
+            crate::owner::platform_store(&data_dir),
+            events.clone(),
+        ));
         let host = Arc::new(GateHost {
             registry,
             wake: wake.clone(),
@@ -430,6 +461,7 @@ impl Runtime {
             opus_codec: Mutex::new(OpusCodec::default()),
             codec_failures,
             answers,
+            owner: Arc::clone(&owner),
         });
         let discord = Arc::new(DiscordRuntime::new(
             events.clone(),
@@ -454,6 +486,7 @@ impl Runtime {
             hotkey: Mutex::new(HotkeyStatus::default()),
             codec_failures: Mutex::new(Some(failure_reports)),
             answers: Mutex::new(Some(answer_queue)),
+            owner,
         }
     }
 
@@ -487,6 +520,26 @@ impl Runtime {
         self.host.registry.gains().apply(&self.settings().audio);
         *self.host.opus_codec.lock().expect("opus codec lock") =
             self.settings().diagnostics.codec();
+        self.owner.set_mode(self.settings().discord.owner_only);
+        // Every signed-in account the assistant reports (Check, Link, a join, the read at
+        // start) is compared with the link's; another account ends the link (D4).
+        {
+            let mut events = self.events.subscribe();
+            let owner = Arc::clone(&self.owner);
+            self.handle.spawn(async move {
+                loop {
+                    match events.recv().await {
+                        Ok(AppEvent::Assistant(status)) => {
+                            if let Some(account) = signed_in_account(&status) {
+                                owner.check_account(&account);
+                            }
+                        }
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        }
         crate::wake::assets::cleanup_partial(&crate::paths::assets_dir(&self.data_dir));
         self.wake.scan_local_models();
         self.wake.configure(&self.settings());
@@ -597,6 +650,14 @@ impl Runtime {
             match *section {
                 "discord" => {
                     log::info!("settings: the guild id applies at the next connection");
+                }
+                // One atomic the receive path reads per tick: nothing is rebuilt.
+                "owner" => {
+                    self.owner.set_mode(settings.discord.owner_only);
+                    log::info!(
+                        "settings: only the owner's voice reaches the assistant: {}, from the next frame",
+                        if settings.discord.owner_only { "on" } else { "off" }
+                    );
                 }
                 "session" => {
                     wake_dirty = true;
@@ -804,8 +865,38 @@ impl Runtime {
             audio: self.host.registry.gains().levels(),
             latency: self.host.registry.latency_reports(),
             assistant: self.assistant.status(),
+            owner: self.owner.status(),
             settings: self.settings(),
         }
+    }
+
+    /// Link in the window, after the window had the assistant read its account (as Check
+    /// does): a code bound to that account. Refused while it is not signed in.
+    pub fn start_link(&self) -> Result<PendingCode, String> {
+        let Some(account) = signed_in_account(&self.assistant.status()) else {
+            return Err(
+                "Codex is not signed in: use Sign in on the Status tab first, then press Link again"
+                    .to_owned(),
+            );
+        };
+        self.owner.check_account(&account);
+        self.owner
+            .issue_code(account)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Cancel in the window; `false` when no code was waiting.
+    pub fn cancel_link(&self) -> bool {
+        self.owner.cancel_code()
+    }
+
+    /// Unlink in the window; `false` when nothing was linked.
+    pub fn unlink(&self) -> Result<bool, String> {
+        self.owner.unlink()
+    }
+
+    pub fn owner(&self) -> &Arc<OwnerState> {
+        &self.owner
     }
 }
 
@@ -943,6 +1034,56 @@ mod tests {
         again.shutdown();
     }
 
+    /// Change `owner-only-access`, scenario "Turned on while in a channel": the switch is
+    /// stored and rebuilds no gate, wake engine or call.
+    #[test]
+    fn the_owner_only_switch_restarts_nothing() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        let gate_settings = runtime
+            .host
+            .gate_settings
+            .lock()
+            .expect("gate settings lock")
+            .clone();
+        let mut events = runtime.events().subscribe();
+        runtime
+            .save_settings(&json!({ "discord": { "owner_only": true } }))
+            .unwrap();
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(event, AppEvent::Wake(_)),
+                "the wake engine is not reconfigured"
+            );
+        }
+        assert_eq!(
+            *runtime
+                .host
+                .gate_settings
+                .lock()
+                .expect("gate settings lock"),
+            gate_settings,
+            "the gates keep their settings"
+        );
+        let error = runtime
+            .save_settings(&json!({ "discord": { "owner_only": "yes" } }))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("discord.owner_only"), "{error}");
+        assert!(
+            runtime.settings().discord.owner_only,
+            "the stored value stays"
+        );
+        runtime.shutdown();
+
+        let again = super::tests::runtime(&dir, &tokio_rt);
+        again.start().unwrap();
+        assert!(again.settings().discord.owner_only);
+        again.shutdown();
+    }
+
     /// The stub assistant, counting how often the settings reached it.
     struct CountingAssistant {
         inner: StubAssistant,
@@ -974,6 +1115,234 @@ mod tests {
             self.configured
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+
+    /// The stub assistant, signed in as the account the test sets (change
+    /// `owner-only-access`).
+    #[derive(Default)]
+    struct AccountAssistant {
+        inner: StubAssistant,
+        email: Mutex<Option<String>>,
+    }
+
+    impl AccountAssistant {
+        fn sign_in(&self, email: Option<&str>) {
+            *self.email.lock().unwrap() = email.map(str::to_owned);
+        }
+    }
+
+    impl Assistant for AccountAssistant {
+        fn id(&self) -> &'static str {
+            self.inner.id()
+        }
+        fn attach(
+            &self,
+            guild: u64,
+            ports: AudioPorts,
+        ) -> Result<Arc<dyn crate::assistant::AssistantSession>, crate::assistant::AssistantError>
+        {
+            self.inner.attach(guild, ports)
+        }
+        fn detach(&self, guild: u64) {
+            self.inner.detach(guild);
+        }
+        fn capabilities(&self) -> crate::assistant::Capabilities {
+            self.inner.capabilities()
+        }
+        fn status(&self) -> crate::assistant::AssistantStatus {
+            let email = self.email.lock().unwrap().clone();
+            crate::assistant::AssistantStatus {
+                signed_in: email.is_some(),
+                account_type: email.as_ref().map(|_| "chatgpt".to_owned()),
+                email,
+                ..self.inner.status()
+            }
+        }
+    }
+
+    fn owner_runtime(
+        dir: &tempfile::TempDir,
+        tokio_rt: &tokio::runtime::Runtime,
+    ) -> (Runtime, Arc<AccountAssistant>) {
+        let events = EventBus::new(256);
+        let assistant = Arc::new(AccountAssistant::default());
+        let runtime = Runtime::with_assistant(
+            "0.1.0+test 2026-11-16",
+            dir.path().to_path_buf(),
+            SettingsStore::new(dir.path().join("settings.json")),
+            Arc::new(MemoryStore::default()),
+            events.clone(),
+            tokio_rt.handle().clone(),
+            Arc::new(ConnectionErrors::new(events)),
+            assistant.clone(),
+        );
+        runtime.start().unwrap();
+        (runtime, assistant)
+    }
+
+    /// Change `owner-only-access`, scenarios "Codex not signed in", "Successful link",
+    /// "Unlink" and "The code stays in the window": Link needs a signed-in assistant, the
+    /// code links the account that sent it, the file is written and removed, and no line of
+    /// the log holds the code.
+    #[test]
+    fn link_needs_a_signed_in_assistant_and_links_the_sender() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, assistant) = owner_runtime(&dir, &tokio_rt);
+        let mut window = runtime.events().subscribe();
+        let error = runtime.start_link().unwrap_err();
+        assert!(error.contains("not signed in"), "{error}");
+        assert!(runtime.status().owner.pending.is_none(), "no code");
+
+        assistant.sign_in(Some("me@example.com"));
+        let pending = runtime.start_link().unwrap();
+        assert_eq!(runtime.status().owner.pending.as_ref(), Some(&pending));
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        assert_eq!(
+            host.complete_link(1091401169441656933, "Alex", "WRONG-CODE"),
+            CompleteOutcome::Wrong { tries_left: 4 }
+        );
+        assert_eq!(
+            host.complete_link(1091401169441656933, "Alex", &pending.code),
+            CompleteOutcome::Linked {
+                name: "Alex".to_owned()
+            }
+        );
+        let owner = runtime.status().owner;
+        assert_eq!(owner.linked.unwrap().id, "1091401169441656933");
+        assert!(owner.pending.is_none());
+        if cfg!(windows) {
+            assert!(
+                crate::owner::link_path(dir.path()).exists(),
+                "the file is written"
+            );
+        }
+
+        assert!(runtime.unlink().unwrap());
+        assert!(runtime.status().owner.linked.is_none());
+        assert!(!crate::owner::link_path(dir.path()).exists());
+
+        let bare = pending.code.replace('-', "");
+        let mut lines = 0;
+        while let Ok(event) = window.try_recv() {
+            let shown = format!("{event:?}");
+            assert!(
+                !shown.contains(&bare) && !shown.contains(&pending.code),
+                "{shown}"
+            );
+            if let AppEvent::Log { line } = event {
+                assert!(
+                    !line.contains("WRONG"),
+                    "the typed value is not logged: {line}"
+                );
+                lines += 1;
+            }
+        }
+        assert!(lines >= 4, "issued, wrong, linked, removed");
+        runtime.shutdown();
+    }
+
+    /// Scenario "Mode on, nothing linked" and the filter values the receive path reads.
+    #[test]
+    fn the_mode_and_the_link_set_the_voice_filter() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, assistant) = owner_runtime(&dir, &tokio_rt);
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        assert_eq!(host.owner_filter(), crate::owner::FILTER_EVERYONE);
+        runtime
+            .save_settings(&json!({ "discord": { "owner_only": true } }))
+            .unwrap();
+        assert_eq!(host.owner_filter(), crate::owner::FILTER_NOBODY);
+        assistant.sign_in(Some("me@example.com"));
+        let pending = runtime.start_link().unwrap();
+        host.complete_link(42_000_000_000, "Alex", &pending.code);
+        assert_eq!(host.owner_filter(), 42_000_000_000);
+        runtime
+            .save_settings(&json!({ "discord": { "owner_only": false } }))
+            .unwrap();
+        assert_eq!(host.owner_filter(), crate::owner::FILTER_EVERYONE);
+        runtime.shutdown();
+
+        let (again, _) = owner_runtime(&dir, &tokio_rt);
+        if cfg!(windows) {
+            assert_eq!(
+                again.status().owner.linked.map(|owner| owner.name),
+                Some("Alex".to_owned()),
+                "a restart keeps the link"
+            );
+        }
+        again.shutdown();
+    }
+
+    /// Scenarios "Check finds another account" and "Signed out": every signed-in status the
+    /// assistant publishes is compared with the link's account.
+    #[test]
+    fn another_account_in_an_assistant_status_ends_the_link() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, assistant) = owner_runtime(&dir, &tokio_rt);
+        runtime
+            .save_settings(&json!({ "discord": { "owner_only": true } }))
+            .unwrap();
+        assistant.sign_in(Some("me@example.com"));
+        let pending = runtime.start_link().unwrap();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.complete_link(111, "Alex", &pending.code);
+        let publish = |status: crate::assistant::AssistantStatus| {
+            runtime
+                .events()
+                .publish(AppEvent::Assistant(Box::new(status)));
+            // The comparison runs on the runtime's event task.
+            std::thread::sleep(Duration::from_millis(100));
+        };
+
+        publish(assistant.status());
+        assert!(runtime.status().owner.linked.is_some(), "the same account");
+        assistant.sign_in(None);
+        publish(assistant.status());
+        assert!(
+            runtime.status().owner.linked.is_some(),
+            "signed out keeps it"
+        );
+
+        assistant.sign_in(Some("you@example.com"));
+        publish(assistant.status());
+        let owner = runtime.status().owner;
+        assert!(owner.linked.is_none());
+        assert_eq!(
+            owner.link_ended.as_deref(),
+            Some("the Codex account changed")
+        );
+        assert_eq!(host.owner_filter(), crate::owner::FILTER_NOBODY);
+        runtime.shutdown();
+    }
+
+    /// Scenario "Codex signed in with another ChatGPT account": the join preparation reads
+    /// the account; the link ends before it returns, and the join goes on.
+    #[test]
+    fn a_join_with_another_account_ends_the_link_and_still_joins() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, assistant) = owner_runtime(&dir, &tokio_rt);
+        runtime
+            .save_settings(&json!({ "discord": { "owner_only": true } }))
+            .unwrap();
+        assistant.sign_in(Some("me@example.com"));
+        let pending = runtime.start_link().unwrap();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.complete_link(111, "Alex", &pending.code);
+        assert_eq!(host.owner_filter(), 111);
+
+        assistant.sign_in(Some("you@example.com"));
+        let prepared = tokio_rt.block_on(host.prepare_join(42));
+        assert_eq!(prepared, Ok(()), "the join goes on");
+        assert_eq!(host.owner_filter(), crate::owner::FILTER_NOBODY);
+        assert_eq!(
+            runtime.status().owner.link_ended.as_deref(),
+            Some("the Codex account changed")
+        );
+        runtime.shutdown();
     }
 
     /// Change `post-assistant-answers`: a save of only the two answer posting fields

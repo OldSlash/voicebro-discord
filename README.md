@@ -33,6 +33,9 @@
   Discord. While nobody uses `/join`, nothing of the assistant runs.
 - **Keeps to itself.** The wake word is recognized on your PC and nothing reaches the
   assistant between sessions. The app keeps all its files in its own folder.
+- **Your subscription, your voice.** Optionally, link your own Discord account once with a
+  one-time code, and only your voice reaches the assistant. Everyone can still bring the bot
+  in and hear the answers.
 
 ## Requirements
 

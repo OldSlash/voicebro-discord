@@ -24,6 +24,7 @@ pub mod discord;
 pub mod events;
 pub mod gate;
 pub mod latency;
+pub mod owner;
 pub mod paths;
 pub mod runtime;
 pub mod secrets;

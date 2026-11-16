@@ -26,6 +26,9 @@ pub(crate) struct VoiceSession {
     pub(crate) command_channel: ChannelId,
     pub(crate) channel_name: String,
     pub(crate) participants: Vec<String>,
+    /// The same people with their Discord account ids (change `owner-only-access`), for
+    /// the "only person in the channel" rule.
+    pub(crate) people: Vec<(u64, String)>,
     pub(crate) output: OutputHandle,
     pub(crate) track: TrackHandle,
     pub(crate) track_ended: Arc<Notify>,
@@ -281,6 +284,7 @@ pub(crate) async fn join_voice(
             command_channel,
             channel_name: channel_name.clone(),
             participants: Vec::new(),
+            people: Vec::new(),
             output,
             track,
             track_ended,
@@ -378,14 +382,16 @@ pub(crate) async fn refresh_participants(shared: &Arc<Shared>, guild: GuildId) {
     let (Some(http), Some(cache)) = (shared.http(), shared.cache()) else {
         return;
     };
-    let names = super::speakers::channel_people(&http, &cache, guild, channel).await;
+    let people = super::speakers::channel_people(&http, &cache, guild, channel).await;
+    let names: Vec<String> = people.iter().map(|(_, name)| name.clone()).collect();
     {
         let mut sessions = shared.sessions.lock().expect("sessions lock");
         if let Some(session) = sessions.get_mut(&guild.get()) {
-            if session.participants == names {
+            if session.people == people {
                 return;
             }
             session.participants = names.clone();
+            session.people = people;
         } else {
             return;
         }

@@ -130,17 +130,17 @@ function expect(condition, message) {
   if (!condition) throw new Error(message);
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const CARDS = ["discord", "audio", "assistant", "codex", "hotkey"];
+const CARDS = ["discord", "access", "audio", "assistant", "codex", "hotkey"];
 const SETTINGS_CARDS = ["appearance", "diagnostics"];
 const SWITCHES = [
-  ["config", "earcons"], ["config", "codex-refresh-lists"], ["config", "save-chat-history"],
+  ["config", "owner-only"], ["config", "earcons"], ["config", "codex-refresh-lists"], ["config", "save-chat-history"],
   ["settings", "diagnostics-performance"], ["settings", "diagnostics-memory"], ["settings", "diagnostics-verbose-log"],
   ["performance", "performance-monitoring"],
 ];
 
 const scenarios = [
   // ---- Layout
-  ["the Settings tab holds Appearance and Diagnostics, the Config tab the bot's five cards", async () => {
+  ["the Settings tab holds Appearance and Diagnostics, the Config tab the bot's six cards", async () => {
     await load();
     const r = await page(`
       const path = $("config-path");
@@ -148,7 +148,7 @@ const scenarios = [
         pathText: path.textContent, pathInCard: Boolean(path.closest(".card")), pathTab: path.closest(".tab-panel").dataset.panel,
         pre: document.querySelectorAll('[data-panel="config"] pre').length };`);
     expect(same(r.settings, ["Appearance", "Diagnostics"]), `Settings: ${r.settings}`);
-    expect(same(r.config, ["Discord and Codex", "Audio", "Assistant", "Codex", "Hotkey"]), `Config: ${r.config}`);
+    expect(same(r.config, ["Discord and Codex", "Access", "Audio", "Assistant", "Codex", "Hotkey"]), `Config: ${r.config}`);
     expect(!r.preview && r.pre === 0, "the settings file's contents are still on the tab");
     expect(r.pathText === "C:\\VoiceBro\\settings.json", `path ${r.pathText}`);
     expect(!r.pathInCard && r.pathTab === "config", "the path is inside a card or not on the Config tab");
@@ -244,7 +244,7 @@ const scenarios = [
     expect(same(list, ["assistant", "hotkey"]), `stored ${JSON.stringify(list)}`);
     await load(`?collapsed=${list.join(",")}`);
     const r = await page(`return ${JSON.stringify(CARDS)}.map((id) => [id, collapsed(id)]);`);
-    expect(same(r, [["discord", false], ["audio", false], ["assistant", true], ["codex", false], ["hotkey", true]]), JSON.stringify(r));
+    expect(same(r, [["discord", false], ["access", false], ["audio", false], ["assistant", true], ["codex", false], ["hotkey", true]]), JSON.stringify(r));
   }],
   ["an id this window does not know is kept", async () => {
     await load("?collapsed=audio,later-card");
@@ -516,6 +516,126 @@ const scenarios = [
     expect(r.off.note === "The channel names appear once the bot is connected.", `note: ${r.off.note}`);
     expect(r.selected === "#rules (can't post)" && r.value === "1571000000000000002", `connected: ${JSON.stringify(r)}`);
     expect(r.saves === 0, "the connection saved something");
+  }],
+
+  // ---- Access: only my Discord account (change `owner-only-access`)
+  ["the Access card holds the switch and the link, with help lines", async () => {
+    await load();
+    const r = await page(`
+      const body = $("card-access-body");
+      const fields = [...body.querySelectorAll("input, select, textarea, button")].map((node) => node.dataset.path || node.id);
+      return { fields, switchHelp: $("owner-only").closest("label").querySelector(".field-help").textContent,
+        linkHelp: $("owner-link").querySelector(".field-help:not(.warning-text):not(#owner-code-ended)").textContent };`);
+    expect(same(r.fields, ["discord.owner_only", "owner-link-start", "owner-link-cancel", "owner-unlink"]), `fields: ${r.fields}`);
+    expect(["linked Discord account", "/join", "hears the answers", "Applies at once", "Default: off"].every((part) => r.switchHelp.includes(part)), `help: ${r.switchHelp}`);
+    expect(["one-time code", "10 minutes", "/link", "encrypted"].every((part) => r.linkHelp.includes(part)), `help: ${r.linkHelp}`);
+  }],
+  ["first start: the switch is off, nothing is linked, and Link is offered", async () => {
+    await load("?fresh");
+    const r = await page(`
+      tab("config");
+      return { on: $("owner-only").checked, label: $("owner-only-label").textContent, state: $("owner-state").textContent,
+        link: !$("owner-link-start").hidden, linkText: $("owner-link-start").textContent, unlink: !$("owner-unlink").hidden,
+        code: !$("owner-code").hidden, note: $("owner-note").textContent };`);
+    expect(!r.on && r.label === "Off", `switch ${JSON.stringify(r)}`);
+    expect(r.state === "not linked" && r.link && r.linkText === "Link my Discord account", JSON.stringify(r));
+    expect(!r.unlink && !r.code && r.note === "", JSON.stringify(r));
+  }],
+  ["linked: the owner's name and Unlink, which removes the link", async () => {
+    await load("?owner=linked");
+    const r = await page(`
+      tab("config");
+      const before = { state: $("owner-state").textContent, unlink: !$("owner-unlink").hidden, linkText: $("owner-link-start").textContent,
+        code: !$("owner-code").hidden };
+      $("owner-unlink").click();
+      await until(() => $("owner-state").textContent === "not linked", 2000);
+      return { before, after: $("owner-state").textContent, unlink: !$("owner-unlink").hidden, calls: calls("owner_unlink").length };`);
+    expect(r.before.state === "Alex (1091401169441656999)" && r.before.unlink && !r.before.code, JSON.stringify(r.before));
+    expect(r.before.linkText === "Link another account", `link button: ${r.before.linkText}`);
+    expect(r.after === "not linked" && !r.unlink && r.calls === 1, JSON.stringify(r));
+  }],
+  ["the switch saves at once and, with nothing linked, says the assistant hears nobody", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      const saves = calls("save_settings").length;
+      $("owner-only-label").click(); await sleep(400);
+      return { stored: stored().discord.owner_only, saves: calls("save_settings").length - saves, last: calls("save_settings").at(-1).args.patch,
+        label: $("owner-only-label").textContent, note: $("owner-note").textContent, feedback: $("config-autosave-feedback").textContent,
+        saveButton: $("config-save").disabled };`);
+    expect(r.stored === true && r.saves === 1 && same(r.last, { discord: { owner_only: true } }), JSON.stringify(r));
+    expect(r.label === "On" && r.note === "No account is linked: the assistant hears nobody until you link one.", JSON.stringify(r));
+    expect(r.feedback === "Saved: Only my Discord account" && r.saveButton, `feedback ${r.feedback}`);
+  }],
+  ["Link shows the code, the command and the countdown; Cancel ends it", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      $("owner-link-start").click();
+      await until(() => !$("owner-code").hidden, 3000);
+      const waiting = { command: $("owner-command").textContent, countdown: $("owner-countdown").textContent,
+        cancel: !$("owner-link-cancel").hidden, link: !$("owner-link-start").hidden, unlink: !$("owner-unlink").hidden };
+      $("owner-link-cancel").click();
+      await until(() => $("owner-code").hidden, 2000);
+      return { waiting, ended: $("owner-code-ended").textContent, link: !$("owner-link-start").hidden, state: $("owner-state").textContent,
+        starts: calls("owner_link_start").length, cancels: calls("owner_link_cancel").length };`);
+    expect(r.waiting.command === "/link K7QF-2M9X", `command ${r.waiting.command}`);
+    expect(/^(10:00|9:5\\d) left$/.test(r.waiting.countdown), `countdown ${r.waiting.countdown}`);
+    expect(r.waiting.cancel && !r.waiting.link && !r.waiting.unlink, JSON.stringify(r.waiting));
+    expect(r.ended === "The code was cancelled." && r.link && r.state === "not linked", JSON.stringify(r));
+    expect(r.starts === 1 && r.cancels === 1, JSON.stringify(r));
+  }],
+  ["the link completes in the card within a second of the code arriving from Discord", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      $("owner-link-start").click();
+      await until(() => !$("owner-code").hidden, 3000);
+      const sent = Date.now();
+      window.__mock.completeLink("Sam");
+      const shown = await until(() => $("owner-state").textContent.startsWith("Sam"), 1000);
+      return { shown, ms: Date.now() - sent, code: !$("owner-code").hidden, unlink: !$("owner-unlink").hidden, ended: $("owner-code-ended").textContent };`);
+    expect(r.shown && r.ms <= 1000, `not shown within a second: ${JSON.stringify(r)}`);
+    expect(!r.code && r.unlink && r.ended === "", JSON.stringify(r));
+  }],
+  ["an expired code and five wrong codes each say why the code ended", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      $("owner-link-start").click();
+      await until(() => !$("owner-code").hidden, 3000);
+      window.__mock.expireCode();
+      await until(() => $("owner-code").hidden, 2000);
+      const expired = $("owner-code-ended").textContent;
+      $("owner-link-start").click();
+      await until(() => !$("owner-code").hidden, 3000);
+      for (let i = 0; i < 5; i += 1) window.__mock.wrongCode();
+      await until(() => $("owner-code").hidden, 2000);
+      return { expired, tries: $("owner-code-ended").textContent, state: $("owner-state").textContent };`);
+    expect(r.expired === "The code expired.", `expired: ${r.expired}`);
+    expect(r.tries === "The code was ended after 5 wrong tries." && r.state === "not linked", JSON.stringify(r));
+  }],
+  ["Codex not signed in: Link shows no code and says why", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      window.__mock.setCodex({ signedIn: false });
+      $("owner-link-start").click();
+      await until(() => $("owner-message").textContent.includes("not signed in"), 3000);
+      return { message: $("owner-message").textContent, code: !$("owner-code").hidden, link: !$("owner-link-start").hidden };`);
+    expect(r.message.startsWith("Codex is not signed in") && !r.code && r.link, JSON.stringify(r));
+  }],
+  ["a collapsed Access card keeps its waiting code", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      $("owner-link-start").click();
+      await until(() => !$("owner-code").hidden, 3000);
+      await toggle("access"); const folded = collapsed("access"); await toggle("access");
+      return { folded, open: !collapsed("access"), command: $("owner-command").textContent, shown: box($("owner-command")).height > 0,
+        countdown: $("owner-countdown").textContent };`);
+    expect(r.folded && r.open, JSON.stringify(r));
+    expect(r.command === "/link K7QF-2M9X" && r.shown && r.countdown.endsWith("left"), JSON.stringify(r));
   }],
 ];
 

@@ -1362,6 +1362,7 @@
       : "";
     renderWakeDownload(status.wake || {});
     renderInstall(status);
+    renderOwner(status.owner);
     const badge = $("token-badge");
     badge.textContent = tokenSet ? "stored" : "not stored";
     badge.className = `badge ${tokenSet ? "ok" : "warn"}`;
@@ -1371,6 +1372,60 @@
     setText("system-settings-path", settingsPath);
     setText("system-codex", assistant.executable || "not found");
   }
+
+  // ---------- Access card: the owner link (change `owner-only-access`) ----------
+  // Status, not form: the link state, the waiting code and its countdown are redrawn from
+  // every status; the switch above them is a form field like the others.
+  let ownerStatus = {};
+  let ownerTimer = 0;
+  const sentence = (text) => (text ? `${text[0].toUpperCase()}${text.slice(1)}.` : "");
+  function renderOwner(owner) {
+    ownerStatus = owner || {};
+    const linked = ownerStatus.linked;
+    const pending = ownerStatus.pending;
+    const left = pending ? Math.max(0, Math.ceil((pending.expires_at_ms - Date.now()) / 1000)) : 0;
+    const waiting = Boolean(pending) && left > 0;
+    setText("owner-state", linked ? `${linked.name} (${linked.id})` : "not linked");
+    $("owner-reason").textContent = !linked && ownerStatus.link_ended ? `Not linked: ${ownerStatus.link_ended}.` : "";
+    $("owner-code").hidden = !waiting;
+    if (waiting) {
+      $("owner-command").textContent = `/link ${pending.code}`;
+      $("owner-countdown").textContent = `${Math.floor(left / 60)}:${pad2(left % 60)} left`;
+    }
+    const ended = pending && !waiting ? "the code expired" : ownerStatus.code_ended;
+    $("owner-code-ended").textContent = !waiting && !linked ? sentence(ended) : "";
+    $("owner-link-start").hidden = waiting;
+    $("owner-link-start").textContent = linked ? "Link another account" : "Link my Discord account";
+    $("owner-link-cancel").hidden = !waiting;
+    $("owner-unlink").hidden = !linked || waiting;
+    $("owner-note").textContent = stored?.discord?.owner_only && !linked
+      ? "No account is linked: the assistant hears nobody until you link one."
+      : "";
+    if (waiting && !ownerTimer) {
+      ownerTimer = setInterval(() => renderOwner(ownerStatus), 1000);
+    } else if (!waiting && ownerTimer) {
+      clearInterval(ownerTimer);
+      ownerTimer = 0;
+    }
+  }
+  async function ownerAction(command, busyText) {
+    if (!invoke) return;
+    const buttons = ["owner-link-start", "owner-link-cancel", "owner-unlink"].map($);
+    buttons.forEach((button) => (button.disabled = true));
+    $("owner-message").textContent = busyText || "";
+    try {
+      await invoke(command);
+      $("owner-message").textContent = "";
+    } catch (error) {
+      $("owner-message").textContent = String(error);
+    } finally {
+      buttons.forEach((button) => (button.disabled = false));
+      await refresh();
+    }
+  }
+  $("owner-link-start").addEventListener("click", () => ownerAction("owner_link_start", "Reading the Codex account…"));
+  $("owner-link-cancel").addEventListener("click", () => ownerAction("owner_link_cancel"));
+  $("owner-unlink").addEventListener("click", () => ownerAction("owner_unlink"));
 
   async function refresh() {
     if (!invoke) return;

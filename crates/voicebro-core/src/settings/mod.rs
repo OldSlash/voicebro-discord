@@ -146,6 +146,22 @@ pub struct DiscordSettings {
     /// A server whose slash commands are also registered directly, so they appear there at
     /// once. They are always registered globally as well.
     pub guild_id: String,
+    /// Only the linked owner's voice reaches the wake word and the assistant (change
+    /// `owner-only-access`); off by default. The owner is not stored here: the link lives in
+    /// its own encrypted file ([`crate::owner`]). The commands stay open to everyone.
+    #[serde(deserialize_with = "owner_only_flag")]
+    pub owner_only: bool,
+}
+
+/// `discord.owner_only` takes only `true` or `false`; anything else is refused with the
+/// field's path, as the lists of fixed values are.
+fn owner_only_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    match Value::deserialize(deserializer)? {
+        Value::Bool(on) => Ok(on),
+        other => Err(serde::de::Error::custom(format!(
+            "discord.owner_only must be true or false, not {other}"
+        ))),
+    }
 }
 
 impl DiscordSettings {
@@ -654,11 +670,15 @@ impl Settings {
 
     /// Which top-level sections differ between two documents. The answer posting fields of
     /// `assistant` count as their own part, `answers`, which nothing has to apply: the
-    /// answers read them when they arrive.
+    /// answers read them when they arrive. `discord.owner_only` is its own part, `owner`,
+    /// which only sets the voice filter.
     pub fn changed_sections(&self, other: &Settings) -> Vec<&'static str> {
         let mut changed = Vec::new();
-        if self.discord != other.discord {
+        if self.discord.guild_id != other.discord.guild_id {
             changed.push("discord");
+        }
+        if self.discord.owner_only != other.discord.owner_only {
+            changed.push("owner");
         }
         if self.session != other.session {
             changed.push("session");
@@ -1023,6 +1043,38 @@ mod tests {
             Settings::default().changed_sections(&both),
             vec!["assistant", "answers"]
         );
+    }
+
+    /// Change `owner-only-access`, scenarios "Older file" and "Not a boolean": a 1.0.1 file
+    /// loads with the mode off and the next save writes it; a change of it is the `owner`
+    /// part only.
+    #[test]
+    fn owner_only_defaults_to_off_and_is_its_own_part() {
+        let older: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
+        assert!(!older.discord.owner_only);
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(
+            written["discord"]["owner_only"], false,
+            "the next save writes it"
+        );
+
+        let on = older
+            .with_patch(&json!({ "discord": { "owner_only": true } }))
+            .unwrap();
+        on.validate().expect("a boolean is valid");
+        assert!(on.discord.owner_only);
+        assert_eq!(older.changed_sections(&on), vec!["owner"]);
+
+        let error = older
+            .with_patch(&json!({ "discord": { "owner_only": "yes" } }))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("owner_only"), "{error}");
+
+        let guild = older
+            .with_patch(&json!({ "discord": { "guild_id": "1091401169441656933" } }))
+            .unwrap();
+        assert_eq!(older.changed_sections(&guild), vec!["discord"]);
     }
 
     #[test]
