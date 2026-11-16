@@ -12,7 +12,7 @@ use super::rtc::{CallReport, CallSlot, RtcCall};
 use super::thread::{open_thread, ThreadSettings};
 use super::CodexConfig;
 use crate::assistant::chat_log::{agent_item_line, ChatLog};
-use crate::assistant::{AssistantSession, CallStatus};
+use crate::assistant::{AgentAnswer, AssistantSession, CallStatus};
 use crate::audio::AudioPorts;
 use crate::events::EventBus;
 use crate::settings::SpeakerLabels;
@@ -56,6 +56,68 @@ struct SessionState {
     last_error: Option<String>,
     last_user_text: Option<String>,
     last_assistant_text: Option<String>,
+}
+
+/// The turn id of `turn/started` and `turn/completed` (`turn.id`, checked in the Codex CLI
+/// 0.167.0 schema).
+fn turn_id(params: &Value) -> Option<&str> {
+    params
+        .get("turn")
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+}
+
+/// The turn id of `item/completed` (`turnId`).
+fn item_turn_id(params: &Value) -> Option<&str> {
+    params.get("turnId").and_then(Value::as_str)
+}
+
+/// What one turn of the agent has produced so far: the delegated task and its last agent
+/// message (change `post-assistant-answers`, design D2).
+#[derive(Debug, Default)]
+struct TurnAnswer {
+    task: Option<String>,
+    last_agent_text: Option<String>,
+}
+
+/// The agent's turns in progress, by turn id, and the most recent one, which takes the
+/// items that name no known turn.
+#[derive(Debug, Default)]
+struct Turns {
+    open: std::collections::HashMap<String, TurnAnswer>,
+    latest: Option<String>,
+}
+
+impl Turns {
+    fn start(&mut self, id: &str) {
+        self.open.insert(id.to_owned(), TurnAnswer::default());
+        self.latest = Some(id.to_owned());
+    }
+
+    /// The turn an item belongs to: its own when known, else the most recent one.
+    fn entry(&mut self, id: Option<&str>) -> Option<&mut TurnAnswer> {
+        let key = id
+            .filter(|id| self.open.contains_key(*id))
+            .map(str::to_owned)
+            .or_else(|| self.latest.clone())?;
+        self.open.get_mut(&key)
+    }
+
+    /// Removes a finished turn; its task and final text when it completed with some text.
+    fn finish(&mut self, id: Option<&str>, completed: bool) -> Option<(Option<String>, String)> {
+        let key = id
+            .filter(|id| self.open.contains_key(*id))
+            .map(str::to_owned)
+            .or_else(|| self.latest.clone())?;
+        let turn = self.open.remove(&key)?;
+        if self.latest.as_deref() == Some(key.as_str()) {
+            self.latest = None;
+        }
+        let text = turn
+            .last_agent_text
+            .filter(|text| !text.trim().is_empty())?;
+        completed.then_some((turn.task, text))
+    }
 }
 
 fn truncate(text: &str, maximum: usize) -> String {
@@ -170,6 +232,9 @@ pub struct CodexSession {
     /// Where each call of this session reports its counters when it ends.
     report: CallReport,
     pending_answer: Mutex<Option<oneshot::Sender<Result<String, String>>>>,
+    /// The agent's turns in progress; each completed one sends its final answer through
+    /// `ports.answers`.
+    turns: Mutex<Turns>,
     chat: Arc<ChatLog>,
     events: EventBus,
     errors: Arc<ConnectionErrors>,
@@ -227,6 +292,7 @@ impl CodexSession {
             rtc: Mutex::new(None),
             report: CallReport::with_learned(parts.guild, parts.learned_depth),
             pending_answer: Mutex::new(None),
+            turns: Mutex::new(Turns::default()),
             chat: parts.chat,
             events: parts.events,
             errors: parts.errors,
@@ -840,13 +906,31 @@ impl CodexSession {
                 self.on_closed(&reason);
             }
             // The Codex agent working on a task the voice assistant delegated.
-            "turn/started" => self.chat("system", None, "Codex took a task."),
+            "turn/started" => {
+                if let Some(id) = turn_id(params) {
+                    self.turns.lock().expect("turns lock").start(id);
+                }
+                self.chat("system", None, "Codex took a task.");
+            }
             "turn/completed" => {
                 let turn = params.get("turn");
                 let status = turn
                     .and_then(|turn| turn.get("status"))
                     .and_then(Value::as_str)
                     .unwrap_or("completed");
+                // The final answer of a completed task goes out for posting (design D1).
+                let finished = self
+                    .turns
+                    .lock()
+                    .expect("turns lock")
+                    .finish(turn_id(params), status == "completed");
+                if let Some((task, text)) = finished {
+                    self.ports.answers.send(AgentAnswer {
+                        guild: self.guild,
+                        task,
+                        text,
+                    });
+                }
                 let seconds = turn
                     .and_then(|turn| turn.get("durationMs"))
                     .and_then(Value::as_i64)
@@ -870,7 +954,34 @@ impl CodexSession {
                 );
             }
             "item/completed" => {
-                if let Some((kind, text)) = params.get("item").and_then(agent_item_line) {
+                let item = params.get("item");
+                let line = item.and_then(agent_item_line);
+                // The turn's task and its latest agent message, for the answer.
+                let kind = item
+                    .and_then(|item| item.get("type"))
+                    .and_then(Value::as_str);
+                match (kind, line.as_ref()) {
+                    (Some("userMessage"), Some((_, task))) => {
+                        let mut turns = self.turns.lock().expect("turns lock");
+                        if let Some(turn) = turns.entry(item_turn_id(params)) {
+                            turn.task = Some(task.clone());
+                        }
+                    }
+                    (Some("agentMessage"), _) => {
+                        let text = item
+                            .and_then(|item| item.get("text"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_owned();
+                        let mut turns = self.turns.lock().expect("turns lock");
+                        if let Some(turn) = turns.entry(item_turn_id(params)) {
+                            turn.last_agent_text = Some(text);
+                        }
+                    }
+                    _ => {}
+                }
+                if let Some((kind, text)) = line {
                     self.chat(kind, None, &text);
                 }
             }
@@ -894,10 +1005,12 @@ impl CodexSession {
         );
     }
 
-    /// Detach: end any call and forget the thread mapping. The conversation survives.
+    /// Detach: end any call and forget the thread mapping. The conversation survives; the
+    /// agent's turns in progress are forgotten.
     pub fn shutdown(&self) {
         let thread_id = self.thread_id();
         self.server.unmap_thread(&thread_id);
+        *self.turns.lock().expect("turns lock") = Turns::default();
         let live = {
             let mut state = self.lock();
             state.wanted = false;
@@ -1093,6 +1206,7 @@ mod tests {
                 input,
                 output,
                 failures: crate::audio::codec::CodecFailures::none(),
+                answers: crate::assistant::AnswerSink::none(),
             },
             chat: Arc::clone(&chat),
             events: events.clone(),
@@ -1121,6 +1235,225 @@ mod tests {
             .block_on(session.start_with_history(thinking, HandoffMode::Thinking))
             .expect("the built-in routing starts at once");
         assert_eq!(started["attempt"], 3);
+        server.kill();
+    }
+
+    /// A session on the Node fake app-server, built as the handoff test builds one, with its
+    /// own answer receiver; `None` where Node is not installed.
+    fn session_with_answers(
+        runtime: &tokio::runtime::Runtime,
+        dir: &std::path::Path,
+    ) -> Option<(
+        Arc<CodexSession>,
+        Arc<AppServer>,
+        tokio::sync::mpsc::Receiver<AgentAnswer>,
+    )> {
+        use crate::audio::{frame_channel, output_pair, INPUT_CAPACITY};
+        let node = std::process::Command::new("node").arg("--version").output();
+        if !node.is_ok_and(|output| output.status.success()) {
+            return None;
+        }
+        let fake = format!(
+            "{}/testdata/fake-codex/fake_codex.cmd",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let events = EventBus::new(256);
+        let server = runtime
+            .block_on(AppServer::spawn(
+                runtime.handle().clone(),
+                events.clone(),
+                std::path::Path::new(&fake),
+            ))
+            .expect("the fake starts");
+        let (_sender, input) = frame_channel(INPUT_CAPACITY);
+        let (output, _source) = output_pair();
+        let (answers, receiver) = crate::assistant::AnswerSink::channel();
+        let session = CodexSession::new(SessionParts {
+            guild: 7,
+            handle: runtime.handle().clone(),
+            server: Arc::clone(&server),
+            config: Arc::new(RwLock::new(CodexConfig::default())),
+            account: Arc::new(Mutex::new(None)),
+            voices: Arc::new(Mutex::new(None)),
+            conversation: Arc::new(Mutex::new(Conversation::new(7))),
+            learned_depth: Arc::default(),
+            workspace: dir.to_path_buf(),
+            ports: AudioPorts {
+                input,
+                output,
+                failures: crate::audio::codec::CodecFailures::none(),
+                answers,
+            },
+            chat: Arc::new(ChatLog::new(events.clone(), dir.to_path_buf())),
+            events: events.clone(),
+            errors: Arc::new(ConnectionErrors::new(events)),
+        });
+        Some((session, server, receiver))
+    }
+
+    fn turn_started(id: &str) -> Value {
+        json!({ "threadId": "t", "turn": { "id": id, "items": [], "status": "inProgress" } })
+    }
+
+    fn item(turn: Option<&str>, item: Value) -> Value {
+        let mut params = json!({ "threadId": "t", "completedAtMs": 1, "item": item });
+        if let Some(turn) = turn {
+            params["turnId"] = json!(turn);
+        }
+        params
+    }
+
+    fn task(text: &str) -> Value {
+        json!({ "type": "userMessage", "id": "u", "content": [{ "type": "text",
+            "text": format!("<realtime_delegation>\n  <input>{text}</input>\n  <transcript_delta>user: {text}</transcript_delta>\n</realtime_delegation>") }] })
+    }
+
+    fn agent(text: &str) -> Value {
+        json!({ "type": "agentMessage", "id": "a", "text": text })
+    }
+
+    fn turn_completed(id: &str, status: &str) -> Value {
+        let mut turn = json!({ "id": id, "items": [], "status": status, "durationMs": 1500 });
+        if status == "failed" {
+            turn["error"] = json!({ "message": "the model failed" });
+        }
+        json!({ "threadId": "t", "turn": turn })
+    }
+
+    /// Plays one delegated turn into the session.
+    fn play(session: &CodexSession, id: &str, items: &[Value], status: &str) {
+        session.on_notification("turn/started", &turn_started(id));
+        for body in items {
+            session.on_notification("item/completed", &item(Some(id), body.clone()));
+        }
+        session.on_notification("turn/completed", &turn_completed(id, status));
+    }
+
+    fn received(receiver: &mut tokio::sync::mpsc::Receiver<AgentAnswer>) -> Vec<AgentAnswer> {
+        std::iter::from_fn(|| receiver.try_recv().ok()).collect()
+    }
+
+    /// Change `post-assistant-answers`, design D1 and D2: only the last agent message of a
+    /// completed task is sent, with the unwrapped task. Checks nothing without Node.
+    #[test]
+    fn a_completed_task_sends_its_final_answer_and_nothing_else_does() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let Some((session, server, mut answers)) = session_with_answers(&runtime, dir.path())
+        else {
+            return;
+        };
+        let search = json!({ "type": "webSearch", "id": "w", "query": "Bangkok weather" });
+
+        // Interim message, web search, final message: one answer with the final text.
+        play(
+            &session,
+            "turn-1",
+            &[
+                task("find the weather in Bangkok tomorrow"),
+                agent("I'll look that up."),
+                search.clone(),
+                agent("  **Sunny**, 33 °C. [Forecast](https://example.com)  "),
+            ],
+            "completed",
+        );
+        assert_eq!(
+            received(&mut answers),
+            vec![AgentAnswer {
+                guild: 7,
+                task: Some("find the weather in Bangkok tomorrow".to_owned()),
+                text: "**Sunny**, 33 °C. [Forecast](https://example.com)".to_owned(),
+            }]
+        );
+
+        // Interrupted, failed, and an empty final message: nothing.
+        let work = [
+            task("a"),
+            agent("I'll look."),
+            search.clone(),
+            agent("Done."),
+        ];
+        play(&session, "turn-2", &work, "interrupted");
+        play(&session, "turn-3", &work, "failed");
+        play(
+            &session,
+            "turn-4",
+            &[task("b"), agent("I'll look."), agent("   ")],
+            "completed",
+        );
+        play(&session, "turn-5", &[task("c")], "completed");
+        assert!(received(&mut answers).is_empty(), "no answer for those");
+
+        // Two turns overlapping: two answers in the order they completed. An item without a
+        // turn id belongs to the most recent turn.
+        session.on_notification("turn/started", &turn_started("turn-6"));
+        session.on_notification("item/completed", &item(Some("turn-6"), task("first")));
+        session.on_notification("turn/started", &turn_started("turn-7"));
+        session.on_notification("item/completed", &item(None, task("second")));
+        session.on_notification("item/completed", &item(Some("turn-6"), agent("One.")));
+        session.on_notification("item/completed", &item(None, agent("Two.")));
+        session.on_notification("turn/completed", &turn_completed("turn-6", "completed"));
+        session.on_notification("turn/completed", &turn_completed("turn-7", "completed"));
+        let both = received(&mut answers);
+        assert_eq!(
+            both.iter()
+                .map(|answer| (answer.task.as_deref(), answer.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(Some("first"), "One."), (Some("second"), "Two.")]
+        );
+
+        // A turn still open at the leave sends nothing afterwards.
+        session.on_notification("turn/started", &turn_started("turn-8"));
+        session.on_notification("item/completed", &item(Some("turn-8"), agent("Late.")));
+        session.shutdown();
+        session.on_notification("turn/completed", &turn_completed("turn-8", "completed"));
+        assert!(received(&mut answers).is_empty(), "forgotten at shutdown");
+        server.kill();
+    }
+
+    /// The same through the app-server's own routing: the fake plays a delegated task as
+    /// Codex sends it, by thread id. Checks nothing without Node.
+    #[test]
+    fn the_fake_app_servers_delegated_task_arrives_as_one_answer() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let Some((session, server, mut answers)) = session_with_answers(&runtime, dir.path())
+        else {
+            return;
+        };
+        server.map_thread("fake-thread", Arc::downgrade(&session));
+        for outcome in ["completed", "interrupted", "failed", "completed"] {
+            runtime
+                .block_on(server.request(
+                    "fake/delegate",
+                    json!({ "threadId": "fake-thread", "outcome": outcome }),
+                ))
+                .expect("the fake plays the task");
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut got = Vec::new();
+        while got.len() < 2 && std::time::Instant::now() < deadline {
+            got.extend(received(&mut answers));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        got.extend(received(&mut answers));
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(
+            got[0].task.as_deref(),
+            Some("Find the weather in Bangkok tomorrow (1)")
+        );
+        assert!(
+            got[0].text.starts_with("**Bangkok, tomorrow (1)**"),
+            "{}",
+            got[0].text
+        );
+        assert!(got[0].text.contains("https://example.com/forecast"));
+        assert_eq!(
+            got[1].task.as_deref(),
+            Some("Find the weather in Bangkok tomorrow (4)"),
+            "the interrupted and the failed task sent nothing"
+        );
         server.kill();
     }
 

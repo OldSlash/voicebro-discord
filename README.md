@@ -27,7 +27,8 @@
 - **A real voice.** ChatGPT's voice through the official Codex CLI, with your own ChatGPT
   account. No API key.
 - **Looks things up.** Questions that need research go to Codex, which can search the web,
-  and the answer comes back by voice.
+  and the answer comes back by voice. If you like, Codex's full answer is also posted as
+  text in a Discord channel of your choice, with its links and their previews.
 - **Built for gaming.** Mute with a system-wide hotkey, from the app or from a button in
   Discord. While nobody uses `/join`, nothing of the assistant runs.
 - **Keeps to itself.** The wake word is recognized on your PC and nothing reaches the

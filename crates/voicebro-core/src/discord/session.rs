@@ -21,6 +21,9 @@ use tokio::task::JoinHandle;
 
 pub(crate) struct VoiceSession {
     pub(crate) channel: ChannelId,
+    /// The channel `/join` was typed in (change `post-assistant-answers`), kept even when
+    /// the panel cannot be posted there.
+    pub(crate) command_channel: ChannelId,
     pub(crate) channel_name: String,
     pub(crate) participants: Vec<String>,
     pub(crate) output: OutputHandle,
@@ -105,16 +108,17 @@ impl JoinOutcome {
 
 /// The `/join` flow: the host prepares first (the assistant starts its process and checks
 /// the sign-in), then the bot joins. A refused preparation leaves the bot out of the channel
-/// and the reason goes back to the caller.
+/// and the reason goes back to the caller. `command_channel` is where `/join` was typed.
 pub(crate) async fn prepare_and_join(
     shared: &Arc<Shared>,
     guild: GuildId,
     channel: ChannelId,
+    command_channel: ChannelId,
 ) -> JoinOutcome {
     if let Err(reason) = shared.host.prepare_join(guild.get()).await {
         return JoinOutcome::Refused(reason);
     }
-    join_voice(shared, guild, channel).await
+    join_voice(shared, guild, channel, command_channel).await
 }
 
 /// Joins `channel` for `guild` with the fixed order: get or create the call, register the
@@ -124,6 +128,7 @@ pub(crate) async fn join_voice(
     shared: &Arc<Shared>,
     guild: GuildId,
     channel: ChannelId,
+    command_channel: ChannelId,
 ) -> JoinOutcome {
     let lock = shared.join_lock(guild.get());
     let _guard = lock.lock().await;
@@ -273,6 +278,7 @@ pub(crate) async fn join_voice(
         guild.get(),
         VoiceSession {
             channel,
+            command_channel,
             channel_name: channel_name.clone(),
             participants: Vec::new(),
             output,
@@ -300,6 +306,12 @@ pub(crate) async fn join_voice(
             },
         );
     });
+    // A new voice session: a chosen channel of another server is named again once.
+    shared
+        .answers_elsewhere
+        .lock()
+        .expect("answers notice lock")
+        .remove(&guild.get());
     shared.log(format!("joined voice channel {channel_name}"));
     refresh_participants(shared, guild).await;
     JoinOutcome::Joined { channel_name }
@@ -423,6 +435,22 @@ pub(crate) fn is_connected(shared: &Shared) -> bool {
     shared.status.lock().expect("discord status lock").state == ConnectionState::Connected
 }
 
+/// The voice channel and the `/join` channel of `guild`'s session, while the bot is in one.
+pub(crate) fn session_channels(
+    shared: &Shared,
+    guild: GuildId,
+) -> Option<super::answers::SessionChannels> {
+    shared
+        .sessions
+        .lock()
+        .expect("sessions lock")
+        .get(&guild.get())
+        .map(|session| super::answers::SessionChannels {
+            voice: session.channel.get(),
+            command: session.command_channel.get(),
+        })
+}
+
 pub(crate) fn session_channel_name(shared: &Shared, guild: GuildId) -> Option<String> {
     shared
         .sessions
@@ -487,6 +515,7 @@ mod tests {
             &discord.shared,
             GuildId::new(1),
             ChannelId::new(2),
+            ChannelId::new(3),
         ));
         let sessions = discord.shared.sessions.lock().unwrap().len();
         (outcome, host, sessions)

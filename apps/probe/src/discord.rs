@@ -32,15 +32,15 @@ use voicebro_core::discord::for_each_report_block;
 
 const FRAME_SAMPLES: usize = 1920; // 20 ms, 48 kHz stereo
 
-struct Env {
-    token: String,
-    guild: GuildId,
-    channel: ChannelId,
+pub(crate) struct Env {
+    pub(crate) token: String,
+    pub(crate) guild: GuildId,
+    pub(crate) channel: ChannelId,
 }
 
 /// Test inputs come from the environment, or from `probe.local.json` in the workspace root
 /// (gitignored): `{ "discord_token", "guild_id", "channel_id" }`.
-fn env() -> anyhow::Result<Env> {
+pub(crate) fn env() -> anyhow::Result<Env> {
     let local: serde_json::Value = std::fs::read_to_string("probe.local.json")
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())

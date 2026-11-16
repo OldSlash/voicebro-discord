@@ -6,6 +6,7 @@
 //!
 //! This binary is a development tool and is not shipped.
 
+mod answers;
 mod codex;
 mod compare;
 mod credential;
@@ -169,6 +170,12 @@ const PROBES: &[Probe] = &[
         summary: "plays a tone; logs the voice server, our SSRC and Discord's RTCP reports; args: [seconds] [--opus] [--codec <name>] (--opus: through the app's Opus encoder of that codec, counts passthrough)",
         needs: "VOICEBRO_DISCORD_TOKEN, VOICEBRO_TEST_GUILD, VOICEBRO_TEST_CHANNEL (or probe.local.json)",
         run: discord::delivery,
+    },
+    Probe {
+        name: "discord-post",
+        summary: "posts a sample agent answer (a table, a long code block, a link, @everyone and a mention) to the test channel's text chat as the app does, then checks the stored messages: at most 2000 characters each, closed code blocks, no mentions, a preview under the link; args: [--file <answer.md>]",
+        needs: "VOICEBRO_DISCORD_TOKEN, VOICEBRO_TEST_GUILD, VOICEBRO_TEST_CHANNEL (or probe.local.json); Send Messages, Embed Links and Read Message History there",
+        run: answers::post,
     },
 ];
 

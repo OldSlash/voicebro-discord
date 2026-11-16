@@ -41,8 +41,8 @@ The bot needs these permissions:
 | **View Channels** | Seeing the voice channel and the text channel where you type `/join`. |
 | **Connect** | Joining the voice channel. |
 | **Speak** | Playing the assistant's answers in the voice channel. |
-| **Send Messages** | Keeping the panel that `/join` posts up to date. VoiceBro edits it whenever the state changes. |
-| **Embed Links** | Showing that panel, which is an embed. |
+| **Send Messages** | Keeping the panel that `/join` posts up to date. VoiceBro edits it whenever the state changes. Posting the assistant's answers, if you turn that on ([section 7](#posting-the-answers-to-discord)). |
+| **Embed Links** | Showing that panel, which is an embed, and the previews of the links in a posted answer. |
 
 When the bot joins your server, Discord gives it a role with these permissions. A channel's
 own permission settings can take them away again: if the bot cannot join or stays silent in
@@ -199,6 +199,45 @@ you add comes with its own license, shown on the models page.
 In the window, **Codex chat** shows what the assistant heard, said and looked up, and
 **Console** shows what the app is doing.
 
+### Posting the answers to Discord
+
+When the assistant hands a question to Codex (a web search, a recipe, a price), Codex
+writes a full answer with facts, lists and links, and the voice only retells it. VoiceBro
+can post that full answer as text in a Discord channel, while the voice is still speaking,
+so everyone can read it, open its links and see their previews. Only Codex's final answer
+is posted: not its "I'll look that up", not what the voice says and not what people say.
+A long answer comes as several messages; a table comes as a block of fixed-width text so
+its columns line up. Nobody is pinged, even if the answer contains `@everyone` or a name.
+
+Turn it on in **Config → Codex → Post answers to Discord**. It is off by default, because a
+posted answer is public in that channel and stays there. Choose where the answers go:
+
+- **The voice channel's chat.** Every voice channel has its own text chat, opened with the
+  speech-bubble icon next to the voice channel. Nothing more to set up: the answers follow
+  the bot into whatever channel `/join` puts it.
+- **The channel of /join.** The answers go where you typed `/join`, under the panel. Type
+  `/join` in the text channel you want them in. Typed in the voice channel's own chat, this
+  is the same as the voice channel's chat.
+- **A chosen channel.** One channel for every answer, for example a channel `#answers`.
+  1. Create the channel in Discord. If it is private, add the bot's role to it.
+  2. In VoiceBro, choose **A chosen channel**, then pick the channel from **Answers
+     channel** below it. The list shows the text channels of the servers the bot is in,
+     while the bot is connected. Nothing is saved until you pick one.
+  3. A channel marked **(can't post)** lacks one of the permissions below for the bot.
+     Fix them in Discord; the mark goes the next time you open the **Config** tab.
+
+  Only answers from that channel's server go there; while the bot is in a voice channel of
+  another server, nothing is posted at all.
+
+For every destination the bot needs **View Channels**, **Send Messages** and **Embed
+Links** in that channel. They are among the five permissions of the install link, but a
+channel's own settings can take them away. If the answers do not appear in one channel,
+right-click that channel, choose **Edit Channel → Permissions** and check the bot's role.
+When Discord refuses an answer, the **Status** tab shows an `answers` error that names
+the channel and the reason; the next answer that gets through clears it. A change of the
+setting applies from the next answer. An answer Codex is still looking up when someone
+types `/leave` is not posted.
+
 ## 8. Settings
 
 The **Settings** tab holds the window's own settings; the **Config** tab holds the bot's.
@@ -214,7 +253,7 @@ remembers which cards are folded.
 | Config → Discord and Codex | The Discord bot token, the server ID, the path of `codex.exe` when it is not found on its own. Press **Save changes**. |
 | Config → Audio | How loud the assistant hears the channel and how loud it speaks; the short tones at session start and end. |
 | Config → Assistant | Wake word or always listening, the phrases, the auto-stop time, the wake model and its download. |
-| Config → Codex | The model and reasoning effort for looked-up answers, the voice, your instructions for the assistant, whether it gets the names of the people in the channel, **Save chat history**. The model, reasoning and voice lists come from the last time VoiceBro read them from Codex; the card says when that was. **Refresh lists** reads them now, and **Refresh the lists at start** (off by default) reads them at every start of VoiceBro. |
+| Config → Codex | The model and reasoning effort for looked-up answers, the voice, your instructions for the assistant, whether it gets the names of the people in the channel, **Save chat history**, **Post answers to Discord** and the channel for it ([section 7](#posting-the-answers-to-discord)). The model, reasoning and voice lists come from the last time VoiceBro read them from Codex; the card says when that was. **Refresh lists** reads them now, and **Refresh the lists at start** (off by default) reads them at every start of VoiceBro. |
 | Config → Hotkey | The mute hotkey. |
 
 The bottom of the **Config** tab shows where `settings.json` is.
@@ -230,6 +269,9 @@ What leaves your PC:
 - **The names of the people in the channel** go to OpenAI at the start of a call, unless
   you turn this off in **Config → Codex → Speaker names**.
 - **Questions the assistant looks up** go to Codex, which may search the web.
+- **Codex's answers to those questions** are posted in Discord, if you turned on **Post
+  answers to Discord**. Everyone who can read that channel sees them, and they stay in its
+  history until someone deletes them.
 
 Everything VoiceBro stores is in its own folder, next to `voicebro.exe`:
 
@@ -269,6 +311,8 @@ need it.
 | `/join` replies "Codex CLI is not installed" or "not signed in" | Do [step 4](#4-set-up-codex); the **Status** tab shows what is missing. |
 | The wake phrase does nothing | Look at **Wake word** on the **Status** tab: it says when the model still waits for its download (press **Download** under **Wake model** in **Config → Assistant**, or put the files there yourself as section 5 describes), when no phrases are set, or which words the model does not know. The **Console** shows a "heard:" line for everything the recognizer understood, so you can pick phrases it hears correctly. |
 | The bot joins but does not hear or speak | Check that the bot has **Connect** and **Speak** in that channel, and look for errors in the **Console**. |
+| The answers are not posted in Discord | Check **Config → Codex → Post answers to Discord**. Only answers Codex looked up are posted, not what the voice answers on its own. With **A chosen channel**, only answers from that channel's server go there. Look for an `answers` error on the **Status** tab: it names the channel and what Discord refused, usually a missing **Send Messages** or **Embed Links** ([section 7](#posting-the-answers-to-discord)). |
+| A link in a posted answer has no preview | Discord shows no preview for a link the answer puts in parentheses, as in "(source: link)". The link itself works. |
 | The assistant's voice stutters in places | The ping from the PC that runs VoiceBro to the channel's Discord voice server is probably too high: at around 300 ms or more the voice can break up. Set the channel's **Region Override** (**Edit Channel → Overview**) to a region close to that PC. See [Limitations](../README.md#limitations). |
 | A window says "The bot left the voice channel" and "opus-rs failed while …" | The Opus codec opus-rs, which you chose in **Settings → Diagnostics → Opus codec (experiment)**, failed, so the bot left that channel instead of playing broken sound. The window names the server, the channel and the error. Run `/join` to bring it back, or choose libopus there to go back to the default codec. Please attach `logs\voicebro.log` (**Open log folder** in that window) to a [GitHub issue](https://github.com/OldSlash/voicebro-discord/issues). |
 | VoiceBro does not start and names a folder | Install or extract it into a folder you can write to, such as `%LOCALAPPDATA%\VoiceBro`. |

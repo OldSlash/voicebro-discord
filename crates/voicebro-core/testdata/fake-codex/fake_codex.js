@@ -5,7 +5,11 @@
 // handoff field, as a Codex version without those fields would. A realtime start answers
 // with its attempt number and the parameters it received. `--log <file>` appends the method
 // of every request to that file, one per line; `--models <a,b>` names the models it lists
-// (default `fake-model-a,fake-model-b`; `none` lists no model).
+// (default `fake-model-a,fake-model-b`; `none` lists no model). `fake/delegate` (the fake's
+// own method, params `{threadId, outcome}`) plays a delegated task on that thread as Codex
+// CLI 0.167.0 sends it: `turn/started`, the task, an interim agent message, a web search, the
+// final agent message and `turn/completed` with `outcome` as its status (`completed` by
+// default, `interrupted`, or `failed` with an error).
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
   console.log("codex-cli 0.0.0-fake");
@@ -26,6 +30,35 @@ let realtimeStarts = 0;
 const reply = (id, result) => process.stdout.write(JSON.stringify({ id, result }) + "\n");
 const fail = (id, message) =>
   process.stdout.write(JSON.stringify({ id, error: { code: -32601, message } }) + "\n");
+const notify = (method, params) =>
+  process.stdout.write(JSON.stringify({ method, params }) + "\n");
+
+let turns = 0;
+// A delegated task as the voice hands it to the agent, then the agent's work on it.
+const delegate = (threadId, outcome) => {
+  turns += 1;
+  const turnId = `fake-turn-${turns}`;
+  const item = (n, body) =>
+    notify("item/completed", { threadId, turnId, completedAtMs: Date.now(), item: { id: `${turnId}-${n}`, ...body } });
+  notify("turn/started", { threadId, turn: { id: turnId, items: [], status: "inProgress" } });
+  item(1, {
+    type: "userMessage",
+    content: [{
+      type: "text",
+      text: `<realtime_delegation>\n  <input>Find the weather in Bangkok tomorrow (${turns})</input>\n  <transcript_delta>user: weather</transcript_delta>\n</realtime_delegation>`,
+    }],
+  });
+  item(2, { type: "agentMessage", text: "I'll look that up.", phase: "commentary" });
+  item(3, { type: "webSearch", query: "Bangkok weather tomorrow" });
+  item(4, {
+    type: "agentMessage",
+    text: `**Bangkok, tomorrow (${turns})**: sunny, 33 °C.\n\n- Rain: 10 %\n- Source: [the forecast](https://example.com/forecast)`,
+    phase: "final_answer",
+  });
+  const turn = { id: turnId, items: [], status: outcome, durationMs: 4200 };
+  if (outcome === "failed") turn.error = { message: "the fake agent failed" };
+  notify("turn/completed", { threadId, turn });
+};
 
 const lines = require("readline").createInterface({ input: process.stdin });
 lines.on("line", (line) => {
@@ -77,6 +110,12 @@ lines.on("line", (line) => {
         break;
       }
       reply(message.id, { attempt: realtimeStarts, received: params });
+      break;
+    }
+    case "fake/delegate": {
+      const params = message.params || {};
+      reply(message.id, {});
+      delegate(params.threadId, params.outcome || "completed");
       break;
     }
     default:
