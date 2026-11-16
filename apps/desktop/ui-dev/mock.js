@@ -10,13 +10,16 @@
 // Check Codex or Refresh lists fails) and `emit(name, payload)`. `?nolists` starts with no
 // Codex lists ever read. `?disconnected` starts with the bot not connected
 // (`setConnected(on)` changes it); `?post_answers=<value>&answers_channel=<id>` starts with
-// that answer posting stored.
+// that answer posting stored. The owner link (change `owner-only-access`): `?owner=linked`
+// starts with Alex linked, `?owner_only` with the switch on; `completeLink(name)` sends the
+// waiting code from Discord, `wrongCode()` a wrong one, `expireCode()` lets it expire, and
+// `owner()` is the link state the status carries.
 (() => {
   const THEMES = ["dark", "darcula", "light", "intellij"];
   const clone = (value) => JSON.parse(JSON.stringify(value));
   let settings = {
     version: 2,
-    discord: { guild_id: "1091401169441656933" },
+    discord: { guild_id: "1091401169441656933", owner_only: false },
     session: { mode: "wake_word", idle_timeout_seconds: 60, earcons: true, earcon_volume: 0.18 },
     audio: { input_gain: 1, output_gain: 1 },
     // Version 2: the phrases of each model under its id.
@@ -99,6 +102,21 @@
     const value = new URLSearchParams(location.search).get(field);
     if (value !== null) settings.assistant[field] = value;
   }
+  // The owner link as `status().owner` carries it; `?owner=linked` and `?owner_only`.
+  const LINKED = { id: "1091401169441656999", name: "Alex", linked_at: "2026-11-16T12:00:00+00:00" };
+  let owner = { linked: null, pending: null, code_ended: null, link_ended: null };
+  if (new URLSearchParams(location.search).get("owner") === "linked") owner.linked = { ...LINKED };
+  if (new URLSearchParams(location.search).has("owner_only")) settings.discord.owner_only = true;
+  // As the app's status: a code past its time is no longer waiting.
+  function ownerNow() {
+    const now = clone(owner);
+    if (now.pending && now.pending.expires_at_ms <= Date.now()) {
+      now.pending = null;
+      now.code_ended = "the code expired";
+    }
+    return now;
+  }
+  const ownerChanged = () => setTimeout(() => emit("app-event", { event: "owner", ...ownerNow() }), 0);
   // `?disconnected`: the token is stored but the bot is not connected to Discord;
   // `__mock.setConnected(on)` connects or disconnects it.
   let connected = !new URLSearchParams(location.search).has("disconnected");
@@ -335,6 +353,9 @@
     if (doc.assistant.post_answers === "channel" && !channel) {
       throw "assistant.answers_channel: pick the channel the answers go to";
     }
+    if (typeof doc.discord.owner_only !== "boolean") {
+      throw `the patch is not a settings document: discord.owner_only must be true or false, not ${JSON.stringify(doc.discord.owner_only)}`;
+    }
     if (typeof doc.codex.refresh_lists_at_start !== "boolean") {
       throw "invalid type: expected a boolean at codex.refresh_lists_at_start";
     }
@@ -418,6 +439,7 @@
         }],
       },
       latency: { "1091401169441656933": clone(turns) },
+      owner: ownerNow(),
       settings: clone(settings),
     };
   }
@@ -507,6 +529,32 @@
         }
         emit("app-event", { event: "codex_install", state: clone(install) });
       }, 1500);
+    },
+    // Like the app: Check's account read (300 ms), then a code for 10 minutes.
+    owner_link_start: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      codex.accountRead = true;
+      if (!(codex.installed && codex.signedIn)) {
+        throw "Codex is not signed in: use Sign in on the Status tab first, then press Link again";
+      }
+      owner.pending = { code: "K7QF-2M9X", expires_at_ms: Date.now() + 10 * 60 * 1000, wrong_tries: 0 };
+      owner.code_ended = null;
+      ownerChanged();
+      return clone(owner.pending);
+    },
+    owner_link_cancel: () => {
+      if (!owner.pending) return false;
+      owner.pending = null;
+      owner.code_ended = "the code was cancelled";
+      ownerChanged();
+      return true;
+    },
+    owner_unlink: () => {
+      if (!owner.linked) return false;
+      owner.linked = null;
+      owner.link_ended = null;
+      ownerChanged();
+      return true;
     },
     codex_sign_in: () => "https://chatgpt.com/mock",
     codex_models: () => clone(capabilities.models),
@@ -632,6 +680,32 @@
         message: where.message || "attempt to subtract with overflow",
       });
       emit("app-event", { event: "discord" });
+    },
+    // The owner link (change `owner-only-access`): the waiting code sent from Discord by
+    // `name`, a wrong code (the fifth ends it), and the code's time running out.
+    owner: () => ownerNow(),
+    completeLink(name = "Alex") {
+      if (!ownerNow().pending) return false;
+      owner.linked = { ...LINKED, name };
+      owner.pending = null;
+      owner.code_ended = null;
+      owner.link_ended = null;
+      ownerChanged();
+      return true;
+    },
+    wrongCode() {
+      if (!ownerNow().pending) return false;
+      owner.pending.wrong_tries += 1;
+      if (owner.pending.wrong_tries >= 5) {
+        owner.pending = null;
+        owner.code_ended = "the code was ended after 5 wrong tries";
+      }
+      ownerChanged();
+      return true;
+    },
+    expireCode() {
+      if (owner.pending) owner.pending.expires_at_ms = Date.now() - 1;
+      ownerChanged();
     },
     failNextCheck(message = "codex not found: press Install Codex on the Status tab, or set the path of codex.exe in Config") {
       failNextCheck = message;

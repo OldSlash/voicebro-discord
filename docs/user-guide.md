@@ -238,6 +238,35 @@ the channel and the reason; the next answer that gets through clears it. A chang
 setting applies from the next answer. An answer Codex is still looking up when someone
 types `/leave` is not posted.
 
+### Only my Discord account
+
+The assistant runs on your own ChatGPT subscription. A subscription is meant for one
+person, so VoiceBro can make sure only you talk to it: while **Only my Discord account**
+is on, only the voice of the Discord account you linked reaches the wake word and the
+assistant. Nobody else's voice starts a session or gets into a question, and neither does a
+music bot's. Everything else stays open: anyone can use `/join`, `/leave`, `/status` and the
+**Mute GPT** button, everyone in the channel hears the answers, and posted answers are
+posted as before. The switch is off by default.
+
+To link your account:
+
+1. Sign in to Codex (section 4).
+2. In **Config → Access**, press **Link my Discord account**. VoiceBro reads your Codex
+   account and shows a code, for example `K7QF-2M9X`, for 10 minutes.
+3. In Discord, from your own account, send `/link` with that code, in any server the bot is
+   in or in a direct message to the bot. Only you see the bot's reply. Upper or lower case
+   and the dash do not matter.
+4. The card shows your Discord name. Turn on **Only my Discord account**.
+
+The code works once. Five wrong codes, from anyone, end it; press **Link** for a new one.
+After a first install, `/link` can take up to an hour to appear in direct messages; in the
+server set as **Discord guild ID** it appears at once.
+
+The link stays until you press **Unlink**, link another Discord account, sign Codex into
+another ChatGPT account, or delete VoiceBro with its data. When Codex is signed into another
+account, the card shows "Not linked: the Codex account changed"; link again. While the
+switch is on and no account is linked, the assistant hears nobody.
+
 ## 8. Settings
 
 The **Settings** tab holds the window's own settings; the **Config** tab holds the bot's.
@@ -251,6 +280,7 @@ remembers which cards are folded.
 | Settings → Appearance | Theme and font size. |
 | Settings → Diagnostics | **Performance monitoring**, **Memory measurement**, **Verbose log**. All are off by default and cost nothing while off. **Opus codec (experiment)**: which Opus implementation encodes and decodes the voice (the assistant toward Discord, your speech toward Codex and its answer, the people in the channel): libopus, the C library VoiceBro has always used and the default, or opus-rs, written in Rust and being tried as its replacement. A change applies at the next `/join` and the next call; the line under the list shows the codec in use. |
 | Config → Discord and Codex | The Discord bot token, the server ID, the path of `codex.exe` when it is not found on its own. Press **Save changes**. |
+| Config → Access | **Only my Discord account** (off by default) and the link to your Discord account ([section 7](#only-my-discord-account)). |
 | Config → Audio | How loud the assistant hears the channel and how loud it speaks; the short tones at session start and end. |
 | Config → Assistant | Wake word or always listening, the phrases, the auto-stop time, the wake model and its download. |
 | Config → Codex | The model and reasoning effort for looked-up answers, the voice, your instructions for the assistant, whether it gets the names of the people in the channel, **Save chat history**, **Post answers to Discord** and the channel for it ([section 7](#posting-the-answers-to-discord)). The model, reasoning and voice lists come from the last time VoiceBro read them from Codex; the card says when that was. **Refresh lists** reads them now, and **Refresh the lists at start** (off by default) reads them at every start of VoiceBro. |
@@ -278,6 +308,7 @@ Everything VoiceBro stores is in its own folder, next to `voicebro.exe`:
 | Item | Contents |
 |---|---|
 | `settings.json` | Your settings. |
+| `owner-link.bin` | The Discord account you linked, encrypted so that only your Windows user on this PC can read it. Only if you linked one. |
 | `codex-lists.json` | The Codex models, reasoning levels and voices of your account, from the last time VoiceBro read them. |
 | `logs\` | The app log, at most about 2 MB, without what people said. The chat history too, if you turned on **Save chat history**. |
 | `assets\` | The Vosk recognizer and the models VoiceBro downloaded. |
@@ -295,8 +326,9 @@ For the portable zip, replace `voicebro.exe` and keep the rest of the folder.
 
 ## 11. Uninstalling
 
-Uninstall VoiceBro in **Windows Settings → Apps**. To remove your settings, logs, models
-and the stored token as well, check **Delete the application data** in the uninstaller;
+Uninstall VoiceBro in **Windows Settings → Apps**. To remove your settings, logs, models,
+the linked Discord account and the stored token as well, check **Delete the application
+data** in the uninstaller;
 leave it unchecked to keep them for a later install. An installed copy and a portable copy
 share the stored token, so deleting the data of one removes the token of both.
 

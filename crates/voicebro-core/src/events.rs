@@ -37,6 +37,9 @@ pub enum AppEvent {
     Chat(Box<crate::assistant::chat_log::ChatEntry>),
     /// The assistant's account, process or call state changed.
     Assistant(Box<crate::assistant::AssistantStatus>),
+    /// The owner link or its code changed (change `owner-only-access`). The code reaches
+    /// only the window; its `Debug` form is hidden.
+    Owner(Box<crate::owner::OwnerStatus>),
     /// Progress of a first-use asset download, in steps of at least 20 %.
     Assets {
         label: String,
@@ -162,6 +165,7 @@ mod tests {
             ("hotkey", AppEvent::Hotkey(Box::default())),
             ("chat", AppEvent::Chat(Box::new(chat))),
             ("assistant", AppEvent::Assistant(Box::default())),
+            ("owner", AppEvent::Owner(Box::default())),
             (
                 "assets",
                 AppEvent::Assets {

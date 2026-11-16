@@ -119,6 +119,7 @@ pub enum AppEvent {
     Chat(ChatEntry),                   // one assistant chat-log entry
     Assets(AssetProgress),             // downloads: label, percent, error
     CodecFailure { guild_name, channel_name, path, activity, codec, message }, // the bot left after an opus-rs panic
+    Owner(OwnerStatus),                // the owner link or its waiting code changed (4.11)
 }
 ```
 
@@ -268,9 +269,16 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
 
 - **Start**: the client starts whenever a token is stored, at launch and after a token is
   saved; Connect and Disconnect stay as manual controls. There is no auto-connect setting.
-- Slash commands `/join`, `/leave`, `/status`, registered globally on `ready` and, when
-  `discord.guild_id` is set, also in that server (where they appear at once); each
-  registration's result is logged.
+- Slash commands `/join`, `/leave`, `/status` and `/link`, registered globally on `ready`
+  and, when `discord.guild_id` is set, also in that server (where they appear at once); each
+  registration's result is logged. `/link code:<8 to 12 characters>` (change
+  `owner-only-access`, 4.11) is the global one with the contexts `Guild` and `BotDm`, so it
+  also works in a direct message to the bot; the guild's copy has no contexts (Discord takes
+  them only on global commands). It hands the sender's id from the interaction, a cleaned
+  name (global name, else user name) and the typed code to `VoiceHost::complete_link` and
+  answers only the sender. The owner-only mode limits none of the commands: `/join`,
+  `/leave` and the Mute button work for everyone; `/status` adds "Only the owner's voice
+  reaches the assistant here." while the mode is on.
 - `/join` first awaits `VoiceHost::prepare_join(guild)`: the assistant starts its process
   and checks its sign-in. An error is the reply ("Not joined: …") and the bot stays out of
   the channel; only then does the join below run.
@@ -302,13 +310,29 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
 - **Leave** uses `Songbird::remove`, not `leave`, so the `Call`, its handlers and tracks are
   gone, and closes the output source. Rejoin builds a new gate. Join and leave are
   serialized per guild across the whole awaited operation.
-- **Speaker directory** per guild maps SSRC → display name (nickname, then display name,
-  then username; printable, trimmed, at most 32 chars). It outlives the call. The first
-  time a source with no name is heard, and only then, the receive handler checks the
-  channel's participants: when exactly one non-bot member is there, that member is taken as
-  the speaker and logged "assigned as the only person in the channel"; a real mapping from a
-  later speaking event replaces it.
-- **Participants** are kept current from `voice_state_update` and pushed to the gate.
+- **Speaker directory** per guild maps SSRC → `SpeakerEntry { user, bot, name }`: the
+  Discord account, whether it is a bot, and for people the display name (nickname, then
+  display name, then username; printable, trimmed, at most 32 chars). It outlives the
+  call. Every speaking event records its account, bots included (change
+  `owner-only-access`), so a bot's stream is known and has no name; the account goes in
+  at once (`set_user`) and the name after the member lookup, which may be an HTTP call, so
+  the owner filter knows the source from its first frame. The first time a
+  source with no entry at all is heard, and only then, the receive handler checks the
+  channel's people: when exactly one non-bot member is there, that member's name and
+  account are taken for the source and logged "assigned as the only person in the
+  channel"; a real mapping from a later speaking event replaces it. (Before the change a
+  bot's stream, having no name, got the only person's name this way.)
+- **Participants** are kept current from `voice_state_update` and pushed to the gate (names);
+  the session also keeps them with their account ids (`VoiceSession.people`) for the rule
+  above.
+- **The owner filter** (change `owner-only-access`, 4.11). Each `VoiceTick` reads
+  `VoiceHost::owner_filter()` once. While it is not "everyone", the "only person" rule runs
+  for every source first, then only the sources whose account is the owner's pass
+  (`passing_sources`); with "nobody" none pass. The others are not decoded (opus-rs), not
+  mixed and not handed to the host; each dropped frame counts in
+  `VoiceCounters.ignored_frames`, and the first drop of a source per join logs "receive:
+  ignored <name or an unknown source> (ssrc N) in guild G: not the owner". The gate, the
+  wake feed and the assistant need nothing of their own: they only ever see the owner.
 - The receive handler decodes per-speaker PCM at 48 kHz stereo (never mono or 24 kHz: songbird
   0.6's packet-loss recovery for those modes is unproven), mixes it into reusable buffers,
   and calls the app's `VoiceHost::on_tick(guild, mixed, per_speaker)`. `VoiceHost` is the
@@ -840,7 +864,7 @@ One schema, one place to validate, one place to apply.
 #[derive(Serialize, Deserialize, Default)]
 pub struct Settings {
     pub version: u32,                      // schema version, migrated on load
-    pub discord: DiscordSettings,          // guild_id (an older auto_connect is ignored and dropped at the next save)
+    pub discord: DiscordSettings,          // guild_id (an older auto_connect is ignored and dropped at the next save); owner_only: only the linked owner's voice passes (4.11), default false, its own `owner` part in changed_sections
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation, deactivation } }
@@ -1149,12 +1173,26 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     an "Auto-start enabled" badge, Save changes (one settings patch for the edited fields
     plus `set_secret` when a token was typed) and Reset (back to the stored values); its
     fields (`data-config-path`) are the only ones that wait for Save changes. Below it come
-    the Audio, Assistant, Codex and Hotkey cards, which save each change at once, then the
+    the Access, Audio, Assistant, Codex and Hotkey cards, which save each change at once, then the
     tab's feedback line and one line with the path of `settings.json` (`#config-path`),
     outside every card. The tab never shows the contents of the settings file.
-  - **Collapsible cards** (Settings and Config): each of the seven cards has `data-card`
-    (`appearance`, `diagnostics` on Settings; `discord`, `audio`, `assistant`, `codex`,
-    `hotkey` on Config), its title inside a `<button class=
+  - **Access** (Config, after "Discord and Codex"; change `owner-only-access`, 4.11): the
+    switch "Only my Discord account" (`#owner-only`, `discord.owner_only`, saved at once
+    like every switch) and the link part, which is status and not form: `renderOwner`
+    redraws it from `Status.owner` on every status (the `owner` event refreshes the status).
+    It shows the owner as "<name> (<id>)" or "not linked" with `link_ended` as the reason;
+    while a code waits, `/link <code>` and a countdown from `expires_at_ms` (redrawn every
+    second, its own timer stopped when no code waits) with Cancel; otherwise Link (or "Link
+    another account") and, when linked, Unlink. A code that ended without a link shows
+    `code_ended` as a sentence ("The code was cancelled."); a code past its time shows "The
+    code expired." With the switch on and nothing linked, the note under the switch says
+    the assistant hears nobody. Link, Cancel and Unlink call `owner_link_start` (Codex's
+    account read as Check, then a code; its error shows under the buttons),
+    `owner_link_cancel` and `owner_unlink`, disable the three buttons meanwhile and refresh
+    the status.
+  - **Collapsible cards** (Settings and Config): each of the eight cards has `data-card`
+    (`appearance`, `diagnostics` on Settings; `discord`, `access`, `audio`, `assistant`,
+    `codex`, `hotkey` on Config), its title inside a `<button class=
     "card-toggle" aria-expanded aria-controls>` with a CSS chevron, and its body in
     `.card-body`, which `hidden` hides; "Discord and Codex" keeps its badge in the title
     row. A click, Enter or Space toggles the card at once and saves the whole list with one
@@ -1201,8 +1239,8 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
   - Commands: `get_settings`, `save_settings`, `set_secret`, `clear_secret`, `status`,
     `app_info`, `set_muted`, `toggle_mute`, `discord_connect`, `discord_disconnect`,
     `codex_sign_in`, `codex_check`, `codex_install_info`, `codex_install`,
-    `codex_models`, `capabilities`, `discord_text_channels`, `wake_models`, `wake_download`,
-    `wake_requirements`,
+    `codex_models`, `owner_link_start`, `owner_link_cancel`, `owner_unlink`, `capabilities`,
+    `discord_text_channels`, `wake_models`, `wake_download`, `wake_requirements`,
     `chat_log`, `log_history`, `system_status`, `memory_status`, `open_log_folder`,
     `open_models_folder`, `open_assets_folder`.
 - Checking the window without a person: start the app with
@@ -1217,7 +1255,9 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
   `?collapsed=<ids>` with those cards stored as collapsed; `discord_text_channels` answers
   two servers with "rules" marked can't post, `?disconnected` starts with the bot not
   connected and `setConnected(on)` changes it, `?post_answers=<value>&answers_channel=<id>`
-  starts with that answer posting stored),
+  starts with that answer posting stored, `?owner=linked` with Alex linked and `?owner_only`
+  with the Access switch on; `completeLink(name)`, `wrongCode()` and `expireCode()` act as
+  Discord and the clock on a waiting code, and `owner()` returns the link state),
   `make.mjs`, which writes `ui-dev/index.html` from `ui/index.html` with the mock loaded
   first, and `serve.mjs`, which serves it on `http://127.0.0.1:5174/` for browsers that do
   not run scripts from `file://`. Two headless checks drive the mock in Edge and stop at
@@ -1262,11 +1302,13 @@ is built on it.
   `NSIS_HOOK_POSTINSTALL` sends `SHChangeNotify` twice after every install:
   `SHCNE_UPDATEITEM` for `$INSTDIR\voicebro.exe` and `SHCNE_ASSOCCHANGED`, both flushed.
   Without them Explorer, the shortcuts and the taskbar keep the icon of the earlier build.
-- **Update and uninstall:** an install over an older one replaces only the bundled files.
+- **Update and uninstall:** an install over an older one replaces only the bundled files,
+  so the data files (`owner-link.bin` among them) stay.
   `apps/desktop/installer-hooks.nsh` defines `NSIS_HOOK_POSTINSTALL` (the installer
   language for the uninstaller, the icon notice above) and `NSIS_HOOK_POSTUNINSTALL`:
   only when "Delete the application data" is checked and not in update mode, it removes
-  `logs`, `assets`, `models`, `codex-workspace`, `webview-data`, `settings.json`, runs
+  `logs`, `assets`, `models`, `codex-workspace`, `webview-data`, `settings.json`,
+  `owner-link.bin` (with their `.tmp` files), runs
   `cmdkey /delete:VoiceBro/discord_token`, and removes the then empty install folder.
   Tauri's own deletion of `%APPDATA%` / `%LOCALAPPDATA%\com.voicebro.desktop` stays.
 - **Release script** `scripts\build-release.ps1`: checks that `tauri.conf.json` and
@@ -1300,6 +1342,50 @@ is built on it.
 - Code signing is not set up; `bundle.windows.signCommand` or a certificate thumbprint can
   be added later without changing the rest.
 
+### 4.11 Owner link (`owner.rs`)
+
+Change `owner-only-access`: an optional mode in which only the voice of one linked Discord
+account reaches the wake word and the assistant, so the subscription answers only its
+holder. The commands (`/join`, `/leave`, `/status`, the Mute button) and the answers stay
+open to everyone.
+
+- **State.** One `OwnerState` (shared `Arc`, held by the runtime and the gate host):
+  - the link (`OwnerLink`: Discord user id and name, the assistant id, the assistant
+    account's fingerprint, the time);
+  - at most one waiting code;
+  - why the last code ended (`code_ended`) and why there is no link (`link_ended`);
+  - `filter: AtomicU64`, read by the receive path once per tick through
+    `VoiceHost::owner_filter`: `0` (mode off, everyone), `u64::MAX` (mode on, nobody
+    linked: nobody) or the owner's Discord user id.
+
+  The runtime sets the mode from `discord.owner_only` at start and on every save of it (its
+  own `owner` part in `changed_sections`). Every change publishes `AppEvent::Owner`.
+- **The code.** Link in the window: the desktop shell has Codex read the account (as Check),
+  then `Runtime::start_link` issues a code bound to that account; not signed in is
+  refused.
+  - The code is 8 Crockford base32 symbols from the OS random source, shown as `XXXX-XXXX`.
+  - Typed codes are upper-cased, spaces and dashes dropped, `O` read as `0`, `I` and `L` as
+    `1`, then compared in constant time.
+  - It lives 10 minutes; 5 wrong codes in total, from anyone, end it; Link again replaces
+    it; Cancel ends it.
+  - `/link` hands the sender's id (from the interaction) to `VoiceHost::complete_link`,
+    and the outcome is the ephemeral reply.
+  - The code reaches only the window, through the status and the event: `PendingCode`'s
+    `Debug` prints `<hidden>`, and the log lines say only that a code was issued, a wrong
+    code came (n of 5), or an account was linked.
+- **The file.** `owner-link.bin` in the data folder: the link's JSON (`"version": 1`)
+  encrypted with `CryptProtectData` for the current user (`CRYPTPROTECT_UI_FORBIDDEN`, the
+  entropy `VoiceBro owner link v1`), written through `owner-link.bin.tmp` and a rename,
+  read once at start. A file that does not decrypt, parse or match the version is no link
+  (`link_ended`: "the link file could not be read", one warning). Unlink deletes it. Off
+  Windows the link is kept in memory only.
+- **The assistant account.** The fingerprint is SHA-256 of `<account type>:<email trimmed,
+  lower-cased>`; the email is never stored. The runtime compares every signed-in
+  `AppEvent::Assistant` status (Check, Link, the read at start) and, synchronously, the
+  account read by each join preparation. Another account removes the link
+  (`link_ended`: "the Codex account changed"); signing out keeps it. The join goes on in
+  either case: only the voice is limited.
+
 ## 5. Data flow
 
 ### Audio in
@@ -1307,6 +1393,8 @@ is built on it.
 ```text
 Discord UDP ─► songbird (DAVE, Opus decode; with opus-rs only DAVE, and the
    VoiceTick handler decodes per SSRC) ─► VoiceTick: per-SSRC 48 k stereo
+   ─► owner filter (4.11: everyone, nobody, or the owner's account only; the
+      others counted as ignored_frames and not decoded with opus-rs)
    ─► mix (i32 sum, clamp) ─► RelayGate.process_tick(mixed, per_speaker)
         ├─► per speaker ─► WakeFeed (bounded channel) ─► wake worker thread
         │                     ─► 16 k mono ─► recognizer ─► PhraseSpotter ─► gate.on_phrase

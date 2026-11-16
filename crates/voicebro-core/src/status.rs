@@ -80,6 +80,8 @@ pub struct Status {
     /// The last measured turns (at most 50) per guild the bot is in.
     pub latency: BTreeMap<String, Vec<crate::latency::TurnReport>>,
     pub assistant: crate::assistant::AssistantStatus,
+    /// The owner link and its waiting code (change `owner-only-access`).
+    pub owner: crate::owner::OwnerStatus,
     pub settings: Settings,
 }
 
