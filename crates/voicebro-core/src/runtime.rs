@@ -2,15 +2,18 @@
 //! adapter, the gates, the wake engine and the assistant, and it is the only place that
 //! knows every subsystem.
 
-use crate::assistant::{Assistant, StubAssistant};
+use crate::assistant::{AgentAnswer, AnswerSink, Assistant, StubAssistant};
 use crate::audio::codec::{CodecFailure, CodecFailureHub, CodecFailures, OpusCodec};
 use crate::audio::{frame_channel, AudioPorts, Frame, OutputHandle, INPUT_CAPACITY};
-use crate::discord::{AssistantState, DiscordError, DiscordRuntime, JoinPreparation, VoiceHost};
+use crate::discord::{
+    AnswerDestination, AssistantState, DiscordError, DiscordRuntime, JoinPreparation, PostOutcome,
+    TextChannelGroup, VoiceHost,
+};
 use crate::events::{AppEvent, EventBus};
 use crate::gate::{ErrorReporter, GateSettings, RelayGate, RelayRegistry};
 use crate::secrets::{SecretError, SecretKey, SecretStore};
 use crate::settings::store::{SettingsStore, StoreError};
-use crate::settings::{SessionMode, Settings, ValidationError};
+use crate::settings::{AssistantSettings, PostAnswers, SessionMode, Settings, ValidationError};
 use crate::status::{ConnectionErrors, HotkeyStatus, SecretStatus, Status};
 use crate::wake::WakeManager;
 use serde_json::Value;
@@ -57,6 +60,8 @@ struct GateHost {
     opus_codec: Mutex<OpusCodec>,
     /// Where the joins' codec panics are reported (design D5).
     codec_failures: Arc<CodecFailureHub>,
+    /// Where every session sends its agent's answers for posting.
+    answers: AnswerSink,
 }
 
 impl VoiceHost for GateHost {
@@ -129,6 +134,7 @@ impl VoiceHost for GateHost {
                 input: receiver,
                 output,
                 failures: self.codec_failures.for_guild(guild),
+                answers: self.answers.clone(),
             },
         ) {
             Ok(session) => gate.set_session(session),
@@ -248,6 +254,106 @@ pub(crate) async fn handle_codec_failure(
     });
 }
 
+/// What the answer handler needs from Discord: posting an answer where a destination
+/// points (change `post-assistant-answers`). The Discord adapter in the app, a fake in the
+/// tests.
+pub(crate) trait AnswerPoster: Send + Sync {
+    fn post<'a>(
+        &'a self,
+        answer: &'a AgentAnswer,
+        destination: AnswerDestination,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PostOutcome> + Send + 'a>>;
+}
+
+impl AnswerPoster for DiscordRuntime {
+    fn post<'a>(
+        &'a self,
+        answer: &'a AgentAnswer,
+        destination: AnswerDestination,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PostOutcome> + Send + 'a>> {
+        Box::pin(self.post_answer(answer, destination))
+    }
+}
+
+/// Where the settings send an answer: `None` while posting is off.
+pub(crate) fn answer_destination(settings: &AssistantSettings) -> Option<AnswerDestination> {
+    match settings.post_answers {
+        PostAnswers::Off => None,
+        PostAnswers::VoiceChannel => Some(AnswerDestination::VoiceChannel),
+        PostAnswers::CommandChannel => Some(AnswerDestination::CommandChannel),
+        // Validation keeps `channel` from being saved without an id; 0 is no channel and
+        // resolves to "gone", which says so in the status.
+        PostAnswers::Channel => Some(AnswerDestination::Channel(
+            settings.answers_channel_id().unwrap_or_default(),
+        )),
+    }
+}
+
+/// One agent answer (design D3, D4, D8, D12): `settings` are the current ones, read when
+/// the answer arrives. Off makes no call. A post is logged with its channel, parts and
+/// length; a refusal sets the `answers` connection error ("cannot post to #<channel> in
+/// <server>: <reason>", which the window shows after the source, "answers: "), and the
+/// next post clears it. The text reaches the log file only with the verbose log.
+pub(crate) async fn handle_answer(
+    answer: AgentAnswer,
+    settings: &AssistantSettings,
+    poster: &dyn AnswerPoster,
+    errors: &ConnectionErrors,
+) {
+    let guild = answer.guild;
+    let Some(destination) = answer_destination(settings) else {
+        log::info!("[answers:{guild}] the Codex answer was not posted: posting answers is off");
+        return;
+    };
+    match poster.post(&answer, destination).await {
+        PostOutcome::Posted {
+            channel,
+            server,
+            messages,
+            characters,
+        } => {
+            log::info!(
+                "[answers:{guild}] posted the Codex answer to #{channel} in {server} ({messages} {}, {characters} characters)",
+                if messages == 1 { "message" } else { "messages" }
+            );
+            crate::detail!("answers", "[answers:{guild}] {}", answer.text);
+            errors.report("answers", None);
+        }
+        PostOutcome::NotPosted { reason, repeat } => {
+            if !repeat {
+                log::info!("[answers:{guild}] the Codex answer was not posted: {reason}");
+            }
+        }
+        PostOutcome::Refused {
+            channel,
+            server,
+            message,
+        } => {
+            // The window shows the source in front: "answers: cannot post to …".
+            let line = format!("cannot post to #{channel} in {server}: {message}");
+            log::warn!("[answers:{guild}] {line}");
+            errors.report("answers", Some(line));
+        }
+    }
+}
+
+/// The task that posts the answers one after another, each with the settings stored at the
+/// moment it is taken up, so a save applies to the next answer without restarting anything.
+pub(crate) fn spawn_answer_handler(
+    handle: &Handle,
+    mut answers: tokio::sync::mpsc::Receiver<AgentAnswer>,
+    settings: Arc<RwLock<Settings>>,
+    poster: Arc<dyn AnswerPoster>,
+    errors: Arc<ConnectionErrors>,
+) -> tokio::task::JoinHandle<()> {
+    handle.spawn(async move {
+        while let Some(answer) = answers.recv().await {
+            let current = settings.read().expect("settings lock").assistant.clone();
+            handle_answer(answer, &current, poster.as_ref(), &errors).await;
+        }
+    })
+}
+
 pub struct Runtime {
     build_stamp: String,
     data_dir: PathBuf,
@@ -255,7 +361,8 @@ pub struct Runtime {
     secrets: Arc<dyn SecretStore>,
     events: EventBus,
     handle: Handle,
-    settings: RwLock<Settings>,
+    /// Shared with the answer handler, which reads the current settings for each answer.
+    settings: Arc<RwLock<Settings>>,
     host: Arc<GateHost>,
     discord: Arc<DiscordRuntime>,
     wake: WakeManager,
@@ -265,6 +372,8 @@ pub struct Runtime {
     hotkey: Mutex<HotkeyStatus>,
     /// The codec failure reports, taken by `start` for its handler task.
     codec_failures: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<CodecFailure>>>,
+    /// The agents' answers, taken by `start` for the answer handler task.
+    answers: Mutex<Option<tokio::sync::mpsc::Receiver<AgentAnswer>>>,
 }
 
 impl Runtime {
@@ -309,6 +418,7 @@ impl Runtime {
             Arc::new(registry.clone()),
         );
         let (codec_failures, failure_reports) = CodecFailureHub::new();
+        let (answers, answer_queue) = AnswerSink::channel();
         let host = Arc::new(GateHost {
             registry,
             wake: wake.clone(),
@@ -319,6 +429,7 @@ impl Runtime {
             discord: Mutex::new(None),
             opus_codec: Mutex::new(OpusCodec::default()),
             codec_failures,
+            answers,
         });
         let discord = Arc::new(DiscordRuntime::new(
             events.clone(),
@@ -333,7 +444,7 @@ impl Runtime {
             secrets,
             events,
             handle,
-            settings: RwLock::new(Settings::default()),
+            settings: Arc::new(RwLock::new(Settings::default())),
             host,
             discord,
             wake,
@@ -342,6 +453,7 @@ impl Runtime {
             secrets_set: Mutex::new(HashSet::new()),
             hotkey: Mutex::new(HotkeyStatus::default()),
             codec_failures: Mutex::new(Some(failure_reports)),
+            answers: Mutex::new(Some(answer_queue)),
         }
     }
 
@@ -394,6 +506,17 @@ impl Runtime {
                     handle_codec_failure(failure, discord.as_ref(), &events).await;
                 }
             });
+        }
+        // The agents' answers go to Discord as the settings say at that moment
+        // (change `post-assistant-answers`), one after another.
+        if let Some(answers) = self.answers.lock().expect("answers lock").take() {
+            spawn_answer_handler(
+                &self.handle,
+                answers,
+                Arc::clone(&self.settings),
+                Arc::clone(&self.discord) as Arc<dyn AnswerPoster>,
+                Arc::clone(&self.errors),
+            );
         }
 
         for key in SecretKey::ALL {
@@ -488,6 +611,17 @@ impl Runtime {
                     self.assistant.configure(&settings);
                 }
                 "codex" => self.assistant.configure(&settings),
+                // Read by the answer handler when each answer arrives: nothing restarts.
+                "answers" => {
+                    let channel = match settings.assistant.answers_channel_id() {
+                        Some(id) => format!(", chosen channel {id}"),
+                        None => String::new(),
+                    };
+                    log::info!(
+                        "settings: posting answers to Discord: {}{channel}, from the next answer",
+                        settings.assistant.post_answers.name()
+                    );
+                }
                 // The window and the desktop shell act on the switches themselves from the
                 // settings change event. The codec is only noted for the next join and the
                 // next call: nothing running is rebuilt.
@@ -606,6 +740,11 @@ impl Runtime {
 
     pub fn is_muted(&self) -> bool {
         self.host.registry.is_muted()
+    }
+
+    /// The text channels the window offers for answers; none while not connected.
+    pub fn text_channels(&self) -> Vec<TextChannelGroup> {
+        self.discord.text_channels()
     }
 
     pub fn set_muted(&self, muted: bool) -> bool {
@@ -802,6 +941,290 @@ mod tests {
         assert!(stored.codex.refresh_lists_at_start);
         assert_eq!(stored.ui.collapsed_cards, ["audio", "hotkey"]);
         again.shutdown();
+    }
+
+    /// The stub assistant, counting how often the settings reached it.
+    struct CountingAssistant {
+        inner: StubAssistant,
+        configured: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Assistant for CountingAssistant {
+        fn id(&self) -> &'static str {
+            self.inner.id()
+        }
+        fn attach(
+            &self,
+            guild: u64,
+            ports: AudioPorts,
+        ) -> Result<Arc<dyn crate::assistant::AssistantSession>, crate::assistant::AssistantError>
+        {
+            self.inner.attach(guild, ports)
+        }
+        fn detach(&self, guild: u64) {
+            self.inner.detach(guild);
+        }
+        fn capabilities(&self) -> crate::assistant::Capabilities {
+            self.inner.capabilities()
+        }
+        fn status(&self) -> crate::assistant::AssistantStatus {
+            self.inner.status()
+        }
+        fn configure(&self, _settings: &Settings) {
+            self.configured
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Change `post-assistant-answers`: a save of only the two answer posting fields
+    /// restarts nothing. The gate stays (same gate, same settings), the wake engine is not
+    /// configured again, the assistant gets no new settings, so no call is touched.
+    #[test]
+    fn a_save_of_the_answer_posting_fields_restarts_nothing() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let events = EventBus::new(64);
+        let assistant = Arc::new(CountingAssistant {
+            inner: StubAssistant::new(Duration::from_millis(10)),
+            configured: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let runtime = Runtime::with_assistant(
+            "0.1.0+test 2026-11-16",
+            dir.path().to_path_buf(),
+            SettingsStore::new(dir.path().join("settings.json")),
+            Arc::new(MemoryStore::default()),
+            events.clone(),
+            tokio_rt.handle().clone(),
+            Arc::new(ConnectionErrors::new(events)),
+            assistant.clone(),
+        );
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({ "session": { "mode": "always", "earcons": false } }))
+            .unwrap();
+        let (output, _source) = output_pair();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.on_join(42, output);
+        let gate = runtime.host.registry.get(42).unwrap();
+        let gate_settings = runtime.host.gate_settings.lock().unwrap().clone();
+        let configured = assistant
+            .configured
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let mut window = runtime.events().subscribe();
+
+        for patch in [
+            json!({ "assistant": { "post_answers": "voice_channel" } }),
+            json!({ "assistant": { "post_answers": "channel", "answers_channel": "1091401169890443327" } }),
+            json!({ "assistant": { "post_answers": "off" } }),
+        ] {
+            runtime.save_settings(&patch).unwrap();
+        }
+        assert!(
+            Arc::ptr_eq(&gate, &runtime.host.registry.get(42).unwrap()),
+            "the gate stays registered and is not rebuilt"
+        );
+        assert_eq!(*runtime.host.gate_settings.lock().unwrap(), gate_settings);
+        assert!(gate.status().active, "the session runs on");
+        assert_eq!(
+            assistant
+                .configured
+                .load(std::sync::atomic::Ordering::Relaxed),
+            configured,
+            "the assistant, and so its call, is not reconfigured"
+        );
+        let mut saves = 0;
+        while let Ok(event) = window.try_recv() {
+            match event {
+                AppEvent::SettingsChanged => saves += 1,
+                AppEvent::Wake(_) => panic!("the wake engine is not configured again"),
+                AppEvent::Gate { .. } => panic!("no gate changed"),
+                _ => {}
+            }
+        }
+        assert_eq!(saves, 3);
+        let stored = runtime.settings().assistant;
+        assert_eq!(stored.post_answers, crate::settings::PostAnswers::Off);
+        assert_eq!(
+            stored.answers_channel, "1091401169890443327",
+            "kept while off"
+        );
+
+        // An unknown destination is refused and the stored settings stay in effect.
+        let error = runtime
+            .save_settings(&json!({ "assistant": { "post_answers": "thread" } }))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("assistant.post_answers"), "{error}");
+        assert_eq!(runtime.settings().assistant, stored);
+        runtime.shutdown();
+    }
+
+    /// A Discord stand-in for the answers: records each post and answers with the next
+    /// outcome given (a post by default).
+    #[derive(Default)]
+    struct FakePoster {
+        posts: Mutex<Vec<(AgentAnswer, AnswerDestination)>>,
+        outcomes: Mutex<std::collections::VecDeque<PostOutcome>>,
+    }
+
+    impl AnswerPoster for FakePoster {
+        fn post<'a>(
+            &'a self,
+            answer: &'a AgentAnswer,
+            destination: AnswerDestination,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PostOutcome> + Send + 'a>> {
+            self.posts
+                .lock()
+                .unwrap()
+                .push((answer.clone(), destination));
+            let outcome =
+                self.outcomes
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(PostOutcome::Posted {
+                        channel: "answers".to_owned(),
+                        server: "Test server".to_owned(),
+                        messages: 1,
+                        characters: answer.text.len(),
+                    });
+            Box::pin(async move { outcome })
+        }
+    }
+
+    fn answer(text: &str) -> AgentAnswer {
+        AgentAnswer {
+            guild: 7,
+            task: Some("find the weather in Bangkok".to_owned()),
+            text: text.to_owned(),
+        }
+    }
+
+    /// Waits until the poster has `count` posts, or a second.
+    fn wait_for_posts(poster: &FakePoster, count: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while poster.posts.lock().unwrap().len() < count && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The answer handler reads the settings stored when each answer arrives: off makes no
+    /// call, and a change between two answers sends the second one to the new destination.
+    #[test]
+    fn each_answer_goes_where_the_settings_say_when_it_arrives() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let events = EventBus::new(16);
+        let errors = Arc::new(ConnectionErrors::new(events));
+        let settings = Arc::new(RwLock::new(Settings::default()));
+        let poster = Arc::new(FakePoster::default());
+        let (sink, queue) = AnswerSink::channel();
+        let handler = spawn_answer_handler(
+            tokio_rt.handle(),
+            queue,
+            Arc::clone(&settings),
+            poster.clone(),
+            Arc::clone(&errors),
+        );
+
+        // Off, the default: no call.
+        assert!(sink.send(answer("first")));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(poster.posts.lock().unwrap().is_empty(), "off makes no call");
+
+        settings.write().unwrap().assistant.post_answers = PostAnswers::VoiceChannel;
+        assert!(sink.send(answer("second")));
+        wait_for_posts(&poster, 1);
+        {
+            let mut stored = settings.write().unwrap();
+            stored.assistant.post_answers = PostAnswers::Channel;
+            stored.assistant.answers_channel = "1091401169890443327".to_owned();
+        }
+        assert!(sink.send(answer("third")));
+        wait_for_posts(&poster, 2);
+        settings.write().unwrap().assistant.post_answers = PostAnswers::CommandChannel;
+        assert!(sink.send(answer("fourth")));
+        wait_for_posts(&poster, 3);
+
+        let posts = poster.posts.lock().unwrap().clone();
+        assert_eq!(
+            posts
+                .iter()
+                .map(|(answer, destination)| (answer.text.as_str(), *destination))
+                .collect::<Vec<_>>(),
+            vec![
+                ("second", AnswerDestination::VoiceChannel),
+                ("third", AnswerDestination::Channel(1091401169890443327)),
+                ("fourth", AnswerDestination::CommandChannel),
+            ]
+        );
+        assert_eq!(
+            posts[0].0.task.as_deref(),
+            Some("find the weather in Bangkok")
+        );
+        assert!(errors.snapshot().is_empty(), "posts set no error");
+        handler.abort();
+    }
+
+    /// A refusal sets the `answers` error with the channel and Discord's reason; the next
+    /// post clears it. An answer not posted on purpose sets nothing.
+    #[test]
+    fn a_refused_post_sets_the_answers_error_and_the_next_post_clears_it() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let events = EventBus::new(16);
+        let mut window = events.subscribe();
+        let errors = ConnectionErrors::new(events);
+        let mut settings = AssistantSettings {
+            post_answers: PostAnswers::Channel,
+            answers_channel: "13".to_owned(),
+            ..AssistantSettings::default()
+        };
+        let poster = FakePoster::default();
+        poster.outcomes.lock().unwrap().extend([
+            PostOutcome::Refused {
+                channel: "rules".to_owned(),
+                server: "Test server".to_owned(),
+                message:
+                    "Missing Permissions (HTTP 403, code 50013); the bot lacks Send Messages here"
+                        .to_owned(),
+            },
+            PostOutcome::NotPosted {
+                reason: "the bot had left the voice channel in Test server".to_owned(),
+                repeat: false,
+            },
+        ]);
+        tokio_rt.block_on(handle_answer(answer("one"), &settings, &poster, &errors));
+        let error = errors.snapshot()["answers"].clone();
+        assert_eq!(
+            format!("answers: {error}"),
+            "answers: cannot post to #rules in Test server: Missing Permissions (HTTP 403, code 50013); the bot lacks Send Messages here",
+            "the window shows the source in front of the message"
+        );
+        assert!(matches!(
+            window.try_recv(),
+            Ok(AppEvent::ConnectionError { source, message: Some(_) }) if source == "answers"
+        ));
+
+        tokio_rt.block_on(handle_answer(answer("two"), &settings, &poster, &errors));
+        assert!(
+            errors.snapshot().contains_key("answers"),
+            "an answer not posted on purpose leaves the error"
+        );
+
+        settings.answers_channel = "14".to_owned();
+        tokio_rt.block_on(handle_answer(answer("three"), &settings, &poster, &errors));
+        assert!(
+            !errors.snapshot().contains_key("answers"),
+            "a post clears it"
+        );
+        assert!(matches!(
+            window.try_recv(),
+            Ok(AppEvent::ConnectionError { source, message: None }) if source == "answers"
+        ));
+        assert_eq!(poster.posts.lock().unwrap().len(), 3);
+        assert_eq!(
+            poster.posts.lock().unwrap()[2].1,
+            AnswerDestination::Channel(14)
+        );
     }
 
     /// A Discord stand-in: the guilds the bot is in, and the leaves asked for.

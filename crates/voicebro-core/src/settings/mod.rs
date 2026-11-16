@@ -278,6 +278,63 @@ pub enum SpeakerLabels {
     Off,
 }
 
+/// Where the assistant agent's final answers are posted in Discord (change
+/// `post-assistant-answers`). Read at each answer, so a save applies to the next one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", try_from = "String")]
+pub enum PostAnswers {
+    /// Nothing is posted.
+    #[default]
+    Off,
+    /// The built-in text chat of the voice channel the bot is in.
+    VoiceChannel,
+    /// The channel the current voice session's `/join` was typed in.
+    CommandChannel,
+    /// The channel `assistant.answers_channel` names, for answers from its own server.
+    Channel,
+}
+
+impl PostAnswers {
+    pub const ALL: [PostAnswers; 4] = [
+        PostAnswers::Off,
+        PostAnswers::VoiceChannel,
+        PostAnswers::CommandChannel,
+        PostAnswers::Channel,
+    ];
+
+    /// The value in the settings file.
+    pub const fn name(self) -> &'static str {
+        match self {
+            PostAnswers::Off => "off",
+            PostAnswers::VoiceChannel => "voice_channel",
+            PostAnswers::CommandChannel => "command_channel",
+            PostAnswers::Channel => "channel",
+        }
+    }
+
+    fn names() -> String {
+        Self::ALL.map(Self::name).join(", ")
+    }
+}
+
+/// A value that is not one of the four is refused with the field's path and the values,
+/// at a save and at a load alike, as the other lists of fixed values are.
+impl TryFrom<String> for PostAnswers {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::ALL
+            .into_iter()
+            .find(|choice| choice.name() == value)
+            .ok_or_else(|| {
+                format!(
+                    "assistant.post_answers: «{value}» is not a destination; use one of {}",
+                    Self::names()
+                )
+            })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AssistantSettings {
@@ -286,6 +343,12 @@ pub struct AssistantSettings {
     /// Every chat entry is also appended to `logs\codex-chat-<date>.log`. Off by default:
     /// nothing of the chat is written to disk.
     pub save_chat_history: bool,
+    /// Where the agent's final answers are posted in Discord; off by default, since a
+    /// posted answer is public in that channel and stays there.
+    pub post_answers: PostAnswers,
+    /// The channel id for [`PostAnswers::Channel`]: digits, or empty. Kept while another
+    /// destination is chosen, so choosing `channel` again needs no new pick.
+    pub answers_channel: String,
 }
 
 impl Default for AssistantSettings {
@@ -294,6 +357,29 @@ impl Default for AssistantSettings {
             engine: "codex".to_owned(),
             speaker_labels: SpeakerLabels::Start,
             save_chat_history: false,
+            post_answers: PostAnswers::Off,
+            answers_channel: String::new(),
+        }
+    }
+}
+
+impl AssistantSettings {
+    /// The chosen channel's id, when one is stored.
+    pub fn answers_channel_id(&self) -> Option<u64> {
+        let trimmed = self.answers_channel.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            trimmed.parse().ok()
+        }
+    }
+
+    /// The parts of the section that only the answer posting reads.
+    fn without_answer_posting(&self) -> AssistantSettings {
+        AssistantSettings {
+            post_answers: PostAnswers::Off,
+            answers_channel: String::new(),
+            ..self.clone()
         }
     }
 }
@@ -497,6 +583,19 @@ impl Settings {
                 ),
             ));
         }
+        let channel = self.assistant.answers_channel.trim();
+        if !channel.chars().all(|c| c.is_ascii_digit()) {
+            return Err(invalid(
+                "assistant.answers_channel",
+                format!("«{channel}» is not a channel id; a channel id is digits only"),
+            ));
+        }
+        if self.assistant.post_answers == PostAnswers::Channel && channel.is_empty() {
+            return Err(invalid(
+                "assistant.answers_channel",
+                "pick the channel the answers go to",
+            ));
+        }
         // An empty voice is valid: the call then uses the server's default voice.
         if !HANDOFF_MODES.contains(&self.codex.handoff_mode.as_str()) {
             return Err(invalid(
@@ -553,7 +652,9 @@ impl Settings {
         Ok(merged)
     }
 
-    /// Which top-level sections differ between two documents.
+    /// Which top-level sections differ between two documents. The answer posting fields of
+    /// `assistant` count as their own part, `answers`, which nothing has to apply: the
+    /// answers read them when they arrive.
     pub fn changed_sections(&self, other: &Settings) -> Vec<&'static str> {
         let mut changed = Vec::new();
         if self.discord != other.discord {
@@ -568,8 +669,16 @@ impl Settings {
         if self.wake != other.wake {
             changed.push("wake");
         }
-        if self.assistant != other.assistant {
+        if self.assistant.without_answer_posting() != other.assistant.without_answer_posting() {
             changed.push("assistant");
+        }
+        if (self.assistant.post_answers, &self.assistant.answers_channel)
+            != (
+                other.assistant.post_answers,
+                &other.assistant.answers_channel,
+            )
+        {
+            changed.push("answers");
         }
         if self.codex != other.codex {
             changed.push("codex");
@@ -811,6 +920,109 @@ mod tests {
         assert!(older
             .with_patch(&json!({ "codex": { "refresh_lists_at_start": "yes" } }))
             .is_err());
+    }
+
+    /// Change `post-assistant-answers`, scenario "Older file": a 1.0.1 file has neither
+    /// field; it loads with `off` and no channel, and the next save writes both.
+    #[test]
+    fn answer_posting_defaults_to_off_and_the_next_save_writes_both_fields() {
+        let older: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
+        assert_eq!(older.assistant.post_answers, PostAnswers::Off);
+        assert_eq!(older.assistant.answers_channel, "");
+        older.validate().expect("the defaults are valid");
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(written["assistant"]["post_answers"], "off");
+        assert_eq!(written["assistant"]["answers_channel"], "");
+
+        for choice in PostAnswers::ALL {
+            let patched = older
+                .with_patch(&json!({ "assistant": {
+                    "post_answers": choice.name(), "answers_channel": "1091401169890443327" } }))
+                .unwrap();
+            patched
+                .validate()
+                .unwrap_or_else(|e| panic!("{}: {e}", choice.name()));
+            assert_eq!(patched.assistant.post_answers, choice);
+            assert_eq!(
+                patched.assistant.answers_channel_id(),
+                Some(1091401169890443327)
+            );
+            let back: Settings =
+                serde_json::from_str(&serde_json::to_string(&patched).unwrap()).unwrap();
+            assert_eq!(back.assistant, patched.assistant, "a round trip keeps it");
+        }
+    }
+
+    /// Scenario "Unknown destination": the save is refused with the field and the four
+    /// values in the message.
+    #[test]
+    fn an_unknown_destination_is_refused_naming_the_field_and_the_four_values() {
+        let older: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
+        let error = older
+            .with_patch(&json!({ "assistant": { "post_answers": "thread" } }))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("assistant.post_answers"), "{error}");
+        assert!(error.contains("thread"), "{error}");
+        for choice in PostAnswers::ALL {
+            assert!(error.contains(choice.name()), "{error}");
+        }
+        assert!(older
+            .with_patch(&json!({ "assistant": { "post_answers": true } }))
+            .is_err());
+    }
+
+    /// Scenarios "A channel without an id" and "Not an id".
+    #[test]
+    fn a_chosen_channel_needs_an_id_of_digits() {
+        let mut settings = Settings::default();
+        settings.assistant.post_answers = PostAnswers::Channel;
+        let error = settings.validate().unwrap_err();
+        assert_eq!(error.field, "assistant.answers_channel");
+        settings.assistant.answers_channel = "   ".to_owned();
+        assert_eq!(
+            settings.validate().unwrap_err().field,
+            "assistant.answers_channel"
+        );
+
+        settings.assistant.answers_channel = "#general".to_owned();
+        let error = settings.validate().unwrap_err();
+        assert_eq!(error.field, "assistant.answers_channel");
+        assert!(error.message.contains("#general"), "{}", error.message);
+        settings.assistant.post_answers = PostAnswers::VoiceChannel;
+        assert_eq!(
+            settings.validate().unwrap_err().field,
+            "assistant.answers_channel",
+            "not digits is refused whatever the destination"
+        );
+
+        settings.assistant.post_answers = PostAnswers::Channel;
+        settings.assistant.answers_channel = " 1091401169890443327 ".to_owned();
+        settings.validate().expect("digits are an id");
+    }
+
+    /// Scenario "A stored channel kept while off", and a change of these two fields is the
+    /// `answers` part only, which nothing has to apply.
+    #[test]
+    fn a_stored_channel_is_kept_while_off_and_changes_only_the_answers_part() {
+        let mut chosen = Settings::default();
+        chosen.assistant.post_answers = PostAnswers::Channel;
+        chosen.assistant.answers_channel = "1091401169890443327".to_owned();
+        let off = chosen
+            .with_patch(&json!({ "assistant": { "post_answers": "off" } }))
+            .unwrap();
+        off.validate().expect("an id may stay while off");
+        assert_eq!(off.assistant.answers_channel, "1091401169890443327");
+        assert_eq!(chosen.changed_sections(&off), vec!["answers"]);
+
+        let both = Settings::default()
+            .with_patch(&json!({ "assistant": { "post_answers": "channel",
+                "answers_channel": "42", "save_chat_history": true } }))
+            .unwrap();
+        assert_eq!(
+            Settings::default().changed_sections(&both),
+            vec!["assistant", "answers"]
+        );
     }
 
     #[test]

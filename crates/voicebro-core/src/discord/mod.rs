@@ -6,6 +6,7 @@
 //! handler or track survives. The receive path mixes the speakers and hands every tick to
 //! the [`VoiceHost`] the app provides (the session gate).
 
+pub mod answers;
 mod delivery;
 mod handler;
 mod panel;
@@ -28,6 +29,7 @@ use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 
+pub use answers::{AnswerDestination, PostOutcome, TextChannelGroup, TextChannelInfo};
 pub use delivery::{for_each_report_block, host_of, region_of, DeliveryCounters, ReportBlock};
 pub use panel::{mute_button_id, parse_mute_button_id};
 pub use speakers::{clean_display_name, SpeakerDirectory};
@@ -174,6 +176,10 @@ pub(crate) struct Shared {
     pub(crate) sessions: Mutex<BTreeMap<u64, session::VoiceSession>>,
     pub(crate) join_locks: Mutex<BTreeMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) speakers: Mutex<BTreeMap<u64, Arc<SpeakerDirectory>>>,
+    /// The servers whose answers were already logged as going nowhere because the chosen
+    /// channel is another server's; a join of the server clears its entry, so the line
+    /// comes once per voice session.
+    pub(crate) answers_elsewhere: Mutex<std::collections::HashSet<u64>>,
     pub(crate) panels_dirty: AtomicBool,
     pub(crate) ticks: AtomicU64,
     pub(crate) speaker_frames: AtomicU64,
@@ -265,6 +271,7 @@ impl DiscordRuntime {
                 sessions: Mutex::new(BTreeMap::new()),
                 join_locks: Mutex::new(BTreeMap::new()),
                 speakers: Mutex::new(BTreeMap::new()),
+                answers_elsewhere: Mutex::new(std::collections::HashSet::new()),
                 panels_dirty: AtomicBool::new(false),
                 ticks: AtomicU64::new(0),
                 speaker_frames: AtomicU64::new(0),
@@ -427,6 +434,31 @@ impl DiscordRuntime {
     /// Leaves the voice channel of `guild`, if any.
     pub async fn leave(&self, guild: u64) {
         session::leave_voice(&self.shared, GuildId::new(guild)).await;
+    }
+
+    /// Posts an agent's answer where `destination` points (change `post-assistant-answers`).
+    pub async fn post_answer(
+        &self,
+        answer: &crate::assistant::AgentAnswer,
+        destination: AnswerDestination,
+    ) -> PostOutcome {
+        answers::post_answer(&self.shared, answer, destination).await
+    }
+
+    /// The text and announcement channels of every server the bot is in, from the cache;
+    /// none while not connected.
+    pub fn text_channels(&self) -> Vec<TextChannelGroup> {
+        let connected = self
+            .shared
+            .status
+            .lock()
+            .expect("discord status lock")
+            .state
+            == ConnectionState::Connected;
+        match self.shared.cache() {
+            Some(cache) if connected => answers::text_channels(&cache),
+            _ => Vec::new(),
+        }
     }
 }
 

@@ -72,6 +72,9 @@ pub struct AudioPorts {
     pub output: OutputHandle,
     /// Where the join's codec panics are reported (the call's encoder and decoder).
     pub failures: crate::audio::codec::CodecFailures,
+    /// Where the session sends the final answers of its agent's completed tasks, for the
+    /// runtime to post to Discord.
+    pub answers: crate::assistant::AnswerSink,
 }
 
 #[cfg(test)]
@@ -87,6 +90,7 @@ mod tests {
             input: receiver,
             output: output.clone(),
             failures: crate::audio::codec::CodecFailures::none(),
+            answers: crate::assistant::AnswerSink::none(),
         };
         assert!(!sender.send(Frame::from_slice(&[1])));
         let frame = ports.input.try_recv().expect("frame arrives");

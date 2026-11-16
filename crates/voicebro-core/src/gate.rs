@@ -792,6 +792,7 @@ mod tests {
                     input: idle,
                     output: output.clone(),
                     failures: crate::audio::codec::CodecFailures::none(),
+                    answers: crate::assistant::AnswerSink::none(),
                 },
             )
             .unwrap();

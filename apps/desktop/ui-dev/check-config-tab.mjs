@@ -406,6 +406,117 @@ const scenarios = [
     expect(!r.names.some((name) => ["codex_check", "codex_models", "codex_sign_in"].includes(name)), `called ${r.names}`);
     expect(r.feedback === "Saved: Refresh the lists at start", `feedback: ${r.feedback}`);
   }],
+
+  // ---- Post answers to Discord (change `post-assistant-answers`)
+  ["the Codex card holds its fields in order, post answers and its channel after Save chat history", async () => {
+    await load();
+    const r = await page(`
+      const body = $("card-codex-body");
+      const fields = [...body.querySelectorAll("input, select, textarea, button")]
+        .filter((node) => !node.classList.contains("listed"))
+        .map((node) => node.dataset.path || node.id);
+      return { fields, values: { post: $("post-answers").value, history: $("save-chat-history").checked } };`);
+    expect(same(r.fields, [
+      "codex.refresh_lists_at_start", "codex-lists-refresh", "codex.model", "codex.reasoning_effort", "codex.voice",
+      "codex.handoff_mode", "assistant.speaker_labels", "assistant.save_chat_history", "assistant.post_answers",
+      "answers-channel", "codex.instructions",
+    ]), `fields: ${r.fields}`);
+    expect(r.values.post === "off" && r.values.history === false, `values: ${JSON.stringify(r.values)}`);
+  }],
+  ["first start: Post answers shows Off and no channel list", async () => {
+    await load("?fresh");
+    const r = await page(`
+      tab("config");
+      return { value: $("post-answers").value, options: [...$("post-answers").options].map((o) => o.textContent),
+        hidden: $("answers-channel-field").hidden, shown: box($("answers-channel-field")).height > 0,
+        help: $("post-answers").closest("label").querySelector(".field-help").textContent };`);
+    expect(r.value === "off", `value ${r.value}`);
+    expect(same(r.options, ["Off", "The voice channel's chat", "The channel of /join", "A chosen channel"]), `options ${r.options}`);
+    expect(r.hidden && !r.shown, "the channel list shows");
+    expect(["final answer", "View Channel", "Send Messages", "Embed Links"].every((word) => r.help.includes(word)), `help: ${r.help}`);
+  }],
+  ["the voice channel's chat is saved without a button and shown after a reload", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      const saves = calls("save_settings").length;
+      await setValue("post-answers", "voice_channel");
+      return { stored: stored().assistant, saves: calls("save_settings").length - saves, last: calls("save_settings").at(-1).args.patch,
+        hidden: $("answers-channel-field").hidden, feedback: $("config-autosave-feedback").textContent, saveButton: $("config-save").disabled };`);
+    expect(r.stored.post_answers === "voice_channel" && r.saves === 1, JSON.stringify(r));
+    expect(same(r.last, { assistant: { post_answers: "voice_channel" } }), `patch ${JSON.stringify(r.last)}`);
+    expect(r.hidden, "the channel list shows");
+    expect(r.feedback === "Saved: Post answers to Discord" && r.saveButton, `feedback ${r.feedback}`);
+    await load("?post_answers=voice_channel");
+    const again = await page(`return { value: $("post-answers").value, hidden: $("answers-channel-field").hidden };`);
+    expect(again.value === "voice_channel" && again.hidden, `after a restart: ${JSON.stringify(again)}`);
+  }],
+  ["A chosen channel with nothing stored saves nothing and asks to pick a channel", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      const saves = calls("save_settings").length;
+      await setValue("post-answers", "channel");
+      return { saves: calls("save_settings").length - saves, stored: stored().assistant.post_answers,
+        shown: !$("answers-channel-field").hidden, pick: !$("answers-channel-pick").hidden ? $("answers-channel-pick").textContent : null,
+        first: $("answers-channel").options[0].textContent, value: $("answers-channel").value,
+        dirty: $("post-answers").closest("label").classList.contains("is-dirty") };`);
+    expect(r.saves === 0 && r.stored === "off", `something was saved: ${JSON.stringify(r)}`);
+    expect(r.shown && r.pick && r.pick.startsWith("Pick a channel"), `the card does not ask: ${JSON.stringify(r)}`);
+    expect(r.first === "Pick a channel…" && r.value === "" && r.dirty, JSON.stringify(r));
+  }],
+  ["picking a channel saves both fields together", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      await setValue("post-answers", "channel");
+      const saves = calls("save_settings").length;
+      await setValue("answers-channel", "1571000000000000001", ["change"]);
+      const option = $("answers-channel").selectedOptions[0];
+      return { saves: calls("save_settings").length - saves, last: calls("save_settings").at(-1).args.patch, stored: stored().assistant,
+        text: option.textContent, group: option.parentElement.label, pick: !$("answers-channel-pick").hidden,
+        dirty: $("post-answers").closest("label").classList.contains("is-dirty"), feedback: $("config-autosave-feedback").textContent };`);
+    expect(r.saves === 1, `${r.saves} saves`);
+    expect(same(r.last, { assistant: { post_answers: "channel", answers_channel: "1571000000000000001" } }), `patch ${JSON.stringify(r.last)}`);
+    expect(r.stored.post_answers === "channel" && r.stored.answers_channel === "1571000000000000001", JSON.stringify(r.stored));
+    expect(r.text === "#answers" && r.group === "Mock server", `shown as ${r.text} under ${r.group}`);
+    expect(!r.pick && !r.dirty && r.feedback === "Saved: Answers channel", JSON.stringify(r));
+  }],
+  ["a stored channel makes A chosen channel save at once and is kept while off", async () => {
+    await load("?answers_channel=1571000000000000001");
+    const r = await page(`
+      tab("config");
+      await setValue("post-answers", "channel");
+      const chosen = { stored: stored().assistant, last: calls("save_settings").at(-1).args.patch };
+      await setValue("post-answers", "off");
+      return { chosen, off: stored().assistant, hidden: $("answers-channel-field").hidden };`);
+    expect(same(r.chosen.last, { assistant: { post_answers: "channel", answers_channel: "1571000000000000001" } }), JSON.stringify(r.chosen));
+    expect(r.off.post_answers === "off" && r.off.answers_channel === "1571000000000000001" && r.hidden, JSON.stringify(r));
+  }],
+  ["a channel the bot may not post in is marked, and the list is read again when the tab opens", async () => {
+    await load("?post_answers=channel&answers_channel=1571000000000000001");
+    const r = await page(`
+      const before = calls("discord_text_channels").length;
+      tab("config"); await sleep(300);
+      const groups = [...$("answers-channel").querySelectorAll("optgroup")].map((g) => [g.label, [...g.children].map((o) => o.textContent)]);
+      return { reads: calls("discord_text_channels").length - before, groups };`);
+    expect(r.reads === 1, `${r.reads} reads when the tab opened`);
+    expect(same(r.groups, [["Mock server", ["#general", "#answers", "#rules (can't post)"]], ["Second server", ["#bot-spam"]]]), JSON.stringify(r.groups));
+  }],
+  ["disconnected: the stored id and the note, then the names once the bot connects", async () => {
+    await load("?disconnected&post_answers=channel&answers_channel=1571000000000000002");
+    const r = await page(`
+      tab("config");
+      const off = { options: [...$("answers-channel").options].map((o) => o.textContent), value: $("answers-channel").value,
+        note: $("answers-channel-note").textContent, shown: !$("answers-channel-field").hidden };
+      window.__mock.setConnected(true);
+      await until(() => $("answers-channel").querySelectorAll("optgroup").length > 0, 4000);
+      return { off, selected: $("answers-channel").selectedOptions[0].textContent, value: $("answers-channel").value, saves: calls("save_settings").length };`);
+    expect(r.off.shown && same(r.off.options, ["Channel 1571000000000000002"]) && r.off.value === "1571000000000000002", JSON.stringify(r.off));
+    expect(r.off.note === "The channel names appear once the bot is connected.", `note: ${r.off.note}`);
+    expect(r.selected === "#rules (can't post)" && r.value === "1571000000000000002", `connected: ${JSON.stringify(r)}`);
+    expect(r.saves === 0, "the connection saved something");
+  }],
 ];
 
 let failed = false;

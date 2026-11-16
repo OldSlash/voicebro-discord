@@ -88,6 +88,8 @@
       if (shown) panel.scrollTop = savedScroll.get(name) || 0;
     }
     if (name === "system") refreshSystem();
+    // The answers' channel list: a channel's "can't post" mark may have changed in Discord.
+    if (name === "config") loadTextChannels();
   }
   for (const button of tabButtons) button.addEventListener("click", () => showTab(button.dataset.tab));
 
@@ -255,6 +257,7 @@
     applyCollapsedCards();
     handoffHint();
     applyDiagnostics();
+    renderAnswersChannel();
   }
 
   // ---------- Collapsible cards on the Settings and Config tabs (`ui.collapsed_cards`) ----------
@@ -358,6 +361,11 @@
       // A wake model that is not on this PC asks in the install dialog before it is saved.
       if (control.id === "wake-model") {
         chooseWakeModel(control);
+        return;
+      }
+      // A chosen channel for the answers saves together with its channel.
+      if (control.id === "post-answers") {
+        choosePostAnswers();
         return;
       }
       saveControl(control);
@@ -516,7 +524,106 @@
     pendingRebuilds.clear();
     if (pending.includes("wake")) buildWakeLists();
     if (pending.includes("codex")) buildCodexLists();
+    if (pending.includes("answers")) renderAnswersChannel();
   }
+
+  // ---------- Post answers to Discord (`assistant.post_answers`, `assistant.answers_channel`) ----------
+  // Off, the voice channel's chat and the channel of /join save at once and keep the stored
+  // channel. A chosen channel saves together with its channel: at once when one is stored,
+  // else when one is picked; until then nothing is saved and the card asks for a channel.
+  // The channel list holds the text channels of the bot's servers (`discord_text_channels`),
+  // read when the Config tab opens and when the Discord connection changes.
+  const postAnswers = $("post-answers");
+  const answersChannel = $("answers-channel");
+  let textChannels = []; // [{ guild_id, guild_name, channels: [{ id, name, can_post }] }]
+  let answersChoice = null; // the channel being saved
+  let discordState = null; // the connection state the channel list was read in
+  const storedChannel = () => String(readByPath(stored, "assistant.answers_channel") ?? "").trim();
+  function addOption(parent, value, text) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    parent.appendChild(option);
+  }
+  function renderAnswersChannel() {
+    const chosen = postAnswers.value === "channel";
+    const current = answersChoice ?? storedChannel();
+    const connected = textChannels.length > 0;
+    $("answers-channel-field").hidden = !chosen;
+    $("answers-channel-pick").hidden = !(chosen && !current);
+    $("answers-channel-note").textContent = connected
+      ? "The text channels of the servers the bot is in. Only answers from this channel's server are posted; in another server nothing is. A channel marked can't post lacks one of the three permissions for the bot: fix it in Discord, and the mark goes when this tab is opened again."
+      : "The channel names appear once the bot is connected.";
+    if (busyLists.has(answersChannel.id)) {
+      pendingRebuilds.add("answers");
+      return;
+    }
+    answersChannel.innerHTML = "";
+    if (!current) addOption(answersChannel, "", "Pick a channel…");
+    const known = textChannels.some((group) => group.channels.some((channel) => channel.id === current));
+    if (current && !known) {
+      addOption(answersChannel, current, connected ? `${current} (not in the bot's servers)` : `Channel ${current}`);
+    }
+    for (const group of textChannels) {
+      const optgroup = document.createElement("optgroup");
+      optgroup.label = group.guild_name;
+      for (const channel of group.channels) {
+        addOption(optgroup, channel.id, `#${channel.name}${channel.can_post === false ? " (can't post)" : ""}`);
+      }
+      answersChannel.appendChild(optgroup);
+    }
+    answersChannel.value = current;
+  }
+  async function loadTextChannels() {
+    if (!invoke) return;
+    try {
+      textChannels = await invoke("discord_text_channels");
+    } catch (error) {
+      textChannels = [];
+      appendLog(`text channels failed: ${error}`);
+    }
+    renderAnswersChannel();
+  }
+  // Both fields in one save; `control` is the one the user changed.
+  async function saveAnswerPosting(control, patch) {
+    setState(control.id, "saving");
+    try {
+      stored = await invoke("save_settings", { patch: { assistant: patch } });
+      for (const id of [postAnswers.id, answersChannel.id]) {
+        setState(id, "clean");
+        fieldMessage(id, "");
+      }
+      fillField(postAnswers, true);
+      markSaved(control);
+    } catch (error) {
+      setState(control.id, "error");
+      fieldMessage(control.id, String(error));
+    }
+    answersChoice = null;
+    renderAnswersChannel();
+  }
+  function choosePostAnswers() {
+    if (postAnswers.value !== "channel") {
+      saveControl(postAnswers).then(renderAnswersChannel);
+      return;
+    }
+    const channel = storedChannel();
+    if (channel) {
+      saveAnswerPosting(postAnswers, { post_answers: "channel", answers_channel: channel });
+    } else {
+      setState(postAnswers.id, "dirty");
+      renderAnswersChannel();
+    }
+  }
+  // Registered before the open-list tracking, so the choice is taken before a waiting
+  // rebuild of the list runs.
+  answersChannel.addEventListener("change", () => {
+    const channel = answersChannel.value;
+    if (!channel || !invoke) return;
+    answersChoice = channel;
+    saveAnswerPosting(answersChannel, { post_answers: "channel", answers_channel: channel });
+  });
+  trackOpenList(answersChannel);
   // When the lists were read: "Read 2026-11-14 18:30" in local time, or "Never read".
   const pad2 = (n) => String(n).padStart(2, "0");
   function readTime(ms) {
@@ -1162,6 +1269,12 @@
     const discord = status.discord || {};
     const assistant = status.assistant || {};
     const channels = Object.values(discord.voice_channels || {});
+
+    // The answers' channel list follows the connection (read again on every change of it).
+    if (discord.state !== discordState) {
+      discordState = discord.state;
+      loadTextChannels();
+    }
 
     // Status bar.
     const footer = $("footer-connection");

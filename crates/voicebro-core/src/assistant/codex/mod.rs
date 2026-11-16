@@ -1272,6 +1272,7 @@ mod tests {
                         input,
                         output,
                         failures: CodecFailures::none(),
+                        answers: crate::assistant::AnswerSink::none(),
                     },
                 )
                 .unwrap(),
@@ -1320,6 +1321,7 @@ mod tests {
                     input,
                     output,
                     failures: CodecFailures::none(),
+                    answers: crate::assistant::AnswerSink::none(),
                 },
             )
             .expect("attach after a preparation");
@@ -1515,6 +1517,20 @@ mod tests {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let voiced = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let reader = spawn_reader(source, Arc::clone(&stop), Arc::clone(&voiced));
+        // The answers the session hands over for posting (change `post-assistant-answers`).
+        let (answers, mut answer_queue) = crate::assistant::AnswerSink::channel();
+        let mut posted: Vec<crate::assistant::AgentAnswer> = Vec::new();
+        let mut take_answers = |posted: &mut Vec<crate::assistant::AgentAnswer>| {
+            while let Ok(answer) = answer_queue.try_recv() {
+                eprintln!(
+                    "answer for posting: task {:?}; {} characters:\n{}",
+                    answer.task,
+                    answer.text.chars().count(),
+                    answer.text
+                );
+                posted.push(answer);
+            }
+        };
         let session = assistant
             .attach(
                 1,
@@ -1522,6 +1538,7 @@ mod tests {
                     input,
                     output: output.clone(),
                     failures: CodecFailures::none(),
+                    answers,
                 },
             )
             .expect("attach");
@@ -1709,7 +1726,23 @@ mod tests {
             eprintln!("voice retelling: {retelling:?}");
             assert!(!searches.is_empty(), "the agent did not search the web");
             assert!(!retelling.is_empty(), "the voice retold the agent's answer");
+            // One answer per completed task, the last one holding the agent's final text as
+            // the chat log shows it.
+            take_answers(&mut posted);
+            let completed = entries
+                .iter()
+                .filter(|entry| entry.text.starts_with("Codex finished the task"))
+                .count();
+            eprintln!(
+                "answers for posting: {}; tasks completed: {completed}",
+                posted.len()
+            );
+            assert_eq!(posted.len(), completed, "one answer per completed task");
+            let last = posted.last().expect("the delegated task's answer");
+            assert_eq!(Some(&last.text), agent.as_ref(), "the agent's final text");
+            assert!(last.task.is_some(), "the delegated task is named");
         }
+        take_answers(&mut posted);
         session.session_wanted(false);
         std::thread::sleep(Duration::from_millis(500));
         stop.store(true, std::sync::atomic::Ordering::Release);

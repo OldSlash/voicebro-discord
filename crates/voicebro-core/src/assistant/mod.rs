@@ -18,6 +18,75 @@ use std::time::{Duration, Instant};
 /// What [`Assistant::prepare`] returns: the join waits for it.
 pub type PrepareFuture<'a> = Pin<Box<dyn Future<Output = Result<(), AssistantError>> + Send + 'a>>;
 
+/// The final answer of a task the assistant's agent completed, as the agent wrote it
+/// (change `post-assistant-answers`). Engine-independent: any engine sends its answers
+/// through [`AudioPorts::answers`], and the runtime posts them to Discord.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentAnswer {
+    pub guild: u64,
+    /// The task the voice delegated, when the engine knows it.
+    pub task: Option<String>,
+    pub text: String,
+}
+
+/// Answers waiting for the runtime's handler. Sixteen waiting means Discord has been
+/// refusing or stalling for minutes; a seventeenth is dropped.
+pub const ANSWER_QUEUE: usize = 16;
+
+/// Where a session sends its [`AgentAnswer`]s: a bounded channel to the runtime's handler.
+/// Sending never waits; a full channel drops the new answer with a warning and counts it.
+/// [`AnswerSink::none`] sends nowhere (tests, probes, a stub assistant).
+#[derive(Debug, Clone, Default)]
+pub struct AnswerSink {
+    sender: Option<tokio::sync::mpsc::Sender<AgentAnswer>>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl AnswerSink {
+    /// A sink and the receiver the runtime's handler drains.
+    pub fn channel() -> (Self, tokio::sync::mpsc::Receiver<AgentAnswer>) {
+        let (sender, receiver) = tokio::sync::mpsc::channel(ANSWER_QUEUE);
+        (
+            Self {
+                sender: Some(sender),
+                dropped: Arc::new(AtomicU64::new(0)),
+            },
+            receiver,
+        )
+    }
+
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Hands the answer over without waiting. Returns whether it was queued.
+    pub fn send(&self, answer: AgentAnswer) -> bool {
+        let Some(sender) = self.sender.as_ref() else {
+            return false;
+        };
+        match sender.try_send(answer) {
+            Ok(()) => true,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(answer)) => {
+                let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                log::warn!(
+                    "[answers:{}] an answer was dropped: {ANSWER_QUEUE} answers are still waiting to be posted ({dropped} dropped so far)",
+                    answer.guild
+                );
+                false
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(answer)) => {
+                log::debug!("[answers:{}] no answer handler runs", answer.guild);
+                false
+            }
+        }
+    }
+
+    /// Answers dropped because the channel was full.
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AssistantError {
     #[error("the assistant is already attached to guild {0}")]
@@ -318,6 +387,7 @@ mod tests {
                     input,
                     output,
                     failures: CodecFailures::none(),
+                    answers: AnswerSink::none(),
                 },
             )
             .unwrap();
@@ -328,6 +398,7 @@ mod tests {
                     input: frame_channel(1).1,
                     output: output_pair().0,
                     failures: CodecFailures::none(),
+                    answers: AnswerSink::none(),
                 }
             ),
             Err(AssistantError::AlreadyAttached(7))

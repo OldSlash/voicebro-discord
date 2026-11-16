@@ -8,7 +8,9 @@
 // `settings()` (the stored document), `changeCapabilities()` (the engine offers a new
 // model list, as after a sign-in), `capabilities()`, `failNextCheck(message)` (the next
 // Check Codex or Refresh lists fails) and `emit(name, payload)`. `?nolists` starts with no
-// Codex lists ever read.
+// Codex lists ever read. `?disconnected` starts with the bot not connected
+// (`setConnected(on)` changes it); `?post_answers=<value>&answers_channel=<id>` starts with
+// that answer posting stored.
 (() => {
   const THEMES = ["dark", "darcula", "light", "intellij"];
   const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -23,7 +25,8 @@
       model: "vosk-model-small-ru-0.22",
       phrases: { "vosk-model-small-ru-0.22": { activation: ["alpha"], deactivation: ["omega"] } },
     },
-    assistant: { engine: "codex", speaker_labels: "start", save_chat_history: false },
+    // `post_answers` and `answers_channel` as the app fills them for a file without them.
+    assistant: { engine: "codex", speaker_labels: "start", save_chat_history: false, post_answers: "off", answers_channel: "" },
     // `handoff_mode` and `refresh_lists_at_start` as the app fills them for a file without
     // the fields: the defaults.
     codex: { executable: "", model: "", reasoning_effort: "", voice: "", instructions: "Answer briefly.", handoff_mode: "items", refresh_lists_at_start: false },
@@ -91,6 +94,31 @@
   }
   // `?always`: the session mode starts as always listening.
   if (new URLSearchParams(location.search).has("always")) settings.session.mode = "always";
+  // `?post_answers=<value>&answers_channel=<id>`: the stored answer posting, as after a restart.
+  for (const field of ["post_answers", "answers_channel"]) {
+    const value = new URLSearchParams(location.search).get(field);
+    if (value !== null) settings.assistant[field] = value;
+  }
+  // `?disconnected`: the token is stored but the bot is not connected to Discord;
+  // `__mock.setConnected(on)` connects or disconnects it.
+  let connected = !new URLSearchParams(location.search).has("disconnected");
+  // As `discord_text_channels` answers while connected: the servers by name, each with its
+  // text and announcement channels in Discord's order; the bot may not post in "rules".
+  const TEXT_CHANNELS = [
+    {
+      guild_id: "1091401169441656933", guild_name: "Mock server", channels: [
+        { id: "1091401169890443326", name: "general", can_post: true },
+        { id: "1571000000000000001", name: "answers", can_post: true },
+        { id: "1571000000000000002", name: "rules", can_post: false },
+      ],
+    },
+    {
+      guild_id: "1200000000000000000", guild_name: "Second server", channels: [
+        { id: "1200000000000000001", name: "bot-spam", can_post: null },
+      ],
+    },
+  ];
+  const POST_ANSWERS = ["off", "voice_channel", "command_channel", "channel"];
   // `?collapsed=audio,hotkey`: the stored `ui.collapsed_cards`, as after a restart.
   const collapsedParam = new URLSearchParams(location.search).get("collapsed");
   if (collapsedParam) settings.ui.collapsed_cards = collapsedParam.split(",").filter(Boolean);
@@ -296,6 +324,17 @@
     if (typeof doc.assistant.save_chat_history !== "boolean") {
       throw "invalid type: expected a boolean at assistant.save_chat_history";
     }
+    // Read with the document in the app, so the message has the app's patch prefix.
+    if (!POST_ANSWERS.includes(doc.assistant.post_answers)) {
+      throw `the patch is not a settings document: assistant.post_answers: «${doc.assistant.post_answers}» is not a destination; use one of ${POST_ANSWERS.join(", ")}`;
+    }
+    const channel = String(doc.assistant.answers_channel).trim();
+    if (!/^\d*$/.test(channel)) {
+      throw `assistant.answers_channel: «${channel}» is not a channel id; a channel id is digits only`;
+    }
+    if (doc.assistant.post_answers === "channel" && !channel) {
+      throw "assistant.answers_channel: pick the channel the answers go to";
+    }
     if (typeof doc.codex.refresh_lists_at_start !== "boolean") {
       throw "invalid type: expected a boolean at codex.refresh_lists_at_start";
     }
@@ -317,7 +356,7 @@
       secrets: { discord_token: { is_set: tokenSet } },
       connection_errors: {},
       discord: {
-        state: tokenSet ? "connected" : "disconnected",
+        state: tokenSet && connected ? "connected" : "disconnected",
         user_name: "Mock bot",
         guild_count: 1,
         guilds: [{ id: "1091401169441656933", name: "Mock server" }],
@@ -414,6 +453,8 @@
     open_models_folder: () => "C:\\VoiceBro\\models",
     open_assets_folder: () => "C:\\VoiceBro\\assets",
     capabilities: () => clone(capabilities),
+    // The text channels of the bot's servers, none while not connected, as the app answers.
+    discord_text_channels: () => (tokenSet && connected ? clone(TEXT_CHANNELS) : []),
     // `?sample` in the page's address: a sample session for the screenshots in docs/images.
     chat_log: () => (SAMPLE ? clone(SAMPLE_CHAT) : [
       { id: 1, at: "12:00:01", guild_id: "1091401169441656933", kind: "user", who: "Alex", text: "What time is it?" },
@@ -570,6 +611,13 @@
       inVoice = false;
       emit("app-event", { event: "discord" });
     },
+    // The bot connects to Discord or disconnects, as Connect and Disconnect do.
+    setConnected(on) {
+      connected = on;
+      emit("app-event", { event: "discord" });
+    },
+    // What `discord_text_channels` answers while connected.
+    textChannels: () => clone(TEXT_CHANNELS),
     // The codec panicked during a join: the app makes the bot leave and tells the window,
     // as `handle_codec_failure` does. `where` names another server for a second failure.
     codecFailure(where = {}) {

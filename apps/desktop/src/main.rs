@@ -196,6 +196,15 @@ fn capabilities(state: State<'_, AppState>) -> Capabilities {
     state.runtime.assistant().capabilities()
 }
 
+/// The text channels of every server the bot is in, for the Codex card's "Post answers to
+/// Discord" channel list (change `post-assistant-answers`); none while not connected.
+#[tauri::command]
+fn discord_text_channels(
+    state: State<'_, AppState>,
+) -> Vec<voicebro_core::discord::TextChannelGroup> {
+    state.runtime.text_channels()
+}
+
 /// The wake models for the Config tab: the catalog with whether each is downloaded, and
 /// the models folder's models found at start.
 #[tauri::command]
@@ -711,6 +720,7 @@ fn main() {
             codex_install,
             codex_models,
             capabilities,
+            discord_text_channels,
             wake_models,
             wake_download,
             wake_requirements,

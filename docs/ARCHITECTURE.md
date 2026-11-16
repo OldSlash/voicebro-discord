@@ -350,6 +350,51 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   counters and the last report, and the leave logs one line with them and the output's
   sending counters (times sending turned on, time nothing was sent, cut starts).
 - Changing the token restarts the client; a running client never keeps stale credentials.
+- **The agent's answers in a text chat** (`answers.rs`, change `post-assistant-answers`).
+  `DiscordRuntime::post_answer(answer, destination)` posts one `AgentAnswer` (4.5) for the
+  runtime's handler (4.7) and returns a `PostOutcome`.
+  - *Destinations* (`assistant.post_answers`, read per answer). `/join` stores the channel
+    it was typed in as `VoiceSession.command_channel` before the panel is posted.
+    `resolve` (a pure function) turns the destination into a channel:
+
+    | Setting | Channel | Bot has left the voice channel |
+    |---|---|---|
+    | `voice_channel` | the session's voice channel; its built-in chat has the same id | not posted, logged |
+    | `command_channel` | the session's `command_channel` | not posted, logged |
+    | `channel` | `answers_channel`, if the cache finds it in the answer's server | posted |
+
+    A chosen channel of another server posts nothing anywhere and is logged once per voice
+    session of the answer's server (`Shared.answers_elsewhere`, cleared at each join). A
+    chosen channel in no cached server is a refusal without a request. The last column
+    applies only to an answer already handed over when the bot left: the Codex session
+    forgets its open turns and unmaps its thread at the leave (4.5), and Codex stops 0.5 s
+    after the last leave, so a task that completes after `/leave` produces no answer.
+  - *Format* (`format_answer`): a first line `-# Codex: <task>` (Discord's small subtext;
+    the task's whitespace folded, cut to 150 characters with `…`; `-# Codex` without a
+    task), then the agent's text with its Markdown. Each Markdown table (a row with `|`, a
+    separator row of dashes, then rows with `|`) outside a code block goes into a code block
+    of its own, its columns padded to line up (`wrap_tables`). Plain content, never embeds,
+    so links get Discord's previews.
+  - *Split* (`split_for_discord(text, 2000)`): parts of at most 2000 UTF-16 units (never
+    less than characters). A cut falls at a blank line, else a line break, else a space,
+    else at the limit, outside code blocks first, the last of its kind before the limit; a
+    cut in the second half of the message is preferred to a better kind earlier. Only a
+    code block longer than a message is cut: the part ends with a closing fence and the next
+    one starts with the fence and its language again. No cut right after a fence opens or
+    before it closes.
+  - *No pings*: every part is sent with `CreateAllowedMentions::new()` (`parse: []`, no
+    users, no roles; `answer_message`), so `@everyone`, `@here`, roles and users stay text.
+    The parts go out in order; serenity waits out rate limits; the first refused part stops
+    the rest, nothing is retried. The refusal carries Discord's message, status and code,
+    and, when the cache holds the bot's member, the post permissions it lacks there.
+  - *The channel list* (`DiscordRuntime::text_channels`, command `discord_text_channels`):
+    for every cached server (by name) its text and announcement channels in Discord's order
+    (outside any category first, then by the category's position, then by position), each
+    `{id, name, can_post}`. `can_post` comes from `channel_permissions`, a pure function of
+    Discord's permission algorithm over the guild's roles, the channel's overwrites and the
+    bot's member (owner and Administrator pass): View Channel, Send Messages and Embed Links.
+    Without the bot's member in the cache it is `null`. Voice channels are not listed (their
+    chat is `voice_channel`). Not connected: no servers.
 
 ### 4.3 Session gate (`gate.rs`)
 
@@ -553,14 +598,31 @@ pub trait AssistantSession: Send + Sync {
     fn speakers_changed(&self, names: &[String]);
 }
 
-/// Audio in and out of the assistant, in 48 kHz stereo frames.
-pub struct AudioPorts { pub input: FrameReceiver, pub output: OutputHandle }
+/// Audio in and out of the assistant, in 48 kHz stereo frames, and where its codec panics
+/// and its agent's answers go.
+pub struct AudioPorts {
+    pub input: FrameReceiver,
+    pub output: OutputHandle,
+    pub failures: CodecFailures,
+    pub answers: AnswerSink,
+}
+
+/// The final answer of a task the agent completed, as written (change `post-assistant-answers`).
+pub struct AgentAnswer { pub guild: u64, pub task: Option<String>, pub text: String }
 ```
 
 `AudioPorts` connect the gate and the assistant in process: the gate pushes gated
 frames into `input`, the assistant pushes decoded answer audio into `output` (the
 `OutputQueue` from 4.1) and can `flush` it. `Runtime::on_join` builds the ports and the gate,
 calls `attach`, and gives the session to the gate; `on_leave` calls `detach`.
+
+**Answers for Discord** (change `post-assistant-answers`): `AgentAnswer` and `AnswerSink`
+are engine-independent (`assistant/mod.rs`). A session sends each completed task's final
+answer through `ports.answers`; the runtime posts it (4.7, 4.2). `AnswerSink` is a clonable
+sender over a bounded tokio channel of 16 (`ANSWER_QUEUE`) whose `send` never waits: a full
+channel drops the new answer with a warning and counts it (`dropped()`). `AnswerSink::none()`
+sends nowhere (tests, probes). `GateHost::on_join` gives every join a clone of the
+runtime's one sink.
 
 **Stub implementation** (`assistant/mod.rs`, `StubAssistant`): becomes ready a configurable
 time after a session is wanted, drains its input on a thread, answers nothing and records
@@ -697,6 +759,17 @@ assistant is given, so the app never panics on an unknown engine setting.
   closes the peer, sends `thread/realtime/stop` and flushes the output; a restart waits for
   the stop. Barge-in is left to the realtime server (it stops its own output when the user
   speaks); the app does not flush its output on the user's speech.
+  *The agent's answers* (change `post-assistant-answers`): the session keeps the agent's
+  turns in progress by turn id (`Turns`): `turn/started` (`turn.id`) opens one,
+  `item/completed` (`turnId`; an unknown id counts for the most recent turn) sets its task
+  from a `userMessage`, unwrapped as the chat shows it, and replaces its last text with each
+  `agentMessage`. `turn/completed` closes it and, when `turn.status` is `completed` and the
+  last text is not empty, sends `AgentAnswer { guild, task, text }` (the text trimmed, as
+  written otherwise) through `ports.answers`. An interim line before a tool call is never
+  sent, nor is an `interrupted` or `failed` turn. The voice's own speech and the people's
+  transcripts are never answers. The turns are forgotten at `shutdown`. The `phase` field of
+  an `agentMessage` (`commentary`, `final_answer`) is not used: the schema says it is not
+  always sent. Checked against the Codex CLI 0.167.0 schema.
 - `CodexAssistant` (`codex/mod.rs`) owns the process, the account, the voices and models,
   the conversations per guild and the chat log. **Nothing of Codex runs before `/join`,
   Sign in, Check or Refresh lists, except the read of the lists at start** (below).
@@ -734,7 +807,10 @@ assistant is given, so the app never panics on an unknown engine setting.
   server and cancels that stop.
 - Tests: `testdata/fake-codex` is a Node stand-in for the app-server (handshake, account,
   voices, two models, `thread/start`; `fake_codex_signed_out.cmd` reports no account;
-  `--log <file>` records each request's method, `--models a,b|none` sets the model list).
+  `--log <file>` records each request's method, `--models a,b|none` sets the model list;
+  its own method `fake/delegate {threadId, outcome}` plays a delegated task on that thread:
+  `turn/started`, the task, an interim agent message, a web search, the final agent message
+  and `turn/completed` with the given status).
   The tests that use it check nothing where Node is not installed.
   `VOICEBRO_CODEX_SMOKE=1 cargo test -p voicebro-core real_codex_starts` runs the real
   start at a preparation and the stop after the last leave.
@@ -745,6 +821,9 @@ assistant is given, so the app never panics on an unknown engine setting.
   are fed on a jittery tick (20 ms ± 7 ms), the output is read every 20 ms like songbird
   does, and the test checks the canary, audio back, zero input drops, continuity and prints
   the call's counters and the chat log (a delegated question shows the agent's web search).
+  The session gets its own answer receiver: every answer handed over for posting is
+  printed, and with `VOICEBRO_CODEX_CALL_WAV3` the test requires one answer per completed
+  task, the last one holding the agent's final text as the chat shows it.
   `VOICEBRO_CODEX_SMOKE=1` runs the handshake only. `VOICEBRO_RTC_LOOPBACK=1 cargo test -p
   voicebro-core loopback_call_loses_nothing` sends a 10 s tone between two peers in one
   process through the same send path and jitter buffer and checks zero drops, zero late,
@@ -765,7 +844,7 @@ pub struct Settings {
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation, deactivation } }
-    pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off, save_chat_history (default false)
+    pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off, save_chat_history (default false), post_answers: off (default) | voice_channel | command_channel | channel, answers_channel (a channel id, digits or empty; required by channel, kept while another value is chosen)
     pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default), handoff_mode: items (default) | commentary | bem_tags | thinking, refresh_lists_at_start (default false, read at start)
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
     pub ui: UiSettings,                    // theme: dark | darcula | light | intellij (default dark); font_size: 11..=20 (default 13); collapsed_cards: ids of the collapsed cards of the Settings and Config tabs (default empty; unknown ids kept, ignored by the window)
@@ -797,8 +876,14 @@ recognizes; the code ships none.
   next save writes `libopus`. A save that sends such a name is still refused.
 - `Settings::validate()` is the only validator (one model's phrase lists must not overlap,
   timeout range, the model is a catalog id or `local:<plain folder name>` of the engine,
-  shortcut parses). `Runtime::apply(settings)` diffs against the
+  shortcut parses, `assistant.answers_channel` is digits and set when `post_answers` is
+  `channel`). An unknown `assistant.post_answers` is refused while the document is read
+  (`PostAnswers` deserializes through `TryFrom<String>`), with the field and the four
+  values in the message. `Runtime::apply(settings)` diffs against the
   current settings and reconfigures only the subsystems whose section changed.
+  `changed_sections` reports the two answer posting fields as their own part, `answers`,
+  so a change of only those restarts nothing and reconfigures no gate or assistant: the
+  answer handler (4.7) reads them when each answer arrives.
 - Adding a setting means: a field with a default, its validation, its `apply` effect, and its
   UI control. Nothing else.
 - **Secrets** go through `SecretStore` (Windows Credential Manager via `windows-sys`, entry
@@ -844,6 +929,19 @@ status and `leave`), writes the console line "the bot left <channel> in <guild>:
 failed while <activity>" and publishes `AppEvent::CodecFailure { guild_name, channel_name,
 path, activity, codec, message }`. Other guilds stay; `diagnostics.opus_codec` is not
 changed. A report for a guild the bot is no longer in is logged and dropped.
+
+**The agent's answers** (change `post-assistant-answers`): `Runtime::start` takes the
+receiver of the one `AnswerSink` (4.5) and spawns `spawn_answer_handler`, which takes the
+answers one after another. For each it reads the `assistant` settings stored at that moment
+(`Runtime.settings` is shared with the task), so a save applies to the next answer and
+restarts nothing (`changed_sections` reports the two fields as `answers`, which `apply`
+only logs). `handle_answer` maps `post_answers` to an `AnswerDestination` (`off` makes no
+call and logs "not posted: posting answers is off") and calls `AnswerPoster::post`, a trait
+implemented by `DiscordRuntime` (4.2) and faked in the runtime tests. Its `PostOutcome`:
+`Posted` logs the post line and clears the `answers` connection error; `NotPosted` logs the
+reason (unless it was already said in this voice session); `Refused` sets the `answers`
+error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows it as
+"answers: cannot post …") and logs it at Warn. Nothing is retried.
 
 ### 4.8 Desktop shell (`apps/desktop`)
 
@@ -1065,6 +1163,24 @@ changed. A report for a guild the bot is no longer in is logged and dropped.
     no feedback line). `fillForm` applies the stored list on load and on every settings
     change, except while a toggle's save is in flight, so quick toggles do not undo each
     other. Fields keep their values and unsaved edits while their card is folded.
+  - **Post answers to Discord** (Config → Codex, after "Save chat history"; change
+    `post-assistant-answers`): a select `#post-answers` (`assistant.post_answers`) with Off,
+    The voice channel's chat, The channel of /join and A chosen channel; its help line says
+    that the agent's final answers are posted there and names View Channel, Send Messages
+    and Embed Links. Below it, only while A chosen channel is shown, "Answers channel"
+    (`#answers-channel`, no `data-path`): the text channels from `discord_text_channels`
+    (4.2), one `<optgroup>` per server, "#<name>", and "(can't post)" after a channel
+    whose `can_post` is `false`. Saving: Off and the two chats save `post_answers` at once
+    through the normal path and keep `answers_channel`; A chosen channel saves both fields
+    in one patch (`saveAnswerPosting`), at once when a channel is stored, else only when one
+    is picked; until then the select stays dirty, nothing is saved, and the line "Pick a
+    channel: nothing is saved until you do." shows. Picking a channel saves both. While the
+    command returns no servers (not connected), the list holds the stored id ("Channel
+    <id>") and the note says the names appear once the bot is connected; a stored id the
+    connected bot does not know is listed as "<id> (not in the bot's servers)". The list is
+    read when the Config tab opens and whenever `renderStatus` sees the Discord connection
+    state change; a rebuild keeps the stored (or the in-flight) choice and waits while the
+    list is open. A refused post shows on the Status tab as the `answers` connection error.
   - **Codex lists** (Config → Codex, first row): the "Refresh the lists at start" switch
     (`codex.refresh_lists_at_start`, read by the desktop shell at the next start) and the
     "Lists" field: a **Refresh lists** button and `#codex-lists-read`, "Read <YYYY-MM-DD
@@ -1085,7 +1201,8 @@ changed. A report for a guild the bot is no longer in is logged and dropped.
   - Commands: `get_settings`, `save_settings`, `set_secret`, `clear_secret`, `status`,
     `app_info`, `set_muted`, `toggle_mute`, `discord_connect`, `discord_disconnect`,
     `codex_sign_in`, `codex_check`, `codex_install_info`, `codex_install`,
-    `codex_models`, `capabilities`, `wake_models`, `wake_download`, `wake_requirements`,
+    `codex_models`, `capabilities`, `discord_text_channels`, `wake_models`, `wake_download`,
+    `wake_requirements`,
     `chat_log`, `log_history`, `system_status`, `memory_status`, `open_log_folder`,
     `open_models_folder`, `open_assets_folder`.
 - Checking the window without a person: start the app with
@@ -1097,14 +1214,17 @@ changed. A report for a guild the bot is no longer in is logged and dropped.
   phrase overlap, gains, theme and font size; status events every second;
   `window.__mock` with the calls made, the stored document, a capabilities change,
   `failNextCheck` and `nextCheckAddsModel`; `?nolists` starts with no Codex lists and
-  `?collapsed=<ids>` with those cards stored as collapsed),
+  `?collapsed=<ids>` with those cards stored as collapsed; `discord_text_channels` answers
+  two servers with "rules" marked can't post, `?disconnected` starts with the bot not
+  connected and `setConnected(on)` changes it, `?post_answers=<value>&answers_channel=<id>`
+  starts with that answer posting stored),
   `make.mjs`, which writes `ui-dev/index.html` from `ui/index.html` with the mock loaded
   first, and `serve.mjs`, which serves it on `http://127.0.0.1:5174/` for browsers that do
   not run scripts from `file://`. Two headless checks drive the mock in Edge and stop at
   the first failure: `check-wake-dialog.mjs` (the install dialog) and
   `check-config-tab.mjs` (which cards each tab holds, the two ways of saving on Config,
   the collapsible cards of both tabs, the switches' size, label and keyboard, the Codex lists and
-  Refresh lists).
+  Refresh lists, and Post answers to Discord with its channel list).
 - Window lifecycle: destroying the main window exits the app, which stops `codex.exe`.
 
 ### 4.9 Probe binary (`apps/probe`)
@@ -1223,6 +1343,11 @@ mute (app button | hotkey | Discord panel) ─► Runtime::toggle_mute ─► Re
    ─► every gate: session ends (session_wanted(false)), nothing sent, output flushed,
       mute tone ─► AppEvent::MuteChanged ─► UI, panel
 last /leave ─► Codex: app-server stops 0.5 s later; conversations kept
+voice delegates a task ─► Codex agent: turn/started, items, turn/completed (completed)
+   ─► CodexSession: AgentAnswer {guild, task, last agent text} ─► AudioPorts.answers
+   ─► runtime answer handler: current assistant.post_answers ─► off: nothing
+      │ else DiscordRuntime::post_answer: resolve channel, format, split, post (no mentions)
+      └─► posted: log, clear `answers` error │ refused: `answers` error, log │ skipped: log
 ```
 
 ### Settings
@@ -1230,7 +1355,8 @@ last /leave ─► Codex: app-server stops 0.5 s later; conversations kept
 ```text
 UI patch ─► command save_settings ─► Settings::validate ─► store ─► Runtime::apply(diff)
    ─► gates (mode, timeout, earcons, labels), gains (shared atomics), wake engine (phrases, model),
-      Codex (thread settings), Discord (restart on token change), hotkey (re-register)
+      Codex (thread settings), Discord (restart on token change), hotkey (re-register);
+      answer posting: nothing (read by the answer handler at the next answer)
 ```
 
 ## 6. Contracts and constants
@@ -1279,13 +1405,25 @@ Values that are known to work. Change them only with a measurement or a corpus r
   `detail!("<area>", …)`, target `detail::<area>`: what the recognizer heard
   (`detail::wake`), the per-turn latency (`detail::latency`), the call's buffer, track and
   end-of-call counters (`detail::rtc`), the delivery lines (`detail::delivery`), the
-  speaker-to-SSRC mapping (`detail::receive`) and the copy of each chat entry
-  (`detail::chat`). The file rotates at 1 MB and keeps one archived file, about 2 MB.
+  speaker-to-SSRC mapping (`detail::receive`), the copy of each chat entry
+  (`detail::chat`) and the text of each posted answer (`detail::answers`). The file rotates at 1 MB and keeps one archived file, about 2 MB.
 - Log the value that was actually used, never the one that was requested and replaced.
 - The wake worker logs what it heard; the UI shows the recognizer's results, not only the
   assistant's transcript.
 - Connection errors (Codex process, RTC call, Discord) surface in the status snapshot, not
-  only in the log.
+  only in the log. The source `answers` (change `post-assistant-answers`) is set when
+  Discord refuses an answer's post, or the chosen channel is gone, and cleared by the next
+  post.
+- **The agent's answers** (4.2, 4.7), prefixed with the guild:
+
+  ```text
+  [answers:<guild>] posted the Codex answer to #<channel> in <server> (<n> messages, <chars> characters)
+  [answers:<guild>] the Codex answer was not posted: <reason>
+  [answers:<guild>] cannot post to #<channel> in <server>: <Discord's reason>[; the bot lacks <permissions> here]
+  ```
+
+  The text itself is a detail line (`detail::answers`), in the file only with the verbose
+  log.
 - **Panics** are logged by the desktop shell's hook (4.8) with thread, location and message,
   in every build. A panic of opus-rs is also logged by the runtime when the bot leaves
   ("<path>: <codec> panicked: …", 4.7) and shown in the window's codec failure notice;
@@ -1361,7 +1499,7 @@ Values that are known to work. Change them only with a measurement or a corpus r
 |---|---|
 | A wake engine (sherpa-onnx, a KWS) | `wake/<engine>/` implementing `WakeEngine`, `LoadedModel`, `SpeechRecognizer`; catalog entries; nothing in `PhraseSpotter` or the gate |
 | A model or language | A `ModelEntry` in the catalog (URL, SHA-256, license) |
-| An assistant or an auth path (API key, another provider) | `assistant/<engine>/` implementing `Assistant` and `AssistantSession` over `AudioPorts`; nothing in the gate or Discord |
+| An assistant or an auth path (API key, another provider) | `assistant/<engine>/` implementing `Assistant` and `AssistantSession` over `AudioPorts`, sending its agent's final answers as `AgentAnswer` through `AudioPorts.answers` to have them posted; nothing in the gate or Discord |
 | A setting | One field in `Settings`, its validation, its `apply` branch, its UI control |
 | A UI | Anything that can call the commands and subscribe to the event; the core is unchanged |
 

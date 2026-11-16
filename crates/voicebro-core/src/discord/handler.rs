@@ -51,7 +51,10 @@ impl Handler {
         if command.defer(&ctx.http).await.is_err() {
             return;
         }
-        let outcome = session::prepare_and_join(&self.shared, guild, channel).await;
+        // The session keeps the channel /join was typed in before the panel is posted, so
+        // answers can go there even when the panel cannot.
+        let outcome =
+            session::prepare_and_join(&self.shared, guild, channel, command.channel_id).await;
         let text = outcome.reply_text();
         let response = match outcome {
             JoinOutcome::Joined { .. } => match session::panel_message(&self.shared, guild) {

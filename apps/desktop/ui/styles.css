@@ -271,6 +271,7 @@ output { float: right; color: var(--accent); font-weight: 600; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; }
 .form-grid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .form-grid label.wide { grid-column: 1 / -1; }
+.form-grid label[hidden] { display: none; }
 .form-grid label input[type="checkbox"]:not(.switch) { align-self: flex-start; margin: 2px 0 6px; }
 .form-grid label .badge { align-self: flex-start; }
 .field-help { color: var(--ink-dim); font-size: 0.85em; line-height: 1.4; }
