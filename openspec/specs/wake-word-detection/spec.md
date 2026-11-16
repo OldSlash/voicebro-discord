@@ -10,10 +10,8 @@ or the user's own, which replace them list by list.
 ### Requirement: Phrases come from the settings
 The engine SHALL spot the selected model's activation and deactivation phrases: each list
 as stored in `wake.phrases`, or the model's default phrases for a list never set. A phrase
-is one or more words. Phrases and the recognizer's output SHALL be compared in one matching
-form (lower-case, "ё" as "е"); a phrase counts when its words appear in a row as whole
-words. Phrases of other models SHALL be ignored. With both lists set to empty and the files
-on disk, the engine SHALL stay idle and say no phrases are configured.
+is one or more words. Phrases of other models SHALL be ignored. With both lists set to
+empty and the files on disk, the engine SHALL stay idle and say no phrases are configured.
 
 #### Scenario: No phrases configured
 - **WHEN** wake-word mode is on, the selected model and the Vosk library are on disk, and the user has set both phrase lists of the selected model to empty
@@ -26,6 +24,10 @@ on disk, the engine SHALL stay idle and say no phrases are configured.
 #### Scenario: Phrases of another model
 - **WHEN** the user has set phrases for the Russian model only and selects the English model, which is on disk
 - **THEN** the English model's default phrases are spotted and the Russian phrases are not
+
+### Requirement: Phrases match as whole words in one form
+Phrases and the recognizer's output SHALL be compared in one matching form (lower-case,
+"ё" as "е"); a phrase counts when its words appear in a row as whole words.
 
 #### Scenario: Look-alike word
 - **WHEN** a speaker says a longer word that contains an activation phrase as a prefix
@@ -93,13 +95,19 @@ SHALL continue the speaker's stream with nothing inserted.
 - **THEN** no silence is fed into any of their streams while each of them keeps talking
 
 ### Requirement: Resource behavior
-A recognizer SHALL exist only while its speaker is talking and be dropped after 30 s idle;
-the engine and model SHALL be loaded only while the session mode is wake word; the audio
-queue to the worker SHALL be bounded and drops SHALL be counted and logged.
+A recognizer SHALL exist only while its speaker is talking and be dropped after 30 s idle.
+The engine and model SHALL be loaded only while the session mode is wake word and the
+assistant mode is realtime; in Whisper mode the engine SHALL be off, and its state SHALL
+say that Whisper spots the phrases. The audio queue to the worker SHALL be bounded, and
+drops SHALL be counted and logged.
 
 #### Scenario: Mode switched to always
 - **WHEN** the user switches the session mode from wake word to always
 - **THEN** the model is unloaded and the engine's memory is released
+
+#### Scenario: Assistant mode switched to Whisper
+- **WHEN** the user switches the assistant mode to Whisper while Vosk is loaded
+- **THEN** Vosk is unloaded, the wake word state reads off with the reason "the Whisper mode spots the phrases", and no Vosk download is asked for
 
 ### Requirement: Diagnostics
 The engine SHALL log every final recognition result and every phrase decision with its

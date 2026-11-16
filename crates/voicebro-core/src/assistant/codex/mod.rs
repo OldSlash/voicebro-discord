@@ -10,12 +10,14 @@ pub mod pacing;
 pub mod playout;
 pub mod rtc;
 pub mod session;
+pub mod text_session;
 pub mod thread;
 
 use self::account::{next_cursor, parse_account, parse_models, AccountInfo, Voices};
 use self::app_server::{codex_version, find_codex, AppServer};
 use self::conversation::Conversation;
 use self::session::{CodexSession, SessionParts};
+use self::text_session::{CodexTextSession, TextParts};
 use self::thread::{open_thread, ThreadSettings};
 use super::chat_log::ChatLog;
 use super::{
@@ -25,7 +27,7 @@ use super::{
 use crate::audio::codec::OpusCodec;
 use crate::audio::AudioPorts;
 use crate::events::{AppEvent, EventBus};
-use crate::settings::{Settings, SpeakerLabels};
+use crate::settings::{AssistantMode, Settings, SpeakerLabels};
 use crate::status::ConnectionErrors;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -76,6 +78,9 @@ pub struct CodexConfig {
     pub handoff_mode: String,
     /// `diagnostics.opus_codec`, read when a call starts.
     pub opus_codec: OpusCodec,
+    /// `assistant.mode`: a realtime call or text turns (change `whisper-mode`), read at
+    /// each attach.
+    pub mode: AssistantMode,
 }
 
 impl CodexConfig {
@@ -89,6 +94,7 @@ impl CodexConfig {
             speaker_labels: settings.assistant.speaker_labels,
             handoff_mode: settings.codex.handoff_mode.clone(),
             opus_codec: settings.diagnostics.codec(),
+            mode: settings.assistant.mode,
         }
     }
 }
@@ -101,7 +107,9 @@ struct Inner {
     workspace: PathBuf,
     config: Arc<RwLock<CodexConfig>>,
     server: AsyncMutex<Option<Arc<AppServer>>>,
-    sessions: Mutex<HashMap<u64, Arc<CodexSession>>>,
+    sessions: Mutex<HashMap<u64, Attached>>,
+    /// The local voice the text sessions of the Whisper mode speak with.
+    tts: Mutex<Option<crate::tts::manager::TtsManager>>,
     /// Survives leaving and rejoining voice; lives as long as the app runs.
     conversations: Mutex<HashMap<u64, Arc<Mutex<Conversation>>>>,
     /// What each guild's calls learnt about the server's lateness; the next call starts from
@@ -134,6 +142,29 @@ struct Inner {
     /// The version of the executable found last, keyed by its path, size and modification
     /// time, so a status read starts no `codex --version` unless the file changed.
     version_cache: Mutex<Option<VersionCache>>,
+}
+
+/// A guild's session: a realtime call or the Whisper mode's text turns.
+#[derive(Clone)]
+enum Attached {
+    Realtime(Arc<CodexSession>),
+    Text(Arc<CodexTextSession>),
+}
+
+impl Attached {
+    fn shutdown(&self) {
+        match self {
+            Self::Realtime(session) => session.shutdown(),
+            Self::Text(session) => session.shutdown(),
+        }
+    }
+
+    fn status(&self) -> super::CallStatus {
+        match self {
+            Self::Realtime(session) => session.status(),
+            Self::Text(session) => session.status(),
+        }
+    }
 }
 
 /// One `codex --version` answer and the file it came from.
@@ -189,6 +220,7 @@ impl CodexAssistant {
                 config: Arc::new(RwLock::new(CodexConfig::from_settings(settings))),
                 server: AsyncMutex::new(None),
                 sessions: Mutex::new(HashMap::new()),
+                tts: Mutex::new(None),
                 conversations: Mutex::new(HashMap::new()),
                 learned_depths: Mutex::new(HashMap::new()),
                 account: Arc::new(Mutex::new(None)),
@@ -725,6 +757,31 @@ impl Assistant for CodexAssistant {
                 "Codex stopped before the join finished; run /join again".to_owned(),
             ));
         };
+        if self.config().mode == AssistantMode::Whisper {
+            let tts = self
+                .inner
+                .tts
+                .lock()
+                .expect("tts lock")
+                .clone()
+                .ok_or_else(|| {
+                    AssistantError::Unavailable("the Whisper mode's voice is not set up".to_owned())
+                })?;
+            let session = CodexTextSession::new(TextParts {
+                guild,
+                handle: self.inner.handle.clone(),
+                server,
+                config: Arc::clone(&self.inner.config),
+                conversation: self.conversation(guild),
+                ports,
+                chat: Arc::clone(&self.inner.chat),
+                events: self.inner.events.clone(),
+                errors: Arc::clone(&self.inner.errors),
+                tts,
+            });
+            sessions.insert(guild, Attached::Text(Arc::clone(&session)));
+            return Ok(session);
+        }
         let session = CodexSession::new(SessionParts {
             guild,
             handle: self.inner.handle.clone(),
@@ -740,8 +797,12 @@ impl Assistant for CodexAssistant {
             events: self.inner.events.clone(),
             errors: Arc::clone(&self.inner.errors),
         });
-        sessions.insert(guild, Arc::clone(&session));
+        sessions.insert(guild, Attached::Realtime(Arc::clone(&session)));
         Ok(session)
+    }
+
+    fn use_tts(&self, tts: crate::tts::manager::TtsManager) {
+        *self.inner.tts.lock().expect("tts lock") = Some(tts);
     }
 
     fn detach(&self, guild: u64) {
@@ -2017,5 +2078,435 @@ mod tests {
             "the first answer was measured as a response: {turns:?}"
         );
         assistant.stop_blocking();
+    }
+
+    /// The Whisper mode's text sessions (change `whisper-mode`, task 7.2) against the fake.
+    mod text {
+        use super::*;
+        use crate::assistant::{AgentAnswer, UserText};
+        use crate::tts::manager::{Loader, TtsManager};
+        use crate::tts::{Synth, TtsError};
+
+        /// 0.2 s of a tone per piece, recording what it read.
+        struct Reader(Arc<Mutex<Vec<String>>>);
+
+        impl Synth for Reader {
+            fn sample_rate(&self) -> u32 {
+                24_000
+            }
+
+            fn synthesize(
+                &mut self,
+                text: &str,
+                _: Option<&str>,
+                _: f32,
+                _: &dyn Fn() -> bool,
+            ) -> Result<Option<Vec<f32>>, TtsError> {
+                self.0.lock().unwrap().push(text.to_owned());
+                Ok(Some(
+                    (0..4_800)
+                        .map(|index| (index as f32 * 0.1).sin() * 0.5)
+                        .collect(),
+                ))
+            }
+        }
+
+        struct ReaderLoader(Arc<Mutex<Vec<String>>>);
+
+        impl Loader for ReaderLoader {
+            fn load(&self, _: &str, _: &std::path::Path) -> Result<Box<dyn Synth>, TtsError> {
+                Ok(Box::new(Reader(Arc::clone(&self.0))))
+            }
+        }
+
+        struct Rig {
+            runtime: tokio::runtime::Runtime,
+            dir: tempfile::TempDir,
+            assistant: CodexAssistant,
+            session: Arc<dyn AssistantSession>,
+            answers: tokio::sync::mpsc::Receiver<AgentAnswer>,
+            read: Arc<Mutex<Vec<String>>>,
+            _source: crate::audio::PcmSource,
+        }
+
+        fn whisper_settings(executable: &str) -> Settings {
+            let mut settings = Settings::default();
+            settings.codex.executable = executable.to_owned();
+            settings.assistant.mode = AssistantMode::Whisper;
+            settings.tts.voice = "windows:test".to_owned();
+            settings
+        }
+
+        fn rig() -> Option<Rig> {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let fake = logging_fake(dir.path())?;
+            let assistant = assistant_with(&runtime, dir.path(), &fake);
+            let settings = whisper_settings(&fake);
+            assistant.configure(&settings);
+            let read = Arc::new(Mutex::new(Vec::new()));
+            let tts = TtsManager::with_parts(
+                Arc::new(ReaderLoader(Arc::clone(&read))),
+                Arc::new(
+                    |_: &crate::assets::Asset,
+                     _: &std::path::Path,
+                     _: &dyn Fn(crate::assets::Progress)| Ok(()),
+                ),
+                dir.path().to_path_buf(),
+                EventBus::new(64),
+            );
+            tts.configure(&settings);
+            tts.prepare_join().unwrap();
+            read.lock().unwrap().clear();
+            assistant.use_tts(tts);
+            runtime
+                .block_on(assistant.prepare_guild(1))
+                .expect("the fake prepares");
+            let (sink, answers) = crate::assistant::AnswerSink::channel();
+            let (_sender, input) = frame_channel(INPUT_CAPACITY);
+            let (output, source) = output_pair();
+            let session = assistant
+                .attach(
+                    1,
+                    AudioPorts {
+                        input,
+                        output,
+                        failures: CodecFailures::none(),
+                        answers: sink,
+                        heard: crate::assistant::no_heard(),
+                    },
+                )
+                .unwrap();
+            session.call_context(
+                Some("Alex".to_owned()),
+                &["Alex".to_owned(), "Sam".to_owned()],
+            );
+            session.session_wanted(true);
+            Some(Rig {
+                runtime,
+                dir,
+                assistant,
+                session,
+                answers,
+                read,
+                _source: source,
+            })
+        }
+
+        fn question(text: &str) -> UserText {
+            UserText {
+                speaker: Some("Alex".to_owned()),
+                text: text.to_owned(),
+                language: Some("en".to_owned()),
+                speech_end: Instant::now(),
+                text_at: Instant::now(),
+                audio_seconds: 2.0,
+                model: "whisper-base-q8_0".to_owned(),
+                device: "cpu".to_owned(),
+                latency: Arc::default(),
+            }
+        }
+
+        fn wait(condition: impl Fn() -> bool) {
+            let started = Instant::now();
+            while !condition() {
+                assert!(started.elapsed() < Duration::from_secs(10), "timed out");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn methods(dir: &std::path::Path) -> Vec<String> {
+            std::fs::read_to_string(dir.join("requests.txt"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+
+        #[test]
+        fn a_question_is_answered_spoken_and_posted() {
+            let Some(mut rig) = rig() else {
+                return;
+            };
+            assert!(rig.session.ready(), "ready once the thread exists");
+            rig.session
+                .user_text(question("what time is it in London?"));
+            assert!(rig.session.working());
+            let answer = rig
+                .runtime
+                .block_on(async {
+                    tokio::time::timeout(Duration::from_secs(10), rig.answers.recv()).await
+                })
+                .expect("an answer in time")
+                .unwrap();
+            assert_eq!(answer.task.as_deref(), Some("what time is it in London?"));
+            assert!(answer
+                .text
+                .starts_with("You asked: Alex: what time is it in London?"));
+            wait(|| rig.read.lock().unwrap().len() >= 3);
+            let read = rig.read.lock().unwrap().clone();
+            assert_eq!(read[0], "Let me check that.", "the interim line is spoken");
+            assert!(
+                read.concat().contains("In London it is 9 degrees."),
+                "{read:?}"
+            );
+            // The first turn carried the people in the channel.
+            let params = rig
+                .runtime
+                .block_on(
+                    rig.assistant
+                        .running_server()
+                        .unwrap()
+                        .request("fake/lastTurnStart", serde_json::json!({})),
+                )
+                .unwrap();
+            let channel = params["additionalContext"]["voicebro.channel"]["value"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert!(channel.contains("Alex, Sam"), "{channel}");
+            assert_eq!(
+                params["input"][0]["text"],
+                "Alex: what time is it in London?"
+            );
+            rig.assistant.detach(1);
+            rig.assistant.stop_blocking();
+        }
+
+        #[test]
+        fn a_second_question_interrupts_the_first_and_only_it_is_posted() {
+            let Some(mut rig) = rig() else {
+                return;
+            };
+            let server = rig.assistant.running_server().unwrap();
+            rig.runtime
+                .block_on(server.request("fake/turnDelay", serde_json::json!({ "ms": 40 })))
+                .unwrap();
+            rig.session.user_text(question("first question"));
+            wait(|| !rig.read.lock().unwrap().is_empty());
+            rig.session.user_text(question("second question"));
+            let answer = rig
+                .runtime
+                .block_on(async {
+                    tokio::time::timeout(Duration::from_secs(10), rig.answers.recv()).await
+                })
+                .expect("an answer in time")
+                .unwrap();
+            assert_eq!(answer.task.as_deref(), Some("second question"));
+            let calls = methods(rig.dir.path());
+            let interrupt = calls.iter().position(|method| method == "turn/interrupt");
+            let second_start = calls
+                .iter()
+                .enumerate()
+                .filter(|(_, method)| *method == "turn/start")
+                .nth(1)
+                .map(|(index, _)| index);
+            assert!(
+                interrupt.is_some() && interrupt < second_start,
+                "the interrupt goes out before the new start: {calls:?}"
+            );
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(
+                rig.answers.try_recv().is_err(),
+                "the interrupted turn is not posted"
+            );
+            rig.assistant.detach(1);
+            rig.assistant.stop_blocking();
+        }
+
+        #[test]
+        fn a_deactivation_during_a_turn_interrupts_it_and_posts_nothing() {
+            let Some(mut rig) = rig() else {
+                return;
+            };
+            let server = rig.assistant.running_server().unwrap();
+            rig.runtime
+                .block_on(server.request("fake/turnDelay", serde_json::json!({ "ms": 40 })))
+                .unwrap();
+            rig.session.user_text(question("a long question"));
+            wait(|| !rig.read.lock().unwrap().is_empty());
+            rig.session.session_wanted(false);
+            assert!(!rig.session.working(), "the voice stopped at once");
+            wait(|| {
+                methods(rig.dir.path())
+                    .iter()
+                    .any(|method| method == "turn/interrupt")
+            });
+            std::thread::sleep(Duration::from_millis(500));
+            assert!(rig.answers.try_recv().is_err());
+            rig.assistant.detach(1);
+            rig.assistant.stop_blocking();
+        }
+
+        /// Task 7.4, gated: `VOICEBRO_WHISPER_DIR` (assets with the Whisper files and the
+        /// voice), `VOICEBRO_WHISPER_QUESTION_WAV` (a question, 16 or 48 kHz), optional
+        /// `VOICEBRO_WHISPER_MODEL`, `VOICEBRO_WHISPER_DEVICE`, `VOICEBRO_TTS_VOICE` and
+        /// `VOICEBRO_WHISPER_ANSWER_WAV`. The WAV goes through Whisper, a real Codex text
+        /// turn and the voice; the answer is written as a WAV, and the four timings print.
+        #[test]
+        fn whisper_text_turn_when_enabled() {
+            let (Ok(assets), Ok(wav)) = (
+                std::env::var("VOICEBRO_WHISPER_DIR"),
+                std::env::var("VOICEBRO_WHISPER_QUESTION_WAV"),
+            ) else {
+                return;
+            };
+            let assets = std::path::PathBuf::from(assets);
+            let model_id = std::env::var("VOICEBRO_WHISPER_MODEL")
+                .unwrap_or_else(|_| crate::stt::catalog::DEFAULT_MODEL.to_owned());
+            let device = match std::env::var("VOICEBRO_WHISPER_DEVICE").as_deref() {
+                Ok("gpu") => crate::settings::WhisperDevice::Gpu,
+                _ => crate::settings::WhisperDevice::Cpu,
+            };
+            let voice = std::env::var("VOICEBRO_TTS_VOICE")
+                .unwrap_or_else(|_| crate::tts::catalog::DEFAULT_VOICE.to_owned());
+            // Whisper.
+            let entry = crate::stt::catalog::find(&model_id).expect("a catalog model");
+            let runtime_lib = crate::stt::whisper::runtime(&assets).expect("the runtime");
+            let choice = crate::stt::whisper::choose_device(&runtime_lib, device, &assets);
+            let mut model = crate::stt::whisper::WhisperModel::load(
+                runtime_lib,
+                &assets.join(entry.asset.directory).join(entry.asset.marker),
+                &assets
+                    .join(crate::stt::catalog::VAD_MODEL.directory)
+                    .join(crate::stt::catalog::VAD_MODEL.marker),
+                choice.used == crate::settings::WhisperDevice::Gpu,
+            )
+            .expect("the model loads");
+            let audio = crate::stt::read_wav_16k(std::path::Path::new(&wav)).expect("the WAV");
+            let speech_end = Instant::now();
+            let raw = crate::stt::SpeechToText::transcribe(
+                &mut model,
+                &audio,
+                &crate::stt::DecodeOptions {
+                    language: "auto".to_owned(),
+                    threads: 0,
+                    prompt: None,
+                },
+            )
+            .expect("transcribed");
+            let text_at = Instant::now();
+            let crate::stt::transcriber::Cleaned::Text(text) =
+                crate::stt::transcriber::clean(&raw, crate::stt::whisper::NO_SPEECH_THRESHOLD)
+            else {
+                panic!("Whisper heard nothing in {wav}");
+            };
+            eprintln!("Whisper ({model_id}, {}): «{text}»", choice.backend);
+            // Codex and the voice.
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let mut settings = Settings::default();
+            settings.assistant.mode = AssistantMode::Whisper;
+            settings.tts.voice = voice.clone();
+            let events = EventBus::new(256);
+            let assistant = CodexAssistant::new(
+                runtime.handle().clone(),
+                events.clone(),
+                Arc::new(ConnectionErrors::new(events.clone())),
+                dir.path(),
+                &settings,
+            );
+            let tts = TtsManager::new(assets.clone(), events);
+            tts.configure(&settings);
+            tts.prepare_join().expect("the voice loads");
+            assistant.use_tts(tts.clone());
+            runtime
+                .block_on(assistant.prepare_guild(1))
+                .expect("codex runs and is signed in");
+            let (sink, mut answers) = crate::assistant::AnswerSink::channel();
+            let (_sender, input) = frame_channel(INPUT_CAPACITY);
+            let (output, mut source) = output_pair();
+            let session = assistant
+                .attach(
+                    1,
+                    AudioPorts {
+                        input,
+                        output,
+                        failures: CodecFailures::none(),
+                        answers: sink,
+                        heard: crate::assistant::no_heard(),
+                    },
+                )
+                .unwrap();
+            // VOICEBRO_WHISPER_PEOPLE="Alex, Sam": the channel's people, the first as the
+            // caller, for the additionalContext canary (task 7.3).
+            if let Ok(people) = std::env::var("VOICEBRO_WHISPER_PEOPLE") {
+                let names: Vec<String> = people
+                    .split(',')
+                    .map(|name| name.trim().to_owned())
+                    .filter(|name| !name.is_empty())
+                    .collect();
+                session.call_context(names.first().cloned(), &names);
+            }
+            session.session_wanted(true);
+            let latency: crate::latency::SharedLatency = Arc::default();
+            session.user_text(UserText {
+                speaker: Some("Tester".to_owned()),
+                text,
+                language: raw.language.clone(),
+                speech_end,
+                text_at,
+                audio_seconds: audio.len() as f64 / 16_000.0,
+                model: model_id.clone(),
+                device: choice.used.name().to_owned(),
+                latency: Arc::clone(&latency),
+            });
+            // Read the voice as songbird would, every 20 ms, until the answer was posted and
+            // the voice is quiet.
+
+            let mut voice_audio: Vec<f32> = Vec::new();
+            let mut buffer = vec![0u8; FRAME_SAMPLES * 4];
+            let started = Instant::now();
+            let mut posted = None;
+            let mut voiced = false;
+            let mut quiet_since: Option<Instant> = None;
+            while started.elapsed() < Duration::from_secs(120) {
+                std::thread::sleep(Duration::from_millis(20));
+                let read = std::io::Read::read(&mut source, &mut buffer).unwrap_or(0);
+                let mut loud = false;
+                for chunk in buffer[..read].as_chunks::<8>().0 {
+                    let left = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    loud |= left.abs() > 0.01;
+                    voice_audio.push(left);
+                }
+                if let Ok(answer) = answers.try_recv() {
+                    posted = Some(answer);
+                }
+                if loud {
+                    voiced = true;
+                    quiet_since = None;
+                } else if voiced {
+                    quiet_since.get_or_insert_with(Instant::now);
+                }
+                // Done once the answer was posted and its voice played and went quiet.
+                if posted.is_some()
+                    && quiet_since.is_some_and(|since| since.elapsed() > Duration::from_secs(2))
+                {
+                    break;
+                }
+            }
+            eprintln!("voice: {:?}", tts.status());
+            for entry in assistant.chat_log().entries() {
+                eprintln!("chat {}: {}", entry.kind, entry.text);
+            }
+            let posted = posted.expect("Codex answered");
+            eprintln!("Codex answered: {}", posted.text);
+            for report in latency.lock().unwrap().recent() {
+                eprintln!(
+                    "{}",
+                    crate::latency::log_line(1, &crate::latency::LatencyEvent::Report(report))
+                );
+            }
+            if let Ok(out) = std::env::var("VOICEBRO_WHISPER_ANSWER_WAV") {
+                std::fs::write(&out, crate::tts::wav_bytes(&voice_audio, 48_000)).unwrap();
+                eprintln!("wrote {out}");
+            }
+            assert!(
+                !latency.lock().unwrap().recent().is_empty(),
+                "the turn was measured"
+            );
+            assistant.detach(1);
+            assistant.stop_blocking();
+        }
     }
 }

@@ -11,13 +11,17 @@
 //!   at once, otherwise the idle timeout does;
 //! - **speaker names**: when enabled, the assistant is told who starts talking.
 
-use crate::assistant::{AssistantSession, HeardSink};
+use crate::assistant::{AssistantSession, HeardSink, UserText};
 use crate::audio::{peak, AudioGains, Earcon, Frame, FrameSender, GainStage, OutputHandle};
 use crate::events::{AppEvent, EventBus};
 use crate::latency::{self, SharedLatency};
-use crate::settings::{SessionMode, Settings, SpeakerLabels};
+use crate::settings::{AssistantMode, SessionMode, Settings, SpeakerLabels};
+use crate::stt::phrases::{decide, Decision};
+use crate::stt::transcriber::{Transcript, TranscriptSink};
 use crate::wake::spotter::transcript_match_after;
-use crate::wake::{Phrase, PhraseKind, PhraseOutcome, PhraseSink, WakeFeed, REACTIVATION_GUARD};
+use crate::wake::{
+    Phrase, PhraseKind, PhraseOutcome, PhraseSet, PhraseSink, WakeFeed, REACTIVATION_GUARD,
+};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,10 +64,16 @@ pub struct GateSettings {
     /// the call's transcript is checked for. No vocabulary check: the call's recognizer
     /// knows every word.
     pub deactivation_phrases: Vec<Phrase>,
+    /// The Whisper mode (change `whisper-mode`, design D2): Whisper's text is the input and
+    /// spots the phrases; no audio goes to the assistant.
+    pub whisper: bool,
+    /// The Whisper mode's phrases in effect.
+    pub whisper_phrases: PhraseSet,
 }
 
 impl GateSettings {
     pub fn from_settings(settings: &Settings) -> Self {
+        let whisper_phrases = settings.whisper.phrases_in_effect();
         Self {
             mode: settings.session.mode,
             idle_timeout: (settings.session.idle_timeout_seconds > 0)
@@ -72,6 +82,11 @@ impl GateSettings {
             earcon_volume: settings.session.earcon_volume,
             speaker_labels: settings.assistant.speaker_labels,
             deactivation_phrases: Phrase::list(&settings.wake.selected_phrases().deactivation),
+            whisper: settings.assistant.mode == AssistantMode::Whisper,
+            whisper_phrases: PhraseSet::new(
+                &whisper_phrases.activation,
+                &whisper_phrases.deactivation,
+            ),
         }
     }
 }
@@ -81,6 +96,8 @@ impl GateSettings {
 pub enum DeactivationSource {
     WakeEngine,
     CallTranscript,
+    /// Whisper's text in the Whisper mode.
+    Whisper,
 }
 
 impl DeactivationSource {
@@ -88,6 +105,7 @@ impl DeactivationSource {
         match self {
             Self::WakeEngine => "the wake engine",
             Self::CallTranscript => "the call's transcript",
+            Self::Whisper => "Whisper's text",
         }
     }
 }
@@ -418,6 +436,19 @@ impl RelayGate {
         self.lock().participants = names.to_vec();
     }
 
+    pub fn participants(&self) -> Vec<String> {
+        self.lock().participants.clone()
+    }
+
+    /// The speaker names known so far, for a gate that replaces this one.
+    pub fn speaker_names(&self) -> Vec<(u32, String)> {
+        self.lock()
+            .speakers
+            .iter()
+            .filter_map(|(ssrc, speaker)| speaker.name.clone().map(|name| (*ssrc, name)))
+            .collect()
+    }
+
     pub fn set_speaker_name(&self, ssrc: u32, name: &str) {
         self.lock().speakers.entry(ssrc).or_default().name = Some(name.to_owned());
     }
@@ -426,13 +457,13 @@ impl RelayGate {
     pub fn process_tick(&self, mixed: &Frame, speakers: &[(u32, &[i16])]) {
         let now = Instant::now();
         let assistant_signal = self.output.last_signal();
-        let ready = self
+        let (ready, working) = self
             .session
             .lock()
             .expect("gate session lock")
             .as_ref()
-            .map(|session| session.ready())
-            .unwrap_or(false);
+            .map(|session| (session.ready(), session.working()))
+            .unwrap_or((false, false));
         let mut effects = Effects::default();
         let (frame, feed_wake, tick) = {
             let mut state = self.lock();
@@ -476,10 +507,38 @@ impl RelayGate {
             }
             state.preroll.push_back(mixed.clone());
 
-            let feed_wake = state.settings.mode == SessionMode::WakeWord && !state.muted;
+            // The Whisper mode hears the channel in both session modes: its text is the input.
+            let feed_wake = !state.muted
+                && (state.settings.whisper || state.settings.mode == SessionMode::WakeWord);
             let mut passing = false;
             let frame: Option<Frame> = if state.muted {
                 // Muted: no session, nothing is sent.
+                None
+            } else if state.settings.whisper {
+                // Whisper mode: questions go as text; only the idle timeout is checked here.
+                // A turn in progress or its voice counts as activity.
+                if working {
+                    state.last_user_voice = Some(now);
+                }
+                let last_activity = [state.activated_at, state.last_user_voice, assistant_signal]
+                    .into_iter()
+                    .flatten()
+                    .max()
+                    .unwrap_or(now);
+                let timed_out = state.settings.mode == SessionMode::WakeWord
+                    && state.active
+                    && state.settings.idle_timeout.is_some_and(|timeout| {
+                        now.saturating_duration_since(last_activity) > timeout
+                    });
+                if timed_out {
+                    state.end_session();
+                    effects.flush_output = true;
+                    effects.earcon = Some(Earcon::Deactivate);
+                    effects.log = Some(
+                        "session ended after no input; waiting for the activation phrase"
+                            .to_owned(),
+                    );
+                }
                 None
             } else if state.settings.mode == SessionMode::Always {
                 passing = true;
@@ -607,7 +666,9 @@ impl RelayGate {
         let mut effects = Effects::default();
         {
             let mut state = self.lock();
-            if state.muted || state.settings.mode != SessionMode::WakeWord {
+            // In the Whisper mode Whisper's text spots the phrases; Vosk is off.
+            if state.muted || state.settings.mode != SessionMode::WakeWord || state.settings.whisper
+            {
                 return PhraseOutcome::NotListening;
             }
             match kind {
@@ -747,6 +808,87 @@ impl RelayGate {
         PhraseOutcome::Applied
     }
 
+    /// What Whisper heard one speaker say, in the Whisper mode (change `whisper-mode`,
+    /// design D4): an activation phrase while waiting starts the session, and the words
+    /// after it are the first question; a deactivation phrase during a session ends it; any
+    /// other utterance during a session (always, in always mode) is a question. While muted
+    /// or outside the Whisper mode nothing happens.
+    pub fn on_transcript(&self, transcript: Transcript) -> Decision {
+        self.on_transcript_at(transcript, Instant::now())
+    }
+
+    pub fn on_transcript_at(&self, transcript: Transcript, now: Instant) -> Decision {
+        let mut effects = Effects::default();
+        let (decision, question, speaker) = {
+            let mut state = self.lock();
+            if state.muted || !state.settings.whisper {
+                return Decision::Ignore;
+            }
+            let decision = decide(
+                &transcript.text,
+                state.settings.mode,
+                state.active,
+                &state.settings.whisper_phrases,
+            );
+            let speaker = state
+                .speakers
+                .get(&transcript.ssrc)
+                .and_then(|speaker| speaker.name.clone());
+            let question = match &decision {
+                Decision::Activate { phrase, .. }
+                    if state.deactivated_at.is_some_and(|at| {
+                        now.saturating_duration_since(at) < REACTIVATION_GUARD
+                    }) =>
+                {
+                    let _ = phrase;
+                    return Decision::Ignore;
+                }
+                Decision::Activate { phrase, question } => {
+                    state.active = true;
+                    state.activated_at = Some(now);
+                    state.last_wake_phrase = Some(phrase.clone());
+                    state.last_label = speaker.clone().map(|name| vec![name]);
+                    effects.caller = speaker.clone();
+                    effects.earcon = Some(Earcon::Activate);
+                    effects.log = Some(format!(
+                        "activation phrase «{phrase}» in Whisper's text; the assistant is listening"
+                    ));
+                    state.settle(&self.output, &mut effects);
+                    question.clone()
+                }
+                Decision::Deactivate { phrase } => {
+                    state.deactivate(phrase, DeactivationSource::Whisper, now, &mut effects);
+                    state.settle(&self.output, &mut effects);
+                    None
+                }
+                Decision::Question(text) => Some(text.clone()),
+                Decision::Ignore => None,
+            };
+            if question.is_some() {
+                state.last_user_voice = Some(now);
+            }
+            (decision, question, speaker)
+        };
+        self.apply_effects(effects);
+        if let Some(text) = question {
+            let session = self.session.lock().expect("gate session lock").clone();
+            if let Some(session) = session {
+                session.user_text(UserText {
+                    speaker,
+                    text,
+                    language: transcript.language,
+                    speech_end: transcript.speech_end,
+                    text_at: transcript.text_at,
+                    audio_seconds: transcript.audio_seconds,
+                    model: transcript.model,
+                    device: transcript.device,
+                    latency: Arc::clone(&self.latency),
+                });
+            }
+        }
+        decision
+    }
+
     pub fn set_muted(&self, muted: bool) {
         let mut effects = Effects::default();
         {
@@ -786,7 +928,7 @@ impl RelayGate {
         let mut effects = Effects::default();
         {
             let mut state = self.lock();
-            if state.settings.mode != settings.mode {
+            if state.settings.mode != settings.mode || state.settings.whisper != settings.whisper {
                 state.end_session();
                 effects.flush_output = true;
             }
@@ -958,6 +1100,15 @@ impl PhraseSink for RelayRegistry {
     }
 }
 
+/// What Whisper heard reaches the guild's gate (the Whisper mode).
+impl TranscriptSink for RelayRegistry {
+    fn on_transcript(&self, transcript: Transcript) {
+        if let Some(gate) = self.get(transcript.guild) {
+            gate.on_transcript(transcript);
+        }
+    }
+}
+
 /// The call's transcripts of the people's speech reach the guild's gate.
 impl HeardSink for RelayRegistry {
     fn on_heard(&self, guild: u64, turn: u64, text: &str, done: bool) {
@@ -1019,7 +1170,145 @@ mod tests {
             earcon_volume: 0.2,
             speaker_labels: SpeakerLabels::Changes,
             deactivation_phrases: Phrase::list(&["dismiss".to_owned()]),
+            whisper: false,
+            whisper_phrases: PhraseSet::default(),
         }
+    }
+
+    /// A gate in the Whisper mode with "hey bro" and "goodbye".
+    fn whisper_rig(mode: SessionMode, timeout: Option<Duration>) -> Rig {
+        let rig = rig(mode, timeout, Duration::ZERO);
+        let mut whisper = settings(mode, timeout);
+        whisper.whisper = true;
+        whisper.whisper_phrases = PhraseSet::new(&["hey bro".to_owned()], &["goodbye".to_owned()]);
+        rig.gate.update_settings(whisper);
+        rig
+    }
+
+    fn heard(text: &str) -> Transcript {
+        Transcript {
+            guild: 1,
+            ssrc: 7,
+            text: text.to_owned(),
+            language: Some("en".to_owned()),
+            speech_end: Instant::now(),
+            text_at: Instant::now(),
+            audio_seconds: 2.0,
+            transcribe_ms: 300,
+            model: "whisper-base-q8_0".to_owned(),
+            device: "cpu".to_owned(),
+        }
+    }
+
+    /// Scenario "Waiting in Whisper mode": every speaker reaches Whisper, nothing reaches
+    /// the assistant's input, and the output is muted; also in always mode.
+    #[test]
+    fn whisper_mode_feeds_whisper_and_sends_the_assistant_no_audio() {
+        for mode in [SessionMode::WakeWord, SessionMode::Always] {
+            let rig = whisper_rig(mode, None);
+            let loud = vec![3_000i16; 1920];
+            for _ in 0..10 {
+                rig.gate.process_tick(&voice(), &[(7, &loud), (8, &loud)]);
+            }
+            assert_eq!(rig.feed.0.load(Ordering::Relaxed), 20, "{mode:?}");
+            assert!(
+                drain(&rig.input).is_empty(),
+                "{mode:?}: no audio to the input"
+            );
+            assert_eq!(rig.output.is_muted(), mode == SessionMode::WakeWord);
+        }
+    }
+
+    /// Scenario "Muted in Whisper mode": no audio reaches Whisper and no text counts.
+    #[test]
+    fn muted_whisper_mode_feeds_nothing_and_ignores_text() {
+        let rig = whisper_rig(SessionMode::WakeWord, None);
+        rig.gate.set_muted(true);
+        rig.gate
+            .process_tick(&voice(), &[(7, &vec![3_000i16; 1920])]);
+        assert_eq!(rig.feed.0.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            rig.gate.on_transcript(heard("Hey bro, hi")),
+            Decision::Ignore
+        );
+        assert!(!rig.gate.status().active);
+    }
+
+    /// Scenarios "Phrase and question in one breath", "Phrase alone", "Talk while waiting"
+    /// and a deactivation inside a sentence.
+    #[test]
+    fn whisper_text_starts_asks_and_ends_the_session() {
+        let rig = whisper_rig(SessionMode::WakeWord, None);
+        rig.gate.set_speaker_name(7, "Alex");
+        rig.gate
+            .set_participants(&["Alex".to_owned(), "Sam".to_owned()]);
+        assert_eq!(
+            rig.gate.on_transcript(heard("I think we push left.")),
+            Decision::Ignore
+        );
+        assert!(rig.stub.texts.lock().unwrap().is_empty());
+        rig.gate
+            .on_transcript(heard("Hey bro, what is the weather in Bangkok?"));
+        assert!(rig.gate.status().active);
+        assert!(!rig.output.is_muted());
+        assert_eq!(
+            rig.stub
+                .contexts
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .0
+                .as_deref(),
+            Some("Alex"),
+            "the caller goes with the context before the question"
+        );
+        assert_eq!(
+            *rig.stub.texts.lock().unwrap(),
+            vec![(
+                Some("Alex".to_owned()),
+                "what is the weather in Bangkok?".to_owned()
+            )]
+        );
+        rig.gate.on_transcript(heard("And in London?"));
+        assert_eq!(rig.stub.texts.lock().unwrap().len(), 2);
+        assert!(matches!(
+            rig.gate.on_transcript(heard("Ok thanks, goodbye.")),
+            Decision::Deactivate { .. }
+        ));
+        assert!(!rig.gate.status().active);
+        assert_eq!(
+            rig.stub.texts.lock().unwrap().len(),
+            2,
+            "nothing more was asked"
+        );
+        assert_eq!(rig.stub.wanted_log.lock().unwrap().last(), Some(&false));
+        // Right after the goodbye another member's microphone may carry its end.
+        assert_eq!(rig.gate.on_transcript(heard("Hey bro.")), Decision::Ignore);
+    }
+
+    /// Scenario "Codex still working in Whisper mode": a turn in progress or its voice
+    /// keeps the session; the timeout then elapses.
+    #[test]
+    fn a_working_assistant_keeps_the_whisper_session() {
+        let rig = whisper_rig(SessionMode::WakeWord, Some(Duration::from_millis(150)));
+        rig.gate
+            .on_transcript(heard("Hey bro, find me a flight to London."));
+        rig.stub.busy.store(true, Ordering::Release);
+        for _ in 0..20 {
+            rig.gate.process_tick(&Frame::silence(), &[]);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(rig.gate.status().active, "kept while Codex works");
+        rig.stub.busy.store(false, Ordering::Release);
+        for _ in 0..12 {
+            rig.gate.process_tick(&Frame::silence(), &[]);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !rig.gate.status().active,
+            "the timeout elapsed after the answer"
+        );
     }
 
     struct Rig {

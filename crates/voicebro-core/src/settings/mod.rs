@@ -31,6 +31,10 @@ pub struct Settings {
     pub hotkey: HotkeySettings,
     pub ui: UiSettings,
     pub diagnostics: DiagnosticsSettings,
+    /// Speech recognition of the Whisper mode (change `whisper-mode`).
+    pub whisper: WhisperSettings,
+    /// The local voice of the Whisper mode.
+    pub tts: TtsSettings,
     /// Fields this build does not know (from a newer version). Kept through load and save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -49,10 +53,162 @@ impl Default for Settings {
             hotkey: HotkeySettings::default(),
             ui: UiSettings::default(),
             diagnostics: DiagnosticsSettings::default(),
+            whisper: WhisperSettings::default(),
+            tts: TtsSettings::default(),
             extra: Map::new(),
         }
     }
 }
+
+/// How people talk to the assistant (change `whisper-mode`, design D1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", try_from = "String")]
+pub enum AssistantMode {
+    /// Vosk spots the phrases and a Codex realtime voice call hears and speaks.
+    #[default]
+    Realtime,
+    /// Whisper turns speech into text and spots the phrases, Codex answers in text, a local
+    /// voice speaks.
+    Whisper,
+}
+
+impl AssistantMode {
+    pub const ALL: [AssistantMode; 2] = [AssistantMode::Realtime, AssistantMode::Whisper];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            AssistantMode::Realtime => "realtime",
+            AssistantMode::Whisper => "whisper",
+        }
+    }
+}
+
+impl TryFrom<String> for AssistantMode {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.name() == value)
+            .ok_or_else(|| {
+                format!(
+                    "assistant.mode: «{value}» is not an assistant mode; use one of realtime, whisper"
+                )
+            })
+    }
+}
+
+/// Where Whisper runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", try_from = "String")]
+pub enum WhisperDevice {
+    #[default]
+    Cpu,
+    /// An NVIDIA GPU through CUDA; the CPU when none is available (design D11).
+    Gpu,
+}
+
+impl WhisperDevice {
+    pub const fn name(self) -> &'static str {
+        match self {
+            WhisperDevice::Cpu => "cpu",
+            WhisperDevice::Gpu => "gpu",
+        }
+    }
+}
+
+impl TryFrom<String> for WhisperDevice {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "cpu" => Ok(WhisperDevice::Cpu),
+            "gpu" => Ok(WhisperDevice::Gpu),
+            _ => Err(format!(
+                "whisper.device: «{value}» is not a device; use one of cpu, gpu"
+            )),
+        }
+    }
+}
+
+/// The highest CPU thread count `whisper.threads` takes; 0 means automatic.
+pub const MAX_WHISPER_THREADS: u32 = 64;
+
+/// Speech recognition of the Whisper mode (design D14).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WhisperSettings {
+    /// A catalog id, or `local:<file>` for a model in `whisper-models\`.
+    pub model: String,
+    pub device: WhisperDevice,
+    /// CPU threads, 0 automatic, at most [`MAX_WHISPER_THREADS`].
+    pub threads: u32,
+    /// `auto`, or an ISO 639-1 code Whisper knows.
+    pub language: String,
+    /// One pair of lists for every language: Whisper writes any word. A list absent from
+    /// the file means the default phrases of the wake catalog for `language` (English for
+    /// `auto`), as for the wake models.
+    pub phrases: ModelPhrases,
+}
+
+impl Default for WhisperSettings {
+    fn default() -> Self {
+        Self {
+            model: crate::stt::catalog::DEFAULT_MODEL.to_owned(),
+            device: WhisperDevice::Cpu,
+            threads: 0,
+            language: "auto".to_owned(),
+            phrases: ModelPhrases::default(),
+        }
+    }
+}
+
+impl WhisperSettings {
+    /// The phrases in effect: each list as stored, or the defaults of the wake catalog's
+    /// entry for the language (English for `auto`); none for a language the catalog lacks.
+    pub fn phrases_in_effect(&self) -> PhraseLists {
+        let language = if self.language == "auto" {
+            "en"
+        } else {
+            self.language.as_str()
+        };
+        let defaults = catalog::entry_for_language(language)
+            .map(|entry| (entry.default_activation, entry.default_deactivation));
+        let pick = |stored: Option<&Vec<String>>, default: &[&str]| -> Vec<String> {
+            match stored {
+                Some(list) => list.clone(),
+                None => default.iter().map(|phrase| (*phrase).to_owned()).collect(),
+            }
+        };
+        let (activation, deactivation) = defaults.unwrap_or((&[], &[]));
+        PhraseLists {
+            activation: pick(self.phrases.activation.as_ref(), activation),
+            deactivation: pick(self.phrases.deactivation.as_ref(), deactivation),
+        }
+    }
+}
+
+/// The local voice of the Whisper mode (design D14).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TtsSettings {
+    /// A voice catalog id, or `windows:<voice id>`.
+    pub voice: String,
+    /// 0.5 to 2.0.
+    pub speed: f32,
+}
+
+impl Default for TtsSettings {
+    fn default() -> Self {
+        Self {
+            voice: crate::tts::catalog::DEFAULT_VOICE.to_owned(),
+            speed: 1.0,
+        }
+    }
+}
+
+/// The speed range of `tts.speed`.
+pub const TTS_SPEEDS: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 
 /// The measurements built for the tuning work, off by default so that a user who never
 /// opens the Performance tab pays nothing for them, and the Opus codec experiment. The
@@ -386,6 +542,9 @@ impl TryFrom<String> for PostAnswers {
 #[serde(default)]
 pub struct AssistantSettings {
     pub engine: String,
+    /// Realtime voice call or the Whisper mode (change `whisper-mode`); its own part,
+    /// `mode`, in `changed_sections`.
+    pub mode: AssistantMode,
     pub speaker_labels: SpeakerLabels,
     /// Every chat entry is also appended to `logs\codex-chat-<date>.log`. Off by default:
     /// nothing of the chat is written to disk.
@@ -402,6 +561,7 @@ impl Default for AssistantSettings {
     fn default() -> Self {
         Self {
             engine: "codex".to_owned(),
+            mode: AssistantMode::Realtime,
             speaker_labels: SpeakerLabels::Start,
             save_chat_history: false,
             post_answers: PostAnswers::Off,
@@ -421,11 +581,13 @@ impl AssistantSettings {
         }
     }
 
-    /// The parts of the section that only the answer posting reads.
+    /// The section without the parts that are their own parts in `changed_sections`: the
+    /// answer posting fields and the mode.
     fn without_answer_posting(&self) -> AssistantSettings {
         AssistantSettings {
             post_answers: PostAnswers::Off,
             answers_channel: String::new(),
+            mode: AssistantMode::Realtime,
             ..self.clone()
         }
     }
@@ -683,6 +845,7 @@ impl Settings {
                 ),
             ));
         }
+        self.validate_whisper()?;
         validate_shortcut("hotkey.mute", &self.hotkey.mute)?;
         if OpusCodec::parse(&self.diagnostics.opus_codec).is_none() {
             return Err(invalid(
@@ -713,6 +876,110 @@ impl Settings {
                     FONT_SIZES.start(),
                     FONT_SIZES.end()
                 ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The `whisper` and `tts` sections (change `whisper-mode`, design D14).
+    fn validate_whisper(&self) -> Result<(), ValidationError> {
+        use crate::stt::catalog as stt;
+        let model = self.whisper.model.as_str();
+        if stt::find(model).is_none() {
+            if model.starts_with(stt::LOCAL_PREFIX) && stt::local_file(model).is_none() {
+                return Err(invalid(
+                    "whisper.model",
+                    format!(
+                        "«{model}»: a local model is a plain file name of the Whisper models folder (no \\, /, : or ..)"
+                    ),
+                ));
+            }
+            if stt::local_file(model).is_none() {
+                return Err(invalid(
+                    "whisper.model",
+                    format!(
+                        "«{model}» is neither in the Whisper model catalog nor a {}<file> of the Whisper models folder",
+                        stt::LOCAL_PREFIX
+                    ),
+                ));
+            }
+        }
+        if self.whisper.threads > MAX_WHISPER_THREADS {
+            return Err(invalid(
+                "whisper.threads",
+                format!(
+                    "{} is outside 0 (automatic) to {MAX_WHISPER_THREADS}",
+                    self.whisper.threads
+                ),
+            ));
+        }
+        if !stt::is_known_language(&self.whisper.language) {
+            return Err(invalid(
+                "whisper.language",
+                format!(
+                    "«{}» is not a language Whisper knows; use auto or an ISO 639-1 code such as en or ru",
+                    self.whisper.language
+                ),
+            ));
+        }
+        for (field, list) in [
+            (
+                "whisper.phrases.activation",
+                &self.whisper.phrases.activation,
+            ),
+            (
+                "whisper.phrases.deactivation",
+                &self.whisper.phrases.deactivation,
+            ),
+        ] {
+            if let Some(phrase) = list
+                .iter()
+                .flatten()
+                .find(|phrase| !phrase.trim().is_empty() && phrase_words(phrase).is_empty())
+            {
+                return Err(invalid(
+                    field,
+                    format!("«{}» has no letter or digit", phrase.trim()),
+                ));
+            }
+        }
+        let lists = self.whisper.phrases_in_effect();
+        for activation in &lists.activation {
+            let words = phrase_words(activation);
+            if words.is_empty() {
+                continue;
+            }
+            if let Some(shared) = lists
+                .deactivation
+                .iter()
+                .find(|other| phrase_words(other) == words)
+            {
+                return Err(invalid(
+                    "whisper.phrases.deactivation",
+                    format!(
+                        "«{}» in the activation list and «{}» in the deactivation list are the same phrase",
+                        activation.trim(),
+                        shared.trim()
+                    ),
+                ));
+            }
+        }
+        let voice = self.tts.voice.as_str();
+        if crate::tts::catalog::find(voice).is_none()
+            && crate::tts::catalog::windows_voice(voice).is_none()
+        {
+            return Err(invalid(
+                "tts.voice",
+                format!(
+                    "«{voice}» is neither in the voice catalog nor a {}<voice id> of Windows",
+                    crate::tts::catalog::WINDOWS_PREFIX
+                ),
+            ));
+        }
+        if !TTS_SPEEDS.contains(&self.tts.speed) {
+            return Err(invalid(
+                "tts.speed",
+                format!("{} is outside 0.5 to 2.0", self.tts.speed),
             ));
         }
         Ok(())
@@ -771,6 +1038,17 @@ impl Settings {
         }
         if self.diagnostics != other.diagnostics {
             changed.push("diagnostics");
+        }
+        // Change `whisper-mode`: the mode switches at once (D1); the two sections reload
+        // in the background or apply from the next utterance or sentence (D12).
+        if self.assistant.mode != other.assistant.mode {
+            changed.push("mode");
+        }
+        if self.whisper != other.whisper {
+            changed.push("whisper");
+        }
+        if self.tts != other.tts {
+            changed.push("tts");
         }
         changed
     }
@@ -1207,6 +1485,139 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| (*v).to_owned()).collect()
+    }
+
+    /// Change `whisper-mode`, task 1.2, scenario "Older file": a 1.0.1 file loads in the
+    /// realtime mode with the new sections at their defaults, and the next save writes them.
+    #[test]
+    fn an_older_file_loads_in_the_realtime_mode_with_the_whisper_defaults() {
+        let older: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
+        assert_eq!(older.assistant.mode, AssistantMode::Realtime);
+        assert_eq!(older.whisper, WhisperSettings::default());
+        assert_eq!(older.whisper.model, "whisper-base-q8_0");
+        assert_eq!(older.whisper.device, WhisperDevice::Cpu);
+        assert_eq!(older.tts.voice, "supertonic3:F1");
+        older.validate().expect("the defaults are valid");
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(written["assistant"]["mode"], "realtime");
+        assert_eq!(written["whisper"]["language"], "auto");
+        assert_eq!(written["tts"]["speed"], 1.0);
+        assert_eq!(
+            older.whisper.phrases_in_effect(),
+            PhraseLists {
+                activation: strings(&["bro"]),
+                deactivation: strings(&["peace out"]),
+            },
+            "English defaults for auto"
+        );
+        let russian = older
+            .with_patch(&json!({ "whisper": { "language": "ru" } }))
+            .unwrap();
+        assert_eq!(russian.whisper.phrases_in_effect().activation, ["братан"]);
+        let japanese = older
+            .with_patch(&json!({ "whisper": { "language": "ja" } }))
+            .unwrap();
+        assert_eq!(japanese.whisper.phrases_in_effect(), PhraseLists::default());
+    }
+
+    /// Task 1.2: an unknown mode, a speed of 3 and a path as a local model are refused, each
+    /// naming its field.
+    #[test]
+    fn whisper_and_voice_values_outside_their_range_are_refused() {
+        let older: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
+        let error = older
+            .with_patch(&json!({ "assistant": { "mode": "local" } }))
+            .unwrap_err()
+            .to_string();
+        for part in ["assistant.mode", "local", "realtime", "whisper"] {
+            assert!(error.contains(part), "{part}: {error}");
+        }
+        let check = |patch: Value, field: &str, part: &str| {
+            let error = older.with_patch(&patch).unwrap().validate().unwrap_err();
+            assert_eq!(error.field, field, "{patch}");
+            assert!(error.message.contains(part), "{}", error.message);
+        };
+        check(
+            json!({ "tts": { "speed": 3.0 } }),
+            "tts.speed",
+            "0.5 to 2.0",
+        );
+        check(
+            json!({ "whisper": { "model": "local:..\\other.bin" } }),
+            "whisper.model",
+            "plain file name",
+        );
+        check(
+            json!({ "whisper": { "model": "whisper-huge" } }),
+            "whisper.model",
+            "catalog",
+        );
+        check(
+            json!({ "whisper": { "threads": 65 } }),
+            "whisper.threads",
+            "64",
+        );
+        check(
+            json!({ "whisper": { "language": "xx" } }),
+            "whisper.language",
+            "xx",
+        );
+        check(
+            json!({ "tts": { "voice": "espeak:en" } }),
+            "tts.voice",
+            "espeak:en",
+        );
+        assert!(older
+            .with_patch(&json!({ "whisper": { "device": "tpu" } }))
+            .unwrap_err()
+            .to_string()
+            .contains("whisper.device"));
+        for good in [
+            json!({ "assistant": { "mode": "whisper" } }),
+            json!({ "whisper": { "model": "local:my-fine-tune.bin", "device": "gpu", "threads": 8, "language": "ru" } }),
+            json!({ "tts": { "voice": "windows:MSTTS_V110_ruRU_IrinaM", "speed": 0.5 } }),
+            json!({ "tts": { "voice": "piper:ru_RU-denis-medium", "speed": 2.0 } }),
+        ] {
+            older
+                .with_patch(&good)
+                .unwrap()
+                .validate()
+                .unwrap_or_else(|e| panic!("{good}: {e}"));
+        }
+    }
+
+    /// Tasks 1.2 and 1.3: a phrase in both lists, written two ways, is refused; a phrase
+    /// with no letter or digit is refused naming it; a phrase change is its own part.
+    #[test]
+    fn whisper_phrases_compare_in_the_matching_form() {
+        let older: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
+        let shared = older
+            .with_patch(&json!({ "whisper": { "phrases": {
+                "activation": ["Goodbye!"], "deactivation": ["goodbye"] } } }))
+            .unwrap();
+        let error = shared.validate().unwrap_err();
+        assert_eq!(error.field, "whisper.phrases.deactivation");
+        assert!(error.message.contains("Goodbye!"), "{}", error.message);
+        let empty = older
+            .with_patch(&json!({ "whisper": { "phrases": { "activation": ["hey bro", "?!"] } } }))
+            .unwrap();
+        let error = empty.validate().unwrap_err();
+        assert_eq!(error.field, "whisper.phrases.activation");
+        assert!(error.message.contains("?!"), "{}", error.message);
+        assert_eq!(phrase_words("Отбой братан!"), phrase_words("отбой братан"));
+        assert_eq!(phrase_words("подъём"), phrase_words("подъем"));
+        let changed = older
+            .with_patch(&json!({ "whisper": { "phrases": { "deactivation": ["bye bye"] } } }))
+            .unwrap();
+        assert_eq!(older.changed_sections(&changed), vec!["whisper"]);
+        let mode = older
+            .with_patch(&json!({ "assistant": { "mode": "whisper" } }))
+            .unwrap();
+        assert_eq!(older.changed_sections(&mode), vec!["mode"]);
+        let voice = older
+            .with_patch(&json!({ "tts": { "speed": 1.5 } }))
+            .unwrap();
+        assert_eq!(older.changed_sections(&voice), vec!["tts"]);
     }
 
     /// Task 4.1: the matching form.

@@ -43,11 +43,78 @@ pub struct TurnReport {
     pub answer_to_playback_ms: u64,
     /// First speech to the playback of the answer.
     pub first_speech_to_playback_ms: Option<u64>,
+    /// The Whisper mode's four timings (change `whisper-mode`, design D15).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub whisper: Option<WhisperTiming>,
+}
+
+/// One answer of the Whisper mode, from the end of the question's speech to the voice.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WhisperTiming {
+    pub speech_to_text_ms: u64,
+    pub audio_seconds: f64,
+    pub model: String,
+    pub device: String,
+    pub text_to_first_words_ms: u64,
+    pub first_words_to_voice_ms: u64,
+    pub speech_to_voice_ms: u64,
+}
+
+impl Eq for WhisperTiming {}
+
+impl WhisperTiming {
+    /// The four timings from their instants.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        speech_end: Instant,
+        text_at: Instant,
+        first_words_at: Instant,
+        voice_at: Instant,
+        audio_seconds: f64,
+        model: &str,
+        device: &str,
+    ) -> Self {
+        Self {
+            speech_to_text_ms: millis(speech_end, text_at),
+            audio_seconds,
+            model: model.to_owned(),
+            device: device.to_owned(),
+            text_to_first_words_ms: millis(text_at, first_words_at),
+            first_words_to_voice_ms: millis(first_words_at, voice_at),
+            speech_to_voice_ms: millis(speech_end, voice_at),
+        }
+    }
+
+    /// The report the status keeps, with the Whisper timings in it.
+    pub fn report(self, turn: u64, clock: &str) -> TurnReport {
+        TurnReport {
+            at: clock.to_owned(),
+            turn: Some(turn),
+            kind: "whisper",
+            first_speech_to_answer_ms: None,
+            last_speech_to_answer_ms: Some(self.speech_to_text_ms + self.text_to_first_words_ms),
+            answer_to_playback_ms: self.first_words_to_voice_ms,
+            first_speech_to_playback_ms: Some(self.speech_to_voice_ms),
+            whisper: Some(self),
+        }
+    }
 }
 
 impl TurnReport {
     /// The log wording; "ChatGPT audio" is the answer.
     pub fn line(&self) -> String {
+        if let (Some(turn), Some(whisper)) = (self.turn, self.whisper.as_ref()) {
+            return format!(
+                "whisper turn {turn}: speech end -> text {} ms ({:.1} s of audio, {}, {}); text -> Codex first words {} ms; first words -> voice {} ms; speech end -> voice {} ms",
+                whisper.speech_to_text_ms,
+                whisper.audio_seconds,
+                whisper.model,
+                whisper.device,
+                whisper.text_to_first_words_ms,
+                whisper.first_words_to_voice_ms,
+                whisper.speech_to_voice_ms
+            );
+        }
         let handoff = self.answer_to_playback_ms;
         match (
             self.turn,
@@ -228,12 +295,21 @@ impl LatencyTracker {
             last_speech_to_answer_ms: latest.map(|latest| millis(latest, answer.first_audio)),
             answer_to_playback_ms: millis(answer.first_audio, now),
             first_speech_to_playback_ms: began.map(|began| millis(began, now)),
+            whisper: None,
         };
         while self.measured.len() >= RECENT_TURNS {
             self.measured.pop_front();
         }
         self.measured.push_back(report.clone());
         Some(LatencyEvent::Report(report))
+    }
+
+    /// Keeps a measured Whisper-mode answer for the status.
+    pub fn push_report(&mut self, report: TurnReport) {
+        while self.measured.len() >= RECENT_TURNS {
+            self.measured.pop_front();
+        }
+        self.measured.push_back(report);
     }
 
     /// An answer has started and its playback has not been reported yet.
@@ -254,6 +330,36 @@ pub type SharedLatency = std::sync::Arc<std::sync::Mutex<LatencyTracker>>;
 /// The log line of an event, prefixed with the guild.
 pub fn log_line(guild: u64, event: &LatencyEvent) -> String {
     format!("[latency:{guild}] {}", event.line())
+}
+
+#[cfg(test)]
+mod whisper_tests {
+    use super::*;
+
+    /// Task 8.3 of change `whisper-mode`: the four timestamps make the line.
+    #[test]
+    fn the_whisper_line_has_the_four_timings() {
+        let speech_end = Instant::now();
+        let timing = WhisperTiming::new(
+            speech_end,
+            speech_end + Duration::from_millis(640),
+            speech_end + Duration::from_millis(2_140),
+            speech_end + Duration::from_millis(2_600),
+            3.2,
+            "whisper-base-q8_0",
+            "cpu",
+        );
+        let report = timing.report(3, "12:00:00");
+        assert_eq!(
+            log_line(7, &LatencyEvent::Report(report.clone())),
+            "[latency:7] whisper turn 3: speech end -> text 640 ms (3.2 s of audio, whisper-base-q8_0, cpu); text -> Codex first words 1500 ms; first words -> voice 460 ms; speech end -> voice 2600 ms"
+        );
+        let mut tracker = LatencyTracker::default();
+        tracker.push_report(report);
+        assert_eq!(tracker.recent()[0].kind, "whisper");
+        let json = serde_json::to_value(&tracker.recent()[0]).unwrap();
+        assert_eq!(json["whisper"]["speech_to_voice_ms"], 2600);
+    }
 }
 
 #[cfg(test)]

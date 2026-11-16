@@ -43,6 +43,10 @@ pub enum ConnectionState {
     Error,
 }
 
+/// The two assistant modes as Discord shows them (change `whisper-mode`).
+pub const MODE_REALTIME: &str = "Realtime voice";
+pub const MODE_WHISPER: &str = "Whisper mode";
+
 /// What the assistant is doing in a guild, for the panel and `/status`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -173,6 +177,10 @@ pub trait VoiceHost: Send + Sync {
     fn on_join(&self, guild: u64, output: OutputHandle);
     fn on_leave(&self, guild: u64);
     fn assistant_state(&self, guild: u64) -> AssistantState;
+    /// The assistant mode as `/status` and the panel name it (change `whisper-mode`).
+    fn assistant_mode(&self) -> &'static str {
+        MODE_REALTIME
+    }
     fn toggle_mute(&self) -> bool;
     fn is_muted(&self) -> bool;
 }

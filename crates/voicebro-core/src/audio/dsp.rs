@@ -187,9 +187,201 @@ impl ToRelayFormat {
     }
 }
 
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+/// Taps of each phase of [`Resampler`]'s filter.
+const RESAMPLER_TAPS: usize = 32;
+
+/// A polyphase windowed-sinc resampler for any rational ratio (change `whisper-mode`,
+/// design D7): the voices' 16, 22.05, 24 and 44.1 kHz to Discord's 48 kHz, mono floats.
+/// Deterministic and streaming: audio fed in chunks comes out exactly as fed at once, so a
+/// chunk border makes no click. [`Resampler::finish`] lets out the filter's tail.
+pub struct Resampler {
+    up: usize,
+    down: usize,
+    /// Phase-major: `filter[phase * RESAMPLER_TAPS + tap]`.
+    filter: Vec<f32>,
+    buffer: Vec<f32>,
+    /// The next output's position at the up-sampled rate, from `buffer[0]`.
+    position: usize,
+}
+
+impl Resampler {
+    pub fn new(from: u32, to: u32) -> Self {
+        let divisor = gcd(from, to);
+        let (up, down) = ((to / divisor) as usize, (from / divisor) as usize);
+        let length = up * RESAMPLER_TAPS;
+        let center = (length - 1) as f64 / 2.0;
+        // Cut-off just under the lower Nyquist, in cycles per up-sampled sample.
+        let cutoff = 0.5 / up.max(down) as f64 * 0.92;
+        let mut taps = vec![0.0f64; length];
+        for (index, tap) in taps.iter_mut().enumerate() {
+            let x = index as f64 - center;
+            let sinc = if x.abs() < 1e-9 {
+                1.0
+            } else {
+                (2.0 * std::f64::consts::PI * cutoff * x).sin() / (std::f64::consts::PI * x)
+            };
+            let phase = 2.0 * std::f64::consts::PI * index as f64 / (length - 1) as f64;
+            let blackman = 0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos();
+            *tap = if x.abs() < 1e-9 { 2.0 * cutoff } else { sinc } * blackman;
+        }
+        // Each phase sums to one, so a constant passes at its level.
+        let mut filter = vec![0.0f32; length];
+        for phase in 0..up {
+            let sum: f64 = (0..RESAMPLER_TAPS).map(|tap| taps[phase + tap * up]).sum();
+            for tap in 0..RESAMPLER_TAPS {
+                filter[phase * RESAMPLER_TAPS + tap] = (taps[phase + tap * up] / sum) as f32;
+            }
+        }
+        Self {
+            up,
+            down,
+            filter,
+            buffer: Vec::new(),
+            position: center.round() as usize,
+        }
+    }
+
+    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        self.buffer.extend_from_slice(input);
+        let mut output = Vec::with_capacity(input.len() * self.up / self.down + 2);
+        loop {
+            let newest = self.position / self.up;
+            if newest >= self.buffer.len() {
+                break;
+            }
+            let phase = self.position % self.up;
+            let taps = &self.filter[phase * RESAMPLER_TAPS..(phase + 1) * RESAMPLER_TAPS];
+            let mut value = 0.0f32;
+            for (tap, weight) in taps.iter().enumerate() {
+                if let Some(sample) = newest.checked_sub(tap).map(|index| self.buffer[index]) {
+                    value += sample * weight;
+                }
+            }
+            output.push(value);
+            self.position += self.down;
+        }
+        // Keep only what the next outputs reach back to.
+        let needed_from = (self.position / self.up).saturating_sub(RESAMPLER_TAPS - 1);
+        let drop = needed_from.min(self.buffer.len());
+        if drop > 0 {
+            self.buffer.drain(..drop);
+            self.position -= drop * self.up;
+        }
+        output
+    }
+
+    /// The rest of the audio once the input ended.
+    pub fn finish(&mut self) -> Vec<f32> {
+        let tail = vec![0.0; RESAMPLER_TAPS / 2 + 1];
+        let output = self.process(&tail);
+        self.buffer.clear();
+        output
+    }
+
+    /// Resamples a whole clip.
+    pub fn convert(input: &[f32], from: u32, to: u32) -> Vec<f32> {
+        if from == to {
+            return input.to_vec();
+        }
+        let mut resampler = Self::new(from, to);
+        let mut output = resampler.process(input);
+        output.extend(resampler.finish());
+        output
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sine(frequency: f64, rate: u32, seconds: f64, amplitude: f64) -> Vec<f32> {
+        (0..(seconds * f64::from(rate)) as usize)
+            .map(|index| {
+                (amplitude
+                    * (2.0 * std::f64::consts::PI * frequency * index as f64 / f64::from(rate))
+                        .sin()) as f32
+            })
+            .collect()
+    }
+
+    /// The frequency from the rising zero crossings of the middle part.
+    fn frequency_of(samples: &[f32], rate: u32) -> f64 {
+        let part = &samples[samples.len() / 4..samples.len() * 3 / 4];
+        let crossings: Vec<f64> = part
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| pair[0] < 0.0 && pair[1] >= 0.0)
+            .map(|(index, pair)| index as f64 + f64::from(-pair[0] / (pair[1] - pair[0])))
+            .collect();
+        let periods = (crossings.len() - 1) as f64;
+        periods * f64::from(rate) / (crossings[crossings.len() - 1] - crossings[0])
+    }
+
+    fn rms_f32(samples: &[f32]) -> f64 {
+        let part = &samples[samples.len() / 4..samples.len() * 3 / 4];
+        (part.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>() / part.len() as f64).sqrt()
+    }
+
+    /// Task 6.5 of change `whisper-mode`.
+    #[test]
+    fn the_voice_rates_reach_48_khz_with_their_frequency_and_level() {
+        for rate in [16_000, 22_050, 24_000, 44_100] {
+            for frequency in [220.0, 1_000.0, 3_000.0] {
+                let input = sine(frequency, rate, 1.0, 0.5);
+                let output = Resampler::convert(&input, rate, 48_000);
+                let expected = input.len() as f64 * 48_000.0 / f64::from(rate);
+                assert!(
+                    (output.len() as f64 - expected).abs() <= 24.0,
+                    "{rate}: {} samples for {expected}",
+                    output.len()
+                );
+                let measured = frequency_of(&output, 48_000);
+                assert!(
+                    (measured - frequency).abs() < 1.0,
+                    "{rate} Hz, {frequency} Hz: {measured}"
+                );
+                let level = 20.0 * (rms_f32(&output) / rms_f32(&input)).log10();
+                assert!(
+                    level.abs() < 0.5,
+                    "{rate} Hz, {frequency} Hz: {level:.2} dB"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chunks_come_out_as_the_whole_clip_without_a_click() {
+        let input = sine(440.0, 22_050, 0.5, 0.5);
+        let whole = Resampler::convert(&input, 22_050, 48_000);
+        let mut resampler = Resampler::new(22_050, 48_000);
+        let mut chunked = Vec::new();
+        for chunk in input.chunks(337) {
+            chunked.extend(resampler.process(chunk));
+        }
+        chunked.extend(resampler.finish());
+        assert_eq!(chunked.len(), whole.len());
+        let worst = chunked
+            .iter()
+            .zip(&whole)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-6, "chunked differs by {worst}");
+        // No click: the step between neighbours stays that of the sine.
+        let step = chunked[100..chunked.len() - 100]
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0f32, f32::max);
+        let sine_step = (2.0 * std::f32::consts::PI * 440.0 / 48_000.0) * 0.5;
+        assert!(step <= sine_step * 1.05, "{step} against {sine_step}");
+    }
 
     fn stereo_sine(frequency: f32, rate: f32, frames: usize, amplitude: f32) -> Vec<i16> {
         let mut samples = Vec::with_capacity(frames * 2);

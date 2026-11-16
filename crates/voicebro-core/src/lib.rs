@@ -18,6 +18,7 @@ macro_rules! detail {
     };
 }
 
+pub mod assets;
 pub mod assistant;
 pub mod audio;
 pub mod discord;
@@ -30,6 +31,8 @@ pub mod runtime;
 pub mod secrets;
 pub mod settings;
 pub mod status;
+pub mod stt;
+pub mod tts;
 pub mod wake;
 
 pub use events::{AppEvent, EventBus};

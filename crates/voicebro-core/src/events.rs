@@ -29,6 +29,10 @@ pub enum AppEvent {
     Discord(Box<crate::discord::DiscordStatus>),
     /// The wake-word engine changed state (downloading, loading, ready, error).
     Wake(Box<crate::wake::WakeStatus>),
+    /// Whisper of the Whisper mode changed state (change `whisper-mode`).
+    Whisper(Box<crate::stt::manager::WhisperStatus>),
+    /// The local voice of the Whisper mode changed state.
+    Tts(Box<crate::tts::manager::TtsStatus>),
     /// A guild's session gate changed (session started or ended, mute, settings).
     Gate(Box<crate::gate::GateStatus>),
     /// The global hotkey was registered, re-registered or failed.
@@ -161,6 +165,8 @@ mod tests {
             ),
             ("discord", AppEvent::Discord(Box::default())),
             ("wake", AppEvent::Wake(Box::default())),
+            ("whisper", AppEvent::Whisper(Box::default())),
+            ("tts", AppEvent::Tts(Box::default())),
             ("gate", AppEvent::Gate(Box::new(gate))),
             ("hotkey", AppEvent::Hotkey(Box::default())),
             ("chat", AppEvent::Chat(Box::new(chat))),

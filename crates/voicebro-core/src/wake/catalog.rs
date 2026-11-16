@@ -3,29 +3,7 @@
 //! phrases each comes with (change `voice-recognition-rework`, design D7); the phrases the
 //! user sets live in the settings file and replace a model's defaults list by list.
 
-/// A downloadable archive with a pinned hash.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Asset {
-    pub label: &'static str,
-    /// The official page a person downloads the archive from by hand.
-    pub page: &'static str,
-    pub url: &'static str,
-    pub sha256: &'static str,
-    /// Directory the archive extracts to, relative to the assets directory.
-    pub directory: &'static str,
-    /// A file inside `directory` that proves a completed extraction.
-    pub marker: &'static str,
-    /// Expected size in bytes, for progress reporting.
-    pub size: u64,
-}
-
-impl Asset {
-    /// The archive's file name, the last segment of `url`: the name a download is saved
-    /// under and the name a file downloaded by hand must have in the assets folder.
-    pub fn file_name(&self) -> &'static str {
-        self.url.rsplit('/').next().unwrap_or(self.url)
-    }
-}
+pub use crate::assets::Asset;
 
 /// One model the app knows how to download, verify and load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +48,7 @@ const ENTRIES: &[ModelEntry] = &[
             directory: "vosk-model-small-en-us-0.15",
             marker: "am/final.mdl",
             size: 41_205_931,
+            ..Asset::ARCHIVE
         },
     },
     ModelEntry {
@@ -88,6 +67,7 @@ const ENTRIES: &[ModelEntry] = &[
             directory: "vosk-model-small-ru-0.22",
             marker: "am/final.mdl",
             size: 46_220_000,
+            ..Asset::ARCHIVE
         },
     },
     // The rest by English language name. Sizes and hashes were measured from a download on
@@ -108,6 +88,7 @@ const ENTRIES: &[ModelEntry] = &[
             directory: "vosk-model-small-cs-0.4-rhasspy",
             marker: "am/final.mdl",
             size: 46_088_666,
+            ..Asset::ARCHIVE
         },
     },
     ModelEntry {
@@ -126,6 +107,7 @@ const ENTRIES: &[ModelEntry] = &[
             directory: "vosk-model-small-nl-0.22",
             marker: "am/final.mdl",
             size: 40_441_176,
+            ..Asset::ARCHIVE
         },
     },
     ModelEntry {
@@ -145,6 +127,7 @@ const ENTRIES: &[ModelEntry] = &[
             directory: "vosk-model-small-fr-0.22",
             marker: "am/final.mdl",
             size: 42_233_323,
+            ..Asset::ARCHIVE
         },
     },
     ModelEntry {
@@ -163,6 +146,7 @@ const ENTRIES: &[ModelEntry] = &[
             directory: "vosk-model-small-de-0.15",
             marker: "am/final.mdl",
             size: 46_499_967,
+            ..Asset::ARCHIVE
         },
     },
     ModelEntry {
@@ -181,6 +165,7 @@ const ENTRIES: &[ModelEntry] = &[
             directory: "vosk-model-small-it-0.22",
             marker: "am/final.mdl",
             size: 49_665_141,
+            ..Asset::ARCHIVE
         },
     },
     ModelEntry {
@@ -199,6 +184,7 @@ const ENTRIES: &[ModelEntry] = &[
             directory: "vosk-model-small-pl-0.22",
             marker: "am/final.mdl",
             size: 52_979_372,
+            ..Asset::ARCHIVE
         },
     },
     ModelEntry {
@@ -218,6 +204,7 @@ const ENTRIES: &[ModelEntry] = &[
             // Vosk's older flat layout: the model files sit in the folder itself.
             marker: "final.mdl",
             size: 32_453_112,
+            ..Asset::ARCHIVE
         },
     },
     ModelEntry {
@@ -236,6 +223,7 @@ const ENTRIES: &[ModelEntry] = &[
             directory: "vosk-model-small-es-0.42",
             marker: "am/final.mdl",
             size: 39_817_833,
+            ..Asset::ARCHIVE
         },
     },
 ];

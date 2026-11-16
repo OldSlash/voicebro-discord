@@ -37,8 +37,8 @@ keep `settings.json`, `owner-link.bin`, `logs\`, `assets\`, `models\`, `codex-wo
 ### Requirement: Uninstall removes the data only when asked
 The uninstaller SHALL remove the program files and shortcuts. With "Delete the application
 data" checked it SHALL also remove `settings.json`, `owner-link.bin`, `logs\`, `assets\`,
-`models\`, `codex-workspace\`, `webview-data\`, the stored Discord token and the then empty
-folder; unchecked, it SHALL leave them.
+`models\`, `whisper-models\`, `codex-workspace\`, `webview-data\`, the stored Discord token
+and the then empty folder; unchecked, it SHALL leave them.
 
 #### Scenario: Data kept
 - **WHEN** the user uninstalls without checking the box
@@ -150,12 +150,13 @@ updating, uninstalling and troubleshooting.
 - **THEN** the README names its main components with links and licenses and says where the full list with every license text is
 
 ### Requirement: Release artifacts carry no wake files
-The installer and the portable zip SHALL contain neither the Vosk library nor any wake
-model; the app SHALL download them only after the user's OK.
+The installer and the portable zip SHALL contain no Vosk library, no wake model, no Whisper
+runtime or model, and no voice engine or voice. The app SHALL download them only after the
+user's OK.
 
 #### Scenario: Release contents
 - **WHEN** the installer of a release is unpacked and the zip is listed
-- **THEN** neither contains `libvosk.dll`, a `vosk-model-*` folder or an `assets\` folder
+- **THEN** neither contains `libvosk.dll`, a `vosk-model-*` folder, `whisper.dll`, a `ggml*.dll`, a `.bin` model, a voice engine library or an `assets\` folder
 
 ### Requirement: Application icon
 `voicebro.exe`, the main window's title bar and taskbar button, the installer, the
@@ -204,3 +205,25 @@ any crate's license file.
 #### Scenario: No other port
 - **WHEN** the notices of this change's build are read
 - **THEN** they list no ropus or mousiki and no separate Opus text for a port
+
+### Requirement: Notices for the Whisper mode's downloads
+`THIRD-PARTY-NOTICES.txt` SHALL name, with their licenses, everything the Whisper mode
+downloads after the user's OK:
+
+- whisper.cpp with its MIT text, and NVIDIA's CUDA runtime and cuBLAS libraries of the GPU
+  runtime with their terms;
+- each Whisper catalog model and the Silero VAD model;
+- the voice engine and its runtime;
+- each catalog voice with its license and the attribution it requires.
+
+#### Scenario: Notices of a release
+- **WHEN** the notices file of a release is read
+- **THEN** it names whisper.cpp with its MIT text, the CUDA runtime and cuBLAS with their terms, each Whisper catalog model, the Silero VAD model, the voice engine and its runtime, and each catalog voice with its license and attribution
+
+### Requirement: The notices script checks the Whisper and voice catalogs
+The notices script SHALL stop with an error when the Whisper or voice catalog has an entry
+that the script does not list, or the script lists one that the catalog does not have.
+
+#### Scenario: Catalog and notices differ
+- **WHEN** a Whisper model is added to the catalog without a notices entry
+- **THEN** the notices script stops with an error naming the model and writes no notices file

@@ -14,6 +14,8 @@ pub mod queue;
 pub use earcon::Earcon;
 pub use frame::{peak, Frame, CHANNELS, FRAME_DURATION, FRAME_SAMPLES, SAMPLE_RATE};
 pub use gain::{AudioGains, AudioLevels, GainReading, GainStage};
-pub use output::{output_pair, FrameProvider, OutputCounters, OutputHandle, PcmSource};
+pub use output::{
+    output_pair, FrameProvider, OutputCounters, OutputHandle, PcmSource, SIGNAL_PEAK,
+};
 pub use ports::{frame_channel, AudioPorts, FrameReceiver, FrameSender, INPUT_CAPACITY};
 pub use queue::FrameQueue;

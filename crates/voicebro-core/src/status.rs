@@ -73,6 +73,9 @@ pub struct Status {
     pub connection_errors: BTreeMap<String, String>,
     pub discord: crate::discord::DiscordStatus,
     pub wake: crate::wake::WakeStatus,
+    /// Whisper and the local voice of the Whisper mode (change `whisper-mode`).
+    pub whisper: crate::stt::manager::WhisperStatus,
+    pub tts: crate::tts::manager::TtsStatus,
     /// One gate per guild the bot is in a voice channel of, keyed by guild id.
     pub gates: BTreeMap<String, crate::gate::GateStatus>,
     /// The two gains with the peak of the last second and the clip counters.

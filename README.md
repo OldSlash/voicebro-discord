@@ -26,6 +26,10 @@
   can be added by hand.
 - **A real voice.** ChatGPT's voice through the official Codex CLI, with your own ChatGPT
   account. No API key.
+- **Or keep the speech on your PC.** In the second mode, Whisper, speech is turned into text
+  on your PC (on the CPU or an NVIDIA GPU), Codex answers the text, and a local voice reads
+  the answer into the channel. Only text goes to OpenAI. Models and voices are downloaded
+  after you agree. ([Whisper mode](docs/user-guide.md#7-the-whisper-mode))
 - **Looks things up.** Questions that need research go to Codex, which can search the web,
   and the answer comes back by voice. If you like, Codex's full answer is also posted as
   text in a Discord channel of your choice, with its links and their previews.
@@ -74,14 +78,18 @@ Get the latest version from [Releases](https://github.com/OldSlash/voicebro-disc
 5. **Talk.** Join a voice channel, type `/join`, say your phrase and ask a question.
 
 The [user guide](docs/user-guide.md) covers each step in detail, as well as other
-languages, settings, privacy, updating, uninstalling and troubleshooting.
+languages, the Whisper mode, settings, privacy, updating, uninstalling and troubleshooting.
 
 ## Limitations
 
-- **The voice comes only from OpenAI's Codex.** VoiceBro has no voice engine of its own:
-  the assistant listens and speaks through the Codex CLI with your ChatGPT sign-in. Without
-  Codex, a ChatGPT account with access to it and a connection to OpenAI, the assistant
-  cannot answer. Only the wake word works offline.
+- **The assistant is only OpenAI's Codex.** In the default mode the assistant listens and
+  speaks through the Codex CLI with your ChatGPT sign-in; in the Whisper mode it hears and
+  speaks on your PC, but Codex still writes every answer. Without Codex, a ChatGPT account
+  with access to it and a connection to OpenAI, the assistant cannot answer. Only the wake
+  word, speech recognition in the Whisper mode and its voice work offline.
+- **The Whisper mode is new.** It has been tested on one PC, not yet in a real voice
+  channel with several people while a game runs. Whisper on the GPU needs an NVIDIA card;
+  on a CPU, only the smaller models answer quickly.
 - **The voice needs a low ping to the Discord voice server.** VoiceBro sends the
   assistant's voice to Discord from the PC it runs on, so it works best when that PC has a
   low ping to the voice channel's server. At a very high ping, around 300 ms or more, the
@@ -141,7 +149,7 @@ This writes a test installer, the portable zip and their checksums to
 
 | Path | Contents |
 |---|---|
-| `crates/voicebro-core` | The app's core: Discord voice, the wake word, the ChatGPT call through Codex, settings. No UI. |
+| `crates/voicebro-core` | The app's core: Discord voice, the wake word, the ChatGPT call through Codex, the Whisper mode's speech to text and local voice, settings. No UI. |
 | `apps/desktop` | The Tauri app: the window, its commands and the installer configuration. |
 | `apps/probe` | Developer probes that check the external APIs live. |
 | `scripts/` | The release build, the third-party notices and test helpers. |
@@ -161,6 +169,10 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing code.
 | [Opus](https://opus-codec.org), through [opus2](https://github.com/cijiugechu/opus2) | Encodes and decodes the voice. The C library is compiled into the app. | BSD-3-Clause; MIT or Apache-2.0 |
 | [webrtc-rs](https://github.com/webrtc-rs/webrtc) | The voice call to ChatGPT. | MIT or Apache-2.0 |
 | [Vosk](https://alphacephei.com/vosk/) | The offline wake word. Downloaded with the model of your language after you agree. | Apache-2.0; the Czech model MIT |
+| [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | Speech to text in the Whisper mode, with OpenAI's Whisper models and the Silero voice activity model. Downloaded after you agree; the NVIDIA GPU build includes NVIDIA's CUDA runtime. | MIT; CUDA runtime: NVIDIA's CUDA EULA; the models MIT or Apache-2.0 |
+| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with [ONNX Runtime](https://github.com/microsoft/onnxruntime) | The local voice of the Whisper mode. Downloaded after you agree. | Apache-2.0; MIT |
+| Voices: [Supertonic 3](https://huggingface.co/Supertone/supertonic-3), [Piper](https://huggingface.co/rhasspy/piper-voices), [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) | The voices of the Whisper mode, each downloaded after you agree. The Windows voices need no download. | Supertonic 3: BigScience OpenRAIL-M, with use restrictions; Piper: MIT, each voice's data under its own license (CC0, CC BY 4.0, public domain and others); Kokoro: Apache-2.0 |
+| [piper-phonemize](https://github.com/csukuangfj/piper-phonemize) | Turns text into phonemes for the Piper and Kokoro voices. Not part of VoiceBro: a separate download, only for those voices. | GPL-3.0 |
 | [Codex CLI](https://github.com/openai/codex) | The assistant: the ChatGPT sign-in, the voice call and the web search. Installed separately. | Apache-2.0 |
 | [NSIS](https://nsis.sourceforge.io) | The installer. | zlib/libpng |
 

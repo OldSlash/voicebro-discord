@@ -22,6 +22,15 @@ Mute, Connect/Disconnect, Sign in, Check.
 - **WHEN** the user opens the Status tab with the bot in one guild
 - **THEN** the guild is listed on the left and each fact is a separate tile on the right with its label above its value
 
+### Requirement: Status in Whisper mode
+The Status tab SHALL show the assistant mode (realtime or Whisper). In Whisper mode it SHALL
+also show Whisper's state, the model and the device in use, and the voice's state and
+voice, and the wake engine tile SHALL say that Whisper spots the phrases.
+
+#### Scenario: Whisper mode in a channel
+- **WHEN** the bot is in a channel in Whisper mode with the model on the GPU
+- **THEN** the tiles show the mode "Whisper", the model, "GPU (CUDA)" and the voice, and the wake engine tile says Whisper spots the phrases
+
 ### Requirement: Measured values only
 The Status tab SHALL show no quantity the app did not measure; counters (ticks, drops,
 underruns, wake drops) SHALL be behind a details toggle and SHALL be numbers from the

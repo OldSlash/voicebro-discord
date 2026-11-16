@@ -6,13 +6,13 @@
 //! from the catalog. The [`spotter`] decides when a phrase counts; the [`worker`] thread
 //! runs it all; the [`WakeManager`] loads and unloads according to the settings.
 
-pub mod assets;
 pub mod catalog;
 pub mod local;
 pub mod spotter;
 pub mod vosk;
 pub mod worker;
 
+pub use crate::assets;
 use crate::events::{AppEvent, EventBus};
 use crate::settings::{local_model_folder, phrase_words, SessionMode, Settings};
 use catalog::{Asset, ModelEntry};
@@ -274,7 +274,7 @@ pub struct DownloadItem {
 }
 
 impl DownloadItem {
-    fn of(asset: &Asset) -> Self {
+    pub fn of(asset: &Asset) -> Self {
         let host = asset
             .url
             .split_once("://")
@@ -432,7 +432,11 @@ impl WakeManager {
     ) -> Self {
         Self::with_fetch(
             engines,
-            Arc::new(assets::ensure),
+            Arc::new(
+                |asset: &Asset, dir: &Path, progress: &dyn Fn(assets::Progress)| {
+                    assets::ensure(asset, dir, progress).map_err(WakeError::Assets)
+                },
+            ),
             assets_dir,
             models_dir,
             events,
@@ -604,6 +608,17 @@ impl WakeManager {
             status.deactivation_phrases = Phrase::texts(&phrases.deactivation);
         }
         if settings.session.mode != SessionMode::WakeWord {
+            self.stop();
+            self.set_state(WakeState::Off);
+            return;
+        }
+        // The Whisper mode spots the phrases in Whisper's text (change `whisper-mode`, D1).
+        if settings.assistant.mode == crate::settings::AssistantMode::Whisper {
+            if self.inner.running.lock().expect("running lock").is_some() {
+                self.inner
+                    .events
+                    .log("wake word: Vosk unloaded; the Whisper mode spots the phrases");
+            }
             self.stop();
             self.set_state(WakeState::Off);
             return;
@@ -1184,6 +1199,7 @@ mod tests {
         directory: "test-model",
         marker: "am/final.mdl",
         size: 12_000_000,
+        ..Asset::ARCHIVE
     };
     impl WakeEngine for OneAssetEngine {
         fn id(&self) -> &'static str {
@@ -1676,6 +1692,7 @@ mod tests {
             directory: "test-lib",
             marker: "lib.dll",
             size: std::fs::metadata(&library_zip).unwrap().len(),
+            ..Asset::ARCHIVE
         };
         // The model: not in the folder, served by a file URL.
         let (model_zip, model_hash) =
@@ -1689,6 +1706,7 @@ mod tests {
             directory: "test-model",
             marker: "am/final.mdl",
             size: std::fs::metadata(&model_zip).unwrap().len(),
+            ..Asset::ARCHIVE
         };
         let events = EventBus::new(256);
         let mut seen = events.subscribe();
