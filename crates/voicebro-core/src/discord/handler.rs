@@ -51,11 +51,12 @@ fn status_text(
     connected: bool,
     channel: Option<String>,
     assistant: &str,
+    mode: &str,
     muted: bool,
     owner_only: bool,
 ) -> String {
     let mut text = format!(
-        "Discord: {}. Voice channel: {}. Assistant: {assistant}. {}.",
+        "Discord: {}. Voice channel: {}. Assistant: {assistant}. Mode: {mode}. {}.",
         if connected {
             "connected"
         } else {
@@ -169,6 +170,7 @@ impl Handler {
             connected,
             channel,
             assistant,
+            self.shared.host.assistant_mode(),
             self.shared.host.is_muted(),
             self.shared.host.owner_filter() != crate::owner::FILTER_EVERYONE,
         );
@@ -355,12 +357,27 @@ mod tests {
     /// Scenario "Status from another member": the line is there only while the mode is on.
     #[test]
     fn status_names_the_owner_only_mode() {
-        let off = status_text(true, Some("General".to_owned()), "listening", false, false);
+        let off = status_text(
+            true,
+            Some("General".to_owned()),
+            "listening",
+            "Realtime voice",
+            false,
+            false,
+        );
         assert_eq!(
             off,
-            "Discord: connected. Voice channel: General. Assistant: listening. not muted."
+            "Discord: connected. Voice channel: General. Assistant: listening. Mode: Realtime voice. not muted."
         );
-        let on = status_text(true, None, "waiting for the wake word", true, true);
+        let on = status_text(
+            true,
+            None,
+            "waiting for the wake word",
+            "Whisper mode",
+            true,
+            true,
+        );
+        assert!(on.contains("Mode: Whisper mode."), "{on}");
         assert!(
             on.starts_with("Discord: connected. Voice channel: none."),
             "{on}"

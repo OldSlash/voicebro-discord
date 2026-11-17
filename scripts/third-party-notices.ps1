@@ -180,6 +180,61 @@ foreach ($id in $wakeModels.Keys) {
     if ($catalogIds -notcontains $id) { $problems.Add("wake model $id is in the notices script but not in catalog.rs") }
 }
 
+# The Whisper mode's catalogs (change `whisper-mode`) with their licenses. These lists must
+# name exactly the models of crates\voicebro-core\src\stt\catalog.rs and the Piper voices of
+# crates\voicebro-core\src\tts\catalog.rs: an entry on one side only stops the script.
+$whisperModels = [ordered]@{
+    "whisper-tiny-q8_0" = "MIT"
+    "whisper-base-q8_0" = "MIT"
+    "whisper-small-q8_0" = "MIT"
+    "whisper-medium-q5_0" = "MIT"
+    "whisper-large-v3-turbo-q5_0" = "MIT"
+    "whisper-large-v3-turbo-q8_0" = "MIT"
+    "whisper-large-v3-turbo" = "MIT"
+    "whisper-large-v3-q5_0" = "MIT"
+    "whisper-base.en-q8_0" = "MIT"
+    "whisper-small.en-q8_0" = "MIT"
+    "whisper-large-v3-turbo-ru" = "MIT (fine-tuned by dvislobokov on Common Voice 17 Russian; https://huggingface.co/dvislobokov/whisper-large-v3-turbo-russian)"
+    "whisper-large-v3-ru-podlodka-q5_0" = "Apache-2.0 (base model bond005/whisper-large-v3-ru-podlodka; ggml conversion https://huggingface.co/kdes70/whisper-large-v3-ru-podlodka-ggml by an unknown uploader)"
+    "whisper-distil-large-v3.5" = "MIT (https://huggingface.co/distil-whisper/distil-large-v3.5-ggml)"
+}
+$sttIds = @(Select-String -Path "crates\voicebro-core\src\stt\catalog.rs" -Pattern '^\s+"(whisper-[^"]+)",$|^\s+id: "(whisper-[^"]+)",$' |
+    ForEach-Object { if ($_.Matches[0].Groups[1].Success) { $_.Matches[0].Groups[1].Value } else { $_.Matches[0].Groups[2].Value } })
+foreach ($id in $sttIds) {
+    if (-not $whisperModels.Contains($id)) { $problems.Add("Whisper model $id is in stt\catalog.rs but not in the notices script") }
+}
+foreach ($id in $whisperModels.Keys) {
+    if ($sttIds -notcontains $id) { $problems.Add("Whisper model $id is in the notices script but not in stt\catalog.rs") }
+}
+$piperVoices = [ordered]@{
+    "en_US-libritts_r-medium" = "CC BY 4.0 (LibriTTS-R)"
+    "en_GB-cori-high" = "public domain"
+    "en_GB-alba-medium" = "CC BY 4.0"
+    "ru_RU-denis-medium" = "CC0"
+    "ru_RU-dmitri-medium" = "CC0"
+    "ru_RU-irina-medium" = "not stated (RHVoice data)"
+    "cs_CZ-jirka-medium" = "CC0"
+    "nl_NL-pim-medium" = "CC0"
+    "nl_BE-nathalie-medium" = "CC0"
+    "fr_FR-siwis-medium" = "CC BY 4.0 (SIWIS)"
+    "de_DE-thorsten-medium" = "CC0 (Thorsten)"
+    "it_IT-paola-medium" = "CC0"
+    "pl_PL-gosia-medium" = "CC0"
+    "pl_PL-darkman-medium" = "CC0"
+    "pt_BR-faber-medium" = "CC0"
+    "es_ES-davefx-medium" = "CC0"
+    "es_MX-ald-medium" = "Unlicense"
+}
+# rustfmt may put each argument of piper_pack! on a line of its own: read the file whole.
+$voiceIds = @([regex]::Matches((Get-Content -Raw "crates\voicebro-core\src\tts\catalog.rs"), 'piper_pack!\(\s*[A-Z_]+,\s*"([^"]+)"') |
+    ForEach-Object { $_.Groups[1].Value })
+foreach ($id in $voiceIds) {
+    if (-not $piperVoices.Contains($id)) { $problems.Add("Piper voice $id is in tts\catalog.rs but not in the notices script") }
+}
+foreach ($id in $piperVoices.Keys) {
+    if ($voiceIds -notcontains $id) { $problems.Add("Piper voice $id is in the notices script but not in tts\catalog.rs") }
+}
+
 Add-Heading "4. Downloaded only after you agree in the window"
 [void]$text.AppendLine("Vosk 0.3.45 (libvosk.dll and its runtime DLLs)")
 [void]$text.AppendLine("License: Apache-2.0")
@@ -194,6 +249,38 @@ foreach ($id in $wakeModels.Keys) {
 [void]$text.AppendLine("")
 Add-Component "Vosk model vosk-model-small-cs-0.4-rhasspy (Czech, from the Rhasspy project)" "MIT" "https://github.com/rhasspy/cs_kaldi-rhasspy (downloaded from https://alphacephei.com/vosk/models)" @() "LICENSE" (Read-NoticeText "scripts\notices\cs_kaldi-rhasspy-LICENSE.txt")
 [void]$text.AppendLine("Models you put into the models folder yourself carry their own licenses.")
+[void]$text.AppendLine("")
+[void]$text.AppendLine("The Whisper mode (only when you choose it and agree to its downloads):")
+[void]$text.AppendLine("")
+Add-Component "whisper.cpp 1.9.5 (whisper.dll, ggml.dll, ggml-base.dll, ggml-cpu-*.dll, ggml-cuda.dll)" "MIT" "https://github.com/ggml-org/whisper.cpp (release b5454)" @() "LICENSE" (Read-NoticeText "scripts\notices\whisper.cpp-LICENSE.txt")
+Add-Component "NVIDIA CUDA 12.4 runtime (cudart64_12.dll, cublas64_12.dll, cublasLt64_12.dll), only with the NVIDIA GPU runtime" "NVIDIA CUDA Toolkit End User License Agreement (the redistributable runtime files of its Attachment A)" "https://docs.nvidia.com/cuda/eula/ (shipped in whisper.cpp's whisper-bin-win-cuda-12.4.0-x64.zip)" @() "" ""
+[void]$text.AppendLine("Whisper models, one per model you choose:")
+foreach ($id in $whisperModels.Keys) { [void]$text.AppendLine("  $id - $($whisperModels[$id])") }
+[void]$text.AppendLine("Source: https://huggingface.co/ggerganov/whisper.cpp (OpenAI's Whisper weights, MIT) unless named above")
+[void]$text.AppendLine("")
+Add-Component "Silero VAD 6.2.0 for whisper.cpp (ggml-silero-v6.2.0.bin)" "MIT" "https://github.com/snakers4/silero-vad (ggml conversion https://huggingface.co/ggml-org/whisper-vad)" @() "LICENSE" (Read-NoticeText "scripts\notices\silero-vad-LICENSE.txt")
+[void]$text.AppendLine("sherpa-onnx 2.0.1 (sherpa-onnx-c-api.dll)")
+[void]$text.AppendLine("License: Apache-2.0")
+[void]$text.AppendLine("Source: https://github.com/k2-fsa/sherpa-onnx")
+[void]$text.AppendLine("")
+Add-Component "ONNX Runtime 1.28.2 (onnxruntime.dll, shipped with sherpa-onnx)" "MIT" "https://github.com/microsoft/onnxruntime" @() "LICENSE" (Read-NoticeText "scripts\notices\onnxruntime-LICENSE.txt")
+Add-Component "Supertonic 3 voices (Supertone Inc.)" "BigScience OpenRAIL-M: commercial use is allowed, and its use restrictions (Attachment A below) pass on to you" "https://huggingface.co/Supertone/supertonic-3 (sherpa-onnx int8 export from https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models)" @("You may not use the model or its output for anything Attachment A forbids.") "LICENSE" (Read-NoticeText "scripts\notices\supertonic-3-LICENSE.txt")
+[void]$text.AppendLine("piper-phonemize 1.5.9 (piper_phonemize_core.dll, with espeak-ng inside), only for Piper and Kokoro voices")
+[void]$text.AppendLine("License: GPL-3.0. VoiceBro does not ship it: it is a separate download, and VoiceBro (MIT)")
+[void]$text.AppendLine("loads it at run time only when you choose a Piper or Kokoro voice.")
+[void]$text.AppendLine("Source: https://github.com/csukuangfj/piper-phonemize (espeak-ng: https://github.com/espeak-ng/espeak-ng)")
+[void]$text.AppendLine("")
+[void]$text.AppendLine("Piper voices (each archive carries its MODEL_CARD with the dataset and its attribution):")
+foreach ($id in $piperVoices.Keys) { [void]$text.AppendLine("  $id - voice data: $($piperVoices[$id])") }
+[void]$text.AppendLine("Model license: MIT (Piper). Source: https://huggingface.co/rhasspy/piper-voices, archives from")
+[void]$text.AppendLine("https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models")
+[void]$text.AppendLine("")
+[void]$text.AppendLine("Kokoro English v0.19 (11 voices)")
+[void]$text.AppendLine("License: Apache-2.0")
+[void]$text.AppendLine("Source: https://huggingface.co/hexgrad/Kokoro-82M (sherpa-onnx export kokoro-en-v0_19)")
+[void]$text.AppendLine("")
+[void]$text.AppendLine("Whisper models you put into the whisper-models folder yourself carry their own licenses.")
+[void]$text.AppendLine("The Windows voices are part of Windows and are not downloaded by VoiceBro.")
 [void]$text.AppendLine("")
 
 Add-Heading "5. Needed but not shipped"

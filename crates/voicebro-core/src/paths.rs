@@ -34,6 +34,11 @@ pub fn models_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("models")
 }
 
+/// Whisper models the user adds (change `whisper-mode`); the app only reads it.
+pub fn whisper_models_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(crate::stt::local::FOLDER)
+}
+
 pub fn codex_workspace_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("codex-workspace")
 }

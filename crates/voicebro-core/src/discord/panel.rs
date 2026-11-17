@@ -31,6 +31,8 @@ pub struct PanelView<'a> {
     pub channel_name: &'a str,
     pub participants: &'a [String],
     pub assistant: AssistantState,
+    /// The assistant mode (change `whisper-mode`).
+    pub mode: &'static str,
     pub muted: bool,
 }
 
@@ -44,6 +46,7 @@ pub fn embed(view: &PanelView<'_>) -> CreateEmbed {
         .title("VoiceBro")
         .field("Engine", "Codex", true)
         .field("Assistant", view.assistant.label(), true)
+        .field("Mode", view.mode, true)
         .field("Voice channel", view.channel_name, false)
         .field("In the channel", people, false)
 }
@@ -79,6 +82,7 @@ async fn refresh_one(shared: &Shared, http: &Http, guild: GuildId) {
         channel_name: &channel_name,
         participants: &participants,
         assistant: shared.host.assistant_state(guild.get()),
+        mode: shared.host.assistant_mode(),
         muted: shared.host.is_muted(),
     };
     let edit = EditMessage::new()

@@ -15,7 +15,9 @@ mod hotkey;
 mod opus;
 mod rtc;
 mod seed;
+mod tts;
 mod vosk;
+mod whisper;
 
 use std::process::ExitCode;
 use voicebro_core::audio::codec::OpusCodec;
@@ -140,6 +142,24 @@ const PROBES: &[Probe] = &[
             "download the pinned Vosk library and model, verify hashes, load the model; args: <dir>",
         needs: "network; about 60 MB of downloads",
         run: vosk::assets,
+    },
+    Probe {
+        name: "whisper",
+        summary: "one WAV through the app's whisper.cpp: text, language, load and transcription time; args: <wav> [--model id|path] [--device cpu|gpu] [--language xx] [--threads n] [--prompt text] [--bench] [--assets dir]",
+        needs: "the Whisper files in --assets, VOICEBRO_WHISPER_DIR or target\\whisper-test\\assets (a missing one is downloaded from its pinned URL)",
+        run: whisper::run,
+    },
+    Probe {
+        name: "whisper-corpus",
+        summary: "the wake corpus through Whisper and its phrase spotting, plus three noise-only clips; args: [--languages en,ru] [--no-prompt] [--model id] [--device cpu|gpu] [--threads n] [--corpus dir]",
+        needs: "target\\wake-corpus\\<lang>\\ (scripts\\make-wake-corpus.ps1) and the Whisper files as for `whisper`",
+        run: whisper::corpus,
+    },
+    Probe {
+        name: "tts",
+        summary: "a voice of the Whisper mode reads a sentence into a WAV, or with --bench the fixed sentences with 2, 4 and 8 threads (load, first audio, RTF, WAVs in target/tts-listen, Whisper reads them back); args: <voice id> [<text> <out.wav>] [--bench] [--threads n] [--steps n]",
+        needs: "the voice files in --assets, VOICEBRO_WHISPER_DIR or target/whisper-test/assets (a missing one is downloaded from its pinned URL); --bench also a Whisper model",
+        run: tts::run,
     },
     Probe {
         name: "hotkey",

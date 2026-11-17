@@ -1,6 +1,6 @@
 [package]
 name = "probe"
-version = "1.0.2"
+version = "1.1.0"
 description = "VoiceBro development probes: live checks of external APIs with pass criteria. Not shipped."
 publish = false
 edition.workspace = true
@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 voicebro-core.workspace = true
 anyhow = "1"
+log.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "process", "io-util", "time", "sync", "fs"] }

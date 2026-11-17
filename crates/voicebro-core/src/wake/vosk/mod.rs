@@ -4,11 +4,11 @@
 
 pub mod ffi;
 
-use super::catalog::Asset;
 use super::{
     LoadedModel, ModelSource, Recognition, SpeechRecognizer, WakeEngine, WakeError, Word,
     RECOGNIZER_SAMPLE_RATE,
 };
+use crate::assets::Asset;
 use ffi::{Model, Recognizer, VoskApi};
 use std::path::Path;
 use std::sync::Arc;
@@ -22,6 +22,7 @@ pub const LIBRARY: Asset = Asset {
     directory: "vosk-win64-0.3.45",
     marker: "libvosk.dll",
     size: 14_900_000,
+    ..Asset::ARCHIVE
 };
 
 pub struct VoskEngine;

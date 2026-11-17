@@ -100,6 +100,9 @@ pub struct Conversation {
     items: VecDeque<(&'static str, String)>,
     /// The names of the people last heard, prefixed to user transcripts in the history.
     pub speakers: Option<String>,
+    /// The thread whose first text turn carried the history (the Whisper mode, change
+    /// `whisper-mode`).
+    pub history_sent_to: Option<String>,
 }
 
 impl Conversation {
@@ -114,6 +117,7 @@ impl Conversation {
             realtime_session_id: None,
             items: VecDeque::new(),
             speakers: None,
+            history_sent_to: None,
         }
     }
 
@@ -142,6 +146,23 @@ impl Conversation {
 
     pub fn last_text(&self) -> Option<&str> {
         self.items.back().map(|(_, text)| text.as_str())
+    }
+
+    /// The exchanges so far as text, for the first text turn on a new thread; `None`
+    /// before the first one. At most [`HISTORY_MAX_BYTES`], like the call's history.
+    pub fn history_text(&self) -> Option<String> {
+        if self.items.len() <= 1 {
+            return None;
+        }
+        // The newest item is the question this turn asks.
+        let earlier = self.items.len() - 1;
+        let lines: Vec<String> = self
+            .items
+            .iter()
+            .take(earlier)
+            .map(|(role, text)| format!("{role}: {text}"))
+            .collect();
+        Some(format!("{HISTORY_HINT}\n{}", lines.join("\n")))
     }
 
     /// Initial items for the next call: the transcript so far, then the notes for this

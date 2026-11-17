@@ -3,7 +3,6 @@
 //! session of their thread, and every server-initiated request answered with a decline so
 //! Codex can never act on this computer.
 
-use super::session::CodexSession;
 use crate::events::EventBus;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -130,6 +129,15 @@ pub fn is_action_request(method: &str) -> bool {
 
 type Pending = Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>;
 
+/// What receives a thread's notifications: the realtime session or the text session of
+/// the Whisper mode (change `whisper-mode`).
+pub trait ThreadListener: Send + Sync {
+    fn on_notification(&self, method: &str, params: &Value);
+    /// An action request on the thread was declined.
+    fn on_declined(&self, method: &str);
+    fn on_server_exit(&self);
+}
+
 pub struct AppServer {
     pub generation: u64,
     pub version: Option<String>,
@@ -138,7 +146,7 @@ pub struct AppServer {
     writer: mpsc::UnboundedSender<String>,
     pending: Pending,
     next_id: AtomicU64,
-    sessions: Mutex<HashMap<String, Weak<CodexSession>>>,
+    sessions: Mutex<HashMap<String, Weak<dyn ThreadListener>>>,
     alive: AtomicBool,
     pub account_dirty: AtomicBool,
     /// Set when `account/login/completed` arrives, whatever its outcome.
@@ -291,7 +299,7 @@ impl AppServer {
     }
 
     /// Routes the notifications of `thread_id` to `session`.
-    pub fn map_thread(&self, thread_id: &str, session: Weak<CodexSession>) {
+    pub fn map_thread(&self, thread_id: &str, session: Weak<dyn ThreadListener>) {
         self.sessions
             .lock()
             .expect("sessions lock")
@@ -305,7 +313,7 @@ impl AppServer {
             .remove(thread_id);
     }
 
-    fn session_for(&self, params: &Value) -> Option<Arc<CodexSession>> {
+    fn session_for(&self, params: &Value) -> Option<Arc<dyn ThreadListener>> {
         let thread_id = params.get("threadId").and_then(Value::as_str)?;
         self.sessions
             .lock()

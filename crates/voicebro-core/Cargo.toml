@@ -1,6 +1,6 @@
 [package]
 name = "voicebro-core"
-version = "1.0.2"
+version = "1.1.0"
 description = "VoiceBro application core: settings, secrets, events, Discord, wake word, runtime. No Tauri dependency."
 publish = false
 edition.workspace = true
@@ -37,6 +37,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+# The voices Windows has (change `whisper-mode`): OneCore speech through WinRT. 0.62 is
+# already in the lock file through Tauri.
+windows = { version = "0.62.2", features = ["Media_Core", "Media_SpeechSynthesis", "Storage_Streams", "Foundation", "Foundation_Collections"] }
 
 [dev-dependencies]
 tempfile = "3"

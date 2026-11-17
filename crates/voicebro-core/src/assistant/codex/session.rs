@@ -3,7 +3,7 @@
 //! and the notifications of its thread.
 
 use super::account::{AccountInfo, Voices};
-use super::app_server::AppServer;
+use super::app_server::{AppServer, ThreadListener};
 use super::conversation::{
     call_instructions, call_names_note, speaker_note, CallContext, Conversation,
 };
@@ -310,7 +310,7 @@ impl CodexSession {
         if !thread_id.is_empty() {
             session
                 .server
-                .map_thread(&thread_id, Arc::downgrade(&session));
+                .map_thread(&thread_id, Arc::downgrade(&session) as _);
         }
         session
     }
@@ -418,7 +418,7 @@ impl CodexSession {
         if !previous.is_empty() {
             self.server.unmap_thread(&previous);
         }
-        self.server.map_thread(&id, self.me.clone());
+        self.server.map_thread(&id, self.me.clone() as _);
         self.chat("system", None, &format!("New Codex thread: {description}."));
         Ok(())
     }
@@ -809,7 +809,7 @@ impl CodexSession {
     }
 
     /// The app-server declined a request on this thread.
-    pub fn on_declined(&self, method: &str) {
+    fn on_declined_inner(&self, method: &str) {
         self.chat(
             "system",
             None,
@@ -817,7 +817,7 @@ impl CodexSession {
         );
     }
 
-    pub fn on_notification(&self, method: &str, params: &Value) {
+    fn on_notification_inner(&self, method: &str, params: &Value) {
         match method {
             "thread/realtime/sdp" => {
                 let answer = params
@@ -1038,7 +1038,7 @@ impl CodexSession {
         }
     }
 
-    pub fn on_server_exit(&self) {
+    fn on_server_exit_inner(&self) {
         {
             let mut state = self.lock();
             state.realtime = Realtime::Idle;
@@ -1075,6 +1075,20 @@ impl CodexSession {
             self.handle.spawn(async move { rtc.close().await });
         }
         self.ports.output.flush();
+    }
+}
+
+impl ThreadListener for CodexSession {
+    fn on_notification(&self, method: &str, params: &Value) {
+        self.on_notification_inner(method, params);
+    }
+
+    fn on_declined(&self, method: &str) {
+        self.on_declined_inner(method);
+    }
+
+    fn on_server_exit(&self) {
+        self.on_server_exit_inner();
     }
 }
 
@@ -1485,7 +1499,7 @@ mod tests {
         else {
             return;
         };
-        server.map_thread("fake-thread", Arc::downgrade(&session));
+        server.map_thread("fake-thread", Arc::downgrade(&session) as _);
         for outcome in ["completed", "interrupted", "failed", "completed"] {
             runtime
                 .block_on(server.request(
@@ -1556,7 +1570,7 @@ mod tests {
         else {
             return;
         };
-        server.map_thread("fake-thread", Arc::downgrade(&session));
+        server.map_thread("fake-thread", Arc::downgrade(&session) as _);
         let send = |method: &str, params: Value| {
             runtime
                 .block_on(server.request(

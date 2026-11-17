@@ -16,18 +16,27 @@ Related files:
 A Windows desktop app that runs a Discord voice bot. The people in a voice channel talk to an
 AI assistant: an offline wake phrase opens a session, the assistant answers with voice, a
 deactivation phrase or an idle timeout closes it. The app runs in the background on the same
-PC the user is gaming on. The assistant is ChatGPT voice through the Codex CLI app-server with
-the user's ChatGPT sign-in; no API key is involved.
+PC the user is gaming on. The assistant is Codex through the Codex CLI app-server with the
+user's ChatGPT sign-in; no API key is involved.
+
+Two assistant modes (`assistant.mode`, change `whisper-mode`):
+
+- **Realtime voice** (the default): Vosk spots the phrases on the PC, and during a session the
+  channel's audio goes to a ChatGPT realtime voice call that Codex opens; the call answers
+  aloud.
+- **Whisper**: whisper.cpp turns each speaker's speech into text on the PC and spots the
+  phrases in that text; the questions go to Codex as text turns on the same thread; a local
+  voice reads the answer into the channel (4.12). Only text goes to OpenAI.
 
 Fixed constraints that shape the architecture:
 
 | Constraint | Consequence |
 |---|---|
 | Rust, Tauri 2, Windows first | One native process plus WebView2 for the settings UI. The core never depends on the UI. |
-| Low CPU and memory while idle | Heavy things (speech model, assistant process, call transport) are loaded only while their feature is on, and unloaded when it is off. |
+| Low CPU and memory while idle | Heavy things (speech model, Whisper model, voice, assistant process, call transport) are loaded only while their feature is on, and unloaded when it is off. |
 | Steady 20 ms audio | Pacing loops run on dedicated OS threads with `std::thread::sleep`. Tokio timers are never used for pacing. |
 | Users install nothing but the app | No Node, Python or build tools at runtime. Native libraries and models are downloaded on first use with pinned SHA-256, and only after the user agrees in the window to what, from where and how much. |
-| Replaceable engines | Wake-word recognition and the assistant sit behind traits. Only one implementation of each exists today (Vosk, Codex app-server). |
+| Replaceable engines | Wake-word recognition, speech to text, the local voice and the assistant sit behind traits (`WakeEngine`, `SpeechToText`, `Synth`, `Assistant`). Vosk, whisper.cpp and the Codex app-server are the one implementation of each of the first, second and last; the voice has sherpa-onnx and the Windows voices. |
 | Diagnosable in the field | A file log in every build, including release: small (about 2 MB) and without what people said unless the user turns on the verbose log; the window shows everything, the recognizer's own results included. The status shows measured values only. |
 | Secrets stay out of files | The Discord token lives in the Windows Credential Manager, never in the settings file or the UI snapshot. |
 
@@ -45,11 +54,14 @@ voicebro-discord/
     voicebro-core/             the application core, no Tauri
       src/
         lib.rs
+        assets.rs              the shared asset store: pinned downloads, archives and single files (4.4)
         audio/                 frame types, queues, resamplers, earcons, output source, Opus output
         discord/               serenity + songbird adapter, slash commands, member panel, the leg toward Discord
-        gate.rs                session gate: mute, wake session state machine, pre-roll
+        gate.rs                session gate: mute, wake session state machine, pre-roll, Whisper's transcripts
         wake/                  wake-word engine trait, phrase spotter, model catalog, local models, Vosk
-        assistant/             assistant trait and the Codex implementation
+        stt/                   the Whisper mode's speech to text: whisper.cpp, catalog, cutter, transcriber (4.12)
+        tts/                   the Whisper mode's local voice: sherpa-onnx, Windows voices, splitter, player (4.12)
+        assistant/             assistant trait and the Codex implementation (realtime call and text turns)
         settings/              schema, file store, secret store
         events.rs              AppEvent and the broadcast bus
         runtime.rs             composition root: owns every subsystem, applies settings
@@ -81,7 +93,10 @@ Tauri commands and events.
 | WebView2 process group (settings UI) | While the main window exists. The core never assumes a window exists, so a tray mode can be added later without touching it. |
 | `codex app-server` (child process, JSON-RPC over stdio) | Started when the bot connects; stopped with the app. Exiting the app always stops it. |
 
-The realtime call (WebRTC) lives inside the Rust process.
+The realtime call (WebRTC) lives inside the Rust process, and so do Whisper and the local
+voice of the Whisper mode (4.12): whisper.cpp with ggml (and CUDA), sherpa-onnx with
+onnxruntime, and piper-phonemize are DLLs loaded with `libloading`, the Windows voices are
+WinRT calls. None of them is a child process.
 
 ### Threads and tasks
 
@@ -92,6 +107,11 @@ The realtime call (WebRTC) lives inside the Rust process.
 | Discord output: songbird's mixer pulls one packet from `OpusOutput` (one `PcmSource` frame, then our Opus encode) | Songbird's mixer thread | A read never blocks for more than a few ms; on underrun it returns silence and counts it. Our encode replaces songbird's (passthrough), so the thread still encodes once per 20 ms; it costs about 0.64 ms on average (worst 1.4 ms) against songbird's 0.30 ms (`output_pull_cost`, release). |
 | Discord RTCP: report blocks about our stream → expected loss | Songbird's event task (tokio) | Only atomics are written; the mixer thread reads them per packet. |
 | Wake worker: recognizers, trailing silence, phrase detectors | One dedicated OS thread per engine, 20 ms tick | Fed through a bounded channel; a full queue drops and counts. |
+| Whisper cutter: 16 kHz mono per speaker, utterance ends (`voicebro-whisper-cut`) | One dedicated OS thread while a Whisper model is loaded | Fed through a bounded channel of 256 messages (frames and ticks); a full channel drops the frame and counts it. Only downsamples and appends. |
+| Whisper transcription (`voicebro-whisper`) | One dedicated OS thread while a model is loaded; on the CPU, whisper.cpp's own worker threads | One utterance at a time from a queue of 8; the oldest waiting is dropped and counted. Only this thread touches the model. |
+| Local voice: synthesis and resampling (`voicebro-tts`) | One dedicated OS thread while a voice is loaded; onnxruntime's threads | Synthesizes the queued pieces in order, at most 20 s ahead of playback; a piece of a flushed epoch is skipped or stopped. |
+| Local voice playback | Songbird's mixer thread, through `PcmSource::read` | `SpeechPlayer` hands out one 20 ms frame per read and never synthesizes. |
+| Loading and unloading Whisper and the voice | `spawn_blocking` at a join; short-lived threads (`voicebro-whisper-load`, `voicebro-tts-load`, `voicebro-whisper-unload`, `voicebro-tts-unload`) for downloads, background reloads and the unload after the last leave | Never on the receive path or the mixer thread. |
 | WebRTC call: ICE/DTLS/SRTP, RTP in and out | The webrtc crate's runtime tasks | Incoming RTP packets are only inserted into the call's jitter buffer; nothing is decoded here. |
 | WebRTC send: pacing and Opus encode | One dedicated OS thread per call (`voicebro-rtc-send`), 20 ms tick | Sends exactly one packet per tick: the oldest waiting frame or silence. |
 | WebRTC receive: Opus decode, FEC, concealment, adaptive playout | Songbird's mixer thread, through `PcmSource::read` | Decodes up to 100 ms ahead and plays one 20 ms frame per read, stretched or shrunk by the playout; buffers allocated when the call opens. |
@@ -115,6 +135,8 @@ pub enum AppEvent {
     Discord(DiscordStatus),
     Gate { guild: GuildId, status: GateStatus },
     Wake(WakeStatus),
+    Whisper(WhisperStatus),            // the Whisper mode's recognizer: files, load, device, counters (4.12)
+    Tts(TtsStatus),                    // the Whisper mode's voice: files, load, time to the first audio (4.12)
     Assistant(AssistantStatus),
     Chat(ChatEntry),                   // one assistant chat-log entry
     Assets(AssetProgress),             // downloads: label, percent, error
@@ -136,7 +158,8 @@ Owns the formats, queues and conversions shared by everything else.
 
 - **Formats.** Discord side: 48 kHz, 2 channels, 20 ms frames (960 frames, 1920 `i16`).
   Wake engines: 16 kHz mono (320 samples per 20 ms). WebRTC: Opus at 48 kHz, 20 ms, mono
-  payload.
+  payload. Whisper: 16 kHz mono `f32` in -1..1, whole utterances. The local voices: 16,
+  22.05, 24 or 44.1 kHz mono `f32`, resampled to 48 kHz and played as stereo frames (4.12).
 - **`Frame`**: a fixed-size 48 kHz stereo packet. Everything between Discord and the gate and
   between the gate and the assistant is a `Frame`.
 - **Mixing** several speakers: the average. Sum into `i32`, divide
@@ -144,7 +167,13 @@ Owns the formats, queues and conversions shared by everything else.
   unchanged. Never saturate before averaging.
 - **Resamplers** (`dsp.rs`): fixed-ratio windowed-sinc FIR, 48 k stereo → 16 k mono, and the
   24 k paths (kept and tested for a later websocket path, unused by the MVP). Deterministic, no
-  external resampler.
+  external resampler. `Resampler` (change `whisper-mode`, design D7) takes the local voices
+  to 48 kHz: a polyphase windowed-sinc filter for any rational ratio (`to / from` reduced by
+  their greatest common divisor), 32 taps per phase, a Blackman window, the cut-off at 0.92
+  of the lower Nyquist frequency, each phase normalized to unity gain. It streams: audio fed
+  in chunks comes out exactly as fed at once, so a chunk border makes no click; `finish`
+  lets out the filter's tail, and `convert` resamples a whole clip. Tests check that 16,
+  22.05, 24 and 44.1 kHz sines keep their frequency and level.
 - **`OutputQueue` / `PcmSource`**: the assistant's audio toward Discord. A small adaptive
   jitter buffer (3 to 8 frames), drop-oldest when full, a flush epoch (so a cut answer never
   plays after unmute), an output mute that still lets earcons through, and counters
@@ -157,7 +186,11 @@ Owns the formats, queues and conversions shared by everything else.
   ahead (`FrameProvider::voice_ahead`, `false` by default): the call's jitter buffer sets it
   after each pull from the samples its playout has decoded ahead of the frame just played
   (up to `LOOKAHEAD`, 100 ms; in practice two to four frames) against `SIGNAL_PEAK` (256),
-  so the output can turn sending toward Discord on before that voice plays (below).
+  so the output can turn sending toward Discord on before that voice plays (below). The
+  second provider is the Whisper mode's `SpeechPlayer` (4.12). A provider that measures its
+  own turns says so (`FrameProvider::own_latency`, `false` by default; the player's is
+  `true`): `PcmSource` then reports none of its frames to the latency tracker, and the
+  Whisper mode's latency line comes from the text session instead (7).
   `OutputHandle::push` stays for the stub assistant and the tests.
 - **Opus codecs** (`codec.rs`, change `opus-codec-experiment`): two Opus codecs built in
   side by side, chosen at run time by `diagnostics.opus_codec` (4.6): libopus 1.5 through
@@ -278,13 +311,17 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   name (global name, else user name) and the typed code to `VoiceHost::complete_link` and
   answers only the sender. The owner-only mode limits none of the commands: `/join`,
   `/leave` and the Mute button work for everyone; `/status` adds "Only the owner's voice
-  reaches the assistant here." while the mode is on.
+  reaches the assistant here." while the mode is on. `/status` also names the assistant
+  mode, "Mode: Realtime voice." or "Mode: Whisper mode." (`VoiceHost::assistant_mode`,
+  change `whisper-mode`).
 - `/join` first awaits `VoiceHost::prepare_join(guild)`: the assistant starts its process
-  and checks its sign-in. An error is the reply ("Not joined: …") and the bot stays out of
-  the channel; only then does the join below run.
+  and checks its sign-in, and in the Whisper mode Whisper and the voice load (4.7). An error
+  is the reply ("Not joined: …") and the bot stays out of the channel; only then does the
+  join below run.
 - **Member panel** (`panel.rs`): an embed in the channel the command came from, with the
-  engine, the assistant's state (waiting for the wake word / listening / muted) and a
-  "Mute GPT" button. The button toggles the app-wide mute through `Runtime`; the panel is
+  engine, the assistant's state (waiting for the wake word / listening / muted), the mode
+  ("Realtime voice" or "Whisper mode") and a "Mute GPT" button. A mode switch marks the
+  panels for a refresh. The button toggles the app-wide mute through `Runtime`; the panel is
   refreshed from `AppEvent::Gate` and `AppEvent::MuteChanged`.
 - **Join order is fixed:** get or create the `Call`, set its decode mode, register the
   `SpeakingStateUpdate` and `VoiceTick` handlers, then `join`. Discord announces a user's
@@ -496,6 +533,32 @@ state machine. A `RelayRegistry` holds all gates and the single app-wide mute fl
   way). It numbers its receive ticks per guild (`u64` from 1). In wake-word mode, when not
   muted, it forwards each speaker's frame with the tick's number to the `WakeFeed`, then
   calls `WakeFeed::tick(guild, tick)` once per `process_tick`, after the frames.
+- **The Whisper mode** (change `whisper-mode`, designs D2 and D4; `GateSettings.whisper`,
+  with the Whisper phrases in effect in `GateSettings.whisper_phrases`):
+  - *Audio.* Whenever mute is off, in both session modes, the gate forwards each speaker's
+    frame and the tick to the feed, which the runtime routes to Whisper (4.7, 4.12). It
+    sends no frame to `AudioPorts.input`, and the replay is not used: a question is text.
+  - *Text.* The registry is the transcriber's `TranscriptSink` and routes each `Transcript`
+    to the guild's gate. `on_transcript` asks `stt::phrases::decide` (4.12) what the
+    utterance does:
+    - waiting, in wake-word mode: an activation phrase starts the session (the rising tone,
+      the speaker as the caller of the call context), and the words after it in the same
+      utterance are the first question; any other text is ignored; the 1.5 s
+      reactivation guard applies as for Vosk;
+    - active: a deactivation phrase anywhere in the utterance ends the session through
+      `GateState::deactivate` with `DeactivationSource::Whisper` ("Whisper's text"), and
+      the words before it are dropped; any other utterance is a question;
+    - always mode: every utterance is a question;
+    - muted, or outside the Whisper mode: nothing counts.
+  - *Questions* go to the session as `AssistantSession::user_text(UserText)`, with the
+    speaker's name from the speaker map, the language Whisper used, and the instants, audio
+    length, model and device that the latency line needs (7).
+  - *Idle timeout.* It counts the activation, each question, the output's last signal, and
+    every tick on which `AssistantSession::working()` is true (a turn runs or its voice
+    plays), so a long web search does not end the session. It ends with the falling tone
+    and the log line "session ended after no input; waiting for the activation phrase".
+  - *A change of the flag* ends the session, as a change of the session mode does. A mode
+    switch builds new gates anyway (4.7).
 - `GateStatus` per guild: mode, muted, active, listening for the wake word, session wanted,
   assistant ready, last wake phrase, frames held for replay, and counters (input frames the
   assistant did not take, replay frames dropped, replay timeouts). Every transition is
@@ -562,8 +625,10 @@ pub struct Phrase { pub text: String, pub words: Vec<String> }
   place wins). The log and the status show phrases as the user typed them.
 
 - **`WakeManager`** owns the engines, the assets directory and the worker. `configure(settings)`
-  is called at start and whenever the `session` or `wake` section changes. Outside
-  wake-word mode it stops the engine (`Off`) and checks nothing. In wake-word mode it first
+  is called at start and whenever the `session`, `wake` or `mode` part changes. Outside
+  wake-word mode it stops the engine (`Off`) and checks nothing. In the Whisper mode (change
+  `whisper-mode`, design D1) Vosk is off too, whatever the session mode: Whisper spots the
+  phrases, the state says so, and no Vosk download is asked for. In wake-word mode it first
   checks, in the calling thread, which files of the engine and the selected model are
   missing (two file stats), before it looks at the phrases. Missing files without the
   user's consent publish `NeedsDownload {items}` at once, with or without phrases, and
@@ -654,17 +719,37 @@ pub struct Phrase { pub text: String, pub words: Vec<String> }
   settings id (catalog first); a local model needs only the Vosk library, its directory is
   `models\<folder>`, and a missing folder is the engine's error, so its phrases stay stored.
   The app never downloads, changes or deletes anything in `models\`.
-- **Asset store** (`assets.rs`): `ensure` has two routes to the archive
-  `assets\<Asset::file_name()>` (the URL's last segment). If that file is already there
-  (one the user downloaded by hand), it is used. Otherwise `ensure` downloads with the
-  system `curl.exe` to a `.part` name and renames. Either way it then reports
-  `Progress::Unpacking`, verifies the SHA-256, extracts with the system `tar.exe`, removes
-  the archive and checks the marker file. A mismatch deletes the file, extracts nothing,
-  and fails with "<file> (downloaded | found in the assets folder) does not match the
-  pinned SHA-256 (<digest>); it was deleted". An extracted folder with the marker counts as
-  installed without an archive (`is_installed`), but nothing checks its hash. `.part` files
-  are cleaned up at start. Download progress (`Progress::Downloaded`) goes to the event bus
-  as `AppEvent::Assets {label, percent, error}` in steps of at least 20 %. No HTTP crate.
+- **Asset store** (`crate::assets`, `assets.rs` at the crate root since change
+  `whisper-mode`, design D10; `wake::assets` re-exports it). The wake word, Whisper and the
+  voices (4.12) share it.
+  - *An `Asset`*: the label, the official `page`, the URL, the SHA-256, its `directory`
+    under `assets\`, a `marker` file that proves the install, the size, and a `kind`:
+    `Archive` or `File` (a Whisper model). An archive may also have a `root`, the folder
+    inside it whose contents become `directory` (`Release` of a whisper.cpp zip), and a
+    `keep` list of paths relative to `root` with `*` for any characters (empty keeps
+    everything). `Asset::ARCHIVE` holds the defaults of a plain archive.
+  - *The file name* (`Asset::file_name`): for an archive the URL's last segment; for a
+    single file its installed name, `marker`, so two models published as `ggml-model.bin`
+    still differ. It is the name a download is saved under and the name a file downloaded
+    by hand must have in `assets\`.
+  - *`ensure`* has two routes to `assets\<file name>`. If that file is already there (one
+    the user downloaded by hand), it is used. Otherwise `ensure` downloads with the system
+    `curl.exe` to a `.part` name and renames. Either way it then reports
+    `Progress::Unpacking` and verifies the SHA-256. A single file is moved to
+    `assets\<directory>\<marker>` and is its own marker. A plain archive is extracted with
+    the system `tar.exe` into `assets\`. An archive with a `root` or a `keep` list is
+    extracted into a staging folder `assets\.unpack-<directory>`, its kept files are moved
+    into `assets\<directory>`, and the rest is deleted, which is how the whisper.cpp zips
+    shrink to the DLLs the app loads. The system `tar.exe` (bsdtar) also unpacks the
+    `.tar.bz2` archives of sherpa-onnx, piper-phonemize and the voices, so no new crate is
+    needed. The archive is then removed and the marker checked.
+  - *A mismatch* deletes the file, installs nothing, and fails with "<file> (downloaded |
+    found in the assets folder) does not match the pinned SHA-256 (<digest>); it was
+    deleted". An installed folder with the marker counts as installed without the
+    download (`is_installed`), but nothing checks its hash.
+  - *Cleanup.* `.part` files and `.unpack-*` folders are removed at start. Download progress
+    (`Progress::Downloaded`) goes to the event bus as `AppEvent::Assets {label, percent,
+    error}` in steps of at least 20 %. No HTTP crate.
 - Vosk is loaded at runtime through `libloading` (`LOAD_WITH_ALTERED_SEARCH_PATH`), so the
   app starts without the DLL. Partial word timestamps are not requested (they delay
   partials by seconds). Grammar-restricted recognition is not used (it maps ordinary speech
@@ -703,6 +788,15 @@ pub trait AssistantSession: Send + Sync {
     fn ready(&self) -> bool;
     fn call_context(&self, caller: Option<String>, participants: &[String]);
     fn speakers_changed(&self, names: &[String]);
+    fn user_text(&self, _question: UserText) {}   // a question in words (the Whisper mode); a realtime session ignores it
+    fn working(&self) -> bool { false }            // a turn runs or its voice plays: the idle timeout waits
+}
+
+/// A question Whisper heard (change `whisper-mode`), with what the latency line needs.
+pub struct UserText {
+    pub speaker: Option<String>, pub text: String, pub language: Option<String>,
+    pub speech_end: Instant, pub text_at: Instant, pub audio_seconds: f64,
+    pub model: String, pub device: String, pub latency: SharedLatency,
 }
 
 /// Audio in and out of the assistant, in 48 kHz stereo frames, and where its codec panics
@@ -728,7 +822,19 @@ pub trait HeardSink: Send + Sync {
 `AudioPorts` connect the gate and the assistant in process: the gate pushes gated
 frames into `input`, the assistant pushes decoded answer audio into `output` (the
 `OutputQueue` from 4.1) and can `flush` it. `Runtime::on_join` builds the ports and the gate,
-calls `attach`, and gives the session to the gate; `on_leave` calls `detach`.
+calls `attach`, and gives the session to the gate; `on_leave` calls `detach`. In the Whisper
+mode the gate pushes nothing into `input` and hands the session questions in words instead
+(`user_text`, 4.3); the session attaches its own `FrameProvider` to `output`.
+
+**Two kinds of Codex session** (change `whisper-mode`, design D6). `CodexAssistant::attach`
+reads `assistant.mode` from its config (`CodexConfig.mode`) at each attach and builds a
+`CodexSession` (the realtime call) or a `CodexTextSession` (`text_session.rs`, below); its
+map of sessions holds an `Attached` enum of the two. Both get their thread's notifications
+through `app_server::ThreadListener` (`on_notification`, `on_declined`, `on_server_exit`),
+which `AppServer::map_thread` maps by thread id. The runtime hands the assistant its
+`TtsManager` once (`Assistant::use_tts`, a no-op by default); an attach in the Whisper mode
+without one fails. The join's preparation, the thread, the sign-in, the lists, the chat log,
+the instructions and the answer posting are the same in both modes.
 
 **The people's transcript to the gate** (change `voice-recognition-rework`, design D2):
 `heard` is the `RelayRegistry` in the app (it routes to the guild's gate, 4.3) and
@@ -897,6 +1003,41 @@ assistant is given, so the app never panics on an unknown engine setting.
   transcripts are never answers. The turns are forgotten at `shutdown`. The `phase` field of
   an `agentMessage` (`commentary`, `final_answer`) is not used: the schema says it is not
   always sent. Checked against the Codex CLI 0.167.0 schema.
+- `text_session.rs` (change `whisper-mode`, design D6): the Whisper mode's session. It opens
+  no call. `ready()` is true while the guild's thread exists and the app-server is alive,
+  which is right after the join's preparation. It attaches a `SpeechPlayer` (4.12) to the
+  output as its `FrameProvider` and detaches it at `shutdown`.
+  - *A question* (`user_text`) becomes `turn/start { threadId, input: [{ type: "text", text
+    }] }`, the text prefixed "<name>: " unless `speaker_labels` is `off`. The first turn of
+    each session carries `additionalContext."voicebro.channel"` (`kind: "application"` with
+    a `value` only: Codex CLI 0.167.0 refuses a `name` on application context; the value is
+    facts only, "Discord voice channel." with the people in the channel and the caller),
+    unless speaker labels are off. The first
+    turn on a thread that has not had the history carries `voicebro.history`, the guild's
+    earlier exchanges (`Conversation::history_text`, within the realtime history's 24 KB).
+    The question also goes to the chat log and the conversation.
+  - *Barge-in.* A question while a turn runs or its voice plays flushes the player at once
+    and sends `turn/interrupt { threadId, turnId }` before the new `turn/start` (one
+    `turn_lock`). The old turn id is stale, and its late notifications are ignored. A turn
+    that started after its session ended is interrupted as soon as its id is known. This
+    reacts to words Whisper heard, not to any sound.
+  - *The answer.* Each `item/agentMessage/delta` of the running turn goes through the turn's
+    `SentenceSplitter` into the voice queue; the first piece marks the turn on the player,
+    and the first delta is "Codex first words" for the latency line. `item/completed` with
+    an `agentMessage` sends the rest of that message to the voice and keeps its text; the
+    item goes to the chat log. Every agent message is spoken, the interim line before a
+    web search too. `turn/completed` with the status `completed` adds the last agent message
+    to the conversation and sends `AgentAnswer { guild, task: question, text }` through
+    `ports.answers`, so every completed answer can be posted (4.2, 4.7); another status
+    adds a chat error and posts nothing.
+  - *Ending.* `session_wanted(false)` (deactivation, idle timeout, mute) and `shutdown`
+    (leave, mode switch) flush the player and interrupt the running turn; the call context
+    goes again with the next session's first turn. `working()` is true while a turn runs or
+    the player holds audio. An app-server exit sets the `codex` connection error "Codex
+    app-server exited; run /join again".
+  - *Model, reasoning, instructions* are the thread's (`codex.model`,
+    `codex.reasoning_effort`, `codex.instructions`): in this mode they set how fast every
+    answer comes. `codex.voice` and `codex.handoff_mode` are not used.
 - `CodexAssistant` (`codex/mod.rs`) owns the process, the account, the voices and models,
   the conversations per guild and the chat log. **Nothing of Codex runs before `/join`,
   Sign in, Check or Refresh lists, except the read of the lists at start** (below).
@@ -937,7 +1078,14 @@ assistant is given, so the app never panics on an unknown engine setting.
   `--log <file>` records each request's method, `--models a,b|none` sets the model list;
   its own method `fake/delegate {threadId, outcome}` plays a delegated task on that thread:
   `turn/started`, the task, an interim agent message, a web search, the final agent message
-  and `turn/completed` with the given status).
+  and `turn/completed` with the given status). For the text turns of the Whisper mode,
+  `turn/start` answers with the turn and streams an interim and a final agent message as
+  `item/agentMessage/delta` pieces, each item completed, then `turn/completed`;
+  `turn/interrupt` ends the running turn as `interrupted`; `fake/turnDelay {ms}` spaces the
+  pieces and `fake/lastTurnStart` returns the last `turn/start`'s params. The text-session
+  tests check one question answered, spoken and posted with the channel context, a second
+  question that interrupts the first (the interrupt before the new start, only the second
+  posted), and a deactivation during a turn.
   The tests that use it check nothing where Node is not installed.
   `VOICEBRO_CODEX_SMOKE=1 cargo test -p voicebro-core real_codex_starts` runs the real
   start at a preparation and the stop after the last leave.
@@ -955,9 +1103,18 @@ assistant is given, so the app never panics on an unknown engine setting.
   voicebro-core loopback_call_loses_nothing` sends a 10 s tone between two peers in one
   process through the same send path and jitter buffer and checks zero drops, zero late,
   zero concealed frames and the correlation both ways.
+- Live check of the Whisper mode: `whisper_text_turn_when_enabled`, gated by
+  `VOICEBRO_WHISPER_DIR` (an assets folder with the Whisper files and the voice) and
+  `VOICEBRO_WHISPER_QUESTION_WAV` (16 or 48 kHz), with `VOICEBRO_WHISPER_MODEL`,
+  `VOICEBRO_WHISPER_DEVICE`, `VOICEBRO_TTS_VOICE`, `VOICEBRO_WHISPER_PEOPLE` (the channel's
+  people, the first as the caller, for the `additionalContext` canary) and
+  `VOICEBRO_WHISPER_ANSWER_WAV` optional: the WAV goes through Whisper, a real Codex text
+  turn and the voice, the output is read every 20 ms like songbird does, the answer is
+  written as a WAV, and the latency line prints.
 
-The thread's `model` and reasoning effort affect only work the voice model delegates to
-the Codex agent; the voice itself is the realtime model. The UI says so next to the setting.
+In the realtime mode the thread's `model` and reasoning effort affect only work the voice
+model delegates to the Codex agent; the voice itself is the realtime model. In the Whisper
+mode they answer every question. The UI says so next to the settings.
 
 ### 4.6 Settings (`settings/`)
 
@@ -971,18 +1128,22 @@ pub struct Settings {
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation?, deactivation? } } (an absent list: the model's defaults)
-    pub assistant: AssistantSettings,      // engine id, speaker_labels: start | changes | off, save_chat_history (default false), post_answers: off (default) | voice_channel | command_channel | channel, answers_channel (a channel id, digits or empty; required by channel, kept while another value is chosen)
+    pub assistant: AssistantSettings,      // engine id, mode: realtime (default) | whisper (its own `mode` part in changed_sections), speaker_labels: start | changes | off, save_chat_history (default false), post_answers: off (default) | voice_channel | command_channel | channel, answers_channel (a channel id, digits or empty; required by channel, kept while another value is chosen)
     pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default), handoff_mode: items (default) | commentary | bem_tags | thinking, refresh_lists_at_start (default false, read at start)
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
     pub ui: UiSettings,                    // theme: dark | darcula | light | intellij (default dark); font_size: 11..=20 (default 13); collapsed_cards: ids of the collapsed cards of the Settings and Config tabs (default empty; unknown ids kept, ignored by the window)
     pub diagnostics: DiagnosticsSettings,  // performance, memory, verbose_log: all default false, read by the window and the desktop shell; opus_codec: libopus (default) | opus-rs, read by the core at each join and each call
+    pub whisper: WhisperSettings,          // the Whisper mode's recognition: model (catalog id or local:<file>, default whisper-base-q8_0), device: cpu (default) | gpu, threads: 0 (automatic) ..= 64, language: auto (default) | an ISO 639-1 code Whisper knows, phrases: { activation?, deactivation? } (an absent list: the defaults of whisper.language, 4.12)
+    pub tts: TtsSettings,                  // the Whisper mode's voice: voice (catalog id or windows:<token>, default supertonic3:F1), speed: 0.5..=2.0, default 1.0
     pub extra: Map<String, Value>,         // flattened: unknown fields from a newer version, kept as they are
 }
 ```
 
 Every string in the project (UI, log, notes to the model, code, docs) is English. The wake
 phrases are each catalog model's defaults (4.4) or the user's own in the settings file, in
-whatever language the user's model recognizes. The code ships no assistant instruction.
+whatever language the user's model recognizes; the Whisper mode's phrases take the defaults
+of the wake catalog entry for `whisper.language` (4.12). The code ships no assistant
+instruction.
 
 - Stored as JSON at `settings.json` next to the executable. Written to a temp file and
   renamed over the old one. Unknown fields are kept; missing fields take defaults.
@@ -1021,6 +1182,19 @@ whatever language the user's model recognizes. The code ships no assistant instr
   `changed_sections` reports the two answer posting fields as their own part, `answers`,
   so a change of only those restarts nothing and reconfigures no gate or assistant: the
   answer handler (4.7) reads them when each answer arrives.
+- **The Whisper mode's settings** (change `whisper-mode`, design D14). An unknown
+  `assistant.mode` or `whisper.device` is refused while the document is read
+  (`TryFrom<String>`), naming the field and the values. `validate()` refuses a
+  `whisper.model` that is neither a catalog id nor `local:<plain file name>` (no `\`, `/`,
+  `:` or `..`), `whisper.threads` above 64, a `whisper.language` Whisper does not know, a
+  Whisper phrase with no letter or digit, the two Whisper lists in effect sharing a phrase
+  in the matching form (so "Goodbye!" against "goodbye" is refused), a `tts.voice` that is
+  neither a catalog voice nor `windows:<token>`, and a `tts.speed` outside 0.5 to 2.0. A
+  local model's file and a Windows voice are checked when they load, not at save.
+  `changed_sections` reports `mode` (the mode switches at once, 4.7), `whisper` and `tts`
+  as parts of their own; the mode is not part of `assistant`. A 1.0.x file loads in the
+  realtime mode with the new sections at their defaults; the schema version is unchanged,
+  and an older build keeps the new sections as unknown fields.
 - Adding a setting means: a field with a default, its validation, its `apply` effect, and its
   UI control. Nothing else.
 - **Secrets** go through `SecretStore` (Windows Credential Manager via `windows-sys`, entry
@@ -1030,9 +1204,10 @@ whatever language the user's model recognizes. The code ships no assistant instr
 - The app is portable: its data directory is the folder the executable runs from
   (`VOICEBRO_DATA_DIR` overrides it for tests). It holds `settings.json`,
   `codex-lists.json` (the Codex models and voices of the last read, 4.5), `logs\`, `assets\`
-  (the Vosk library and the catalog models the app downloaded), `models\` (Vosk models the
-  user added, only read), `codex-workspace\` (the empty, read-only cwd for Codex
-  threads) and `webview-data\` (the window's WebView2 data, cache and component downloads,
+  (what the app downloaded: the Vosk library and models, the Whisper runtimes, models and
+  VAD model, the voice engine, the phonemizer and the voices), `models\` (Vosk models the
+  user added, only read), `whisper-models\` (Whisper models the user added, only read),
+  `codex-workspace\` (the empty, read-only cwd for Codex threads) and `webview-data\` (the window's WebView2 data, cache and component downloads,
   tens of MB). The app creates files only there. Outside it are only the Discord token in
   the Windows Credential Manager (written by the app), the user's own Codex data in
   `~\.codex` (written by Codex) and, when Codex was installed through the app, Codex itself
@@ -1050,12 +1225,45 @@ whatever language the user's model recognizes. The code ships no assistant instr
 `Runtime` owns the registry of gates, the Discord adapter, the wake engine, the assistant,
 the settings store and the event bus. It is the only place that knows every subsystem.
 Start-up: load settings, read secrets, start Discord whenever a token is set, load the wake
-engine if the mode is wake-word. The assistant's process is not started: it starts at the
+engine if the mode is wake-word and the assistant mode is realtime. The assistant's process is not started: it starts at the
 first `/join` (`GateHost::prepare_join` calls `Assistant::prepare`). The one exception is
 the read of the Codex lists at start (4.5), which the desktop shell starts right after
 `Runtime::start` when `codex.refresh_lists_at_start` is on or no lists were saved, and only
 when Codex is installed. Shutdown: stop the assistant (and its child process), leave every call, stop
-the wake worker. `Runtime::toggle_mute` is the single entry for all three mute sources.
+the wake worker, unload Whisper and the voice. `Runtime::toggle_mute` is the single entry for all three mute sources.
+
+**The Whisper mode** (change `whisper-mode`, designs D1 and D12). The runtime owns a
+`WhisperManager`, whose transcripts go to the registry, and a `TtsManager`, which it also
+hands to the assistant (`use_tts`); both live in the gate host (4.12).
+
+- *At start* Whisper scans `whisper-models\`, and both are configured: they report missing
+  files, download nothing and load nothing.
+- *The feed.* Every gate's feed is a `ModeFeed`, which hands each frame and tick to the wake
+  manager and to Whisper. Each takes them only while it runs: Vosk only in the realtime mode
+  with the wake word, Whisper only while a model is loaded.
+- *Join.* `GateHost::prepare_join` awaits the assistant's preparation, then in the Whisper
+  mode `prepare_whisper`: `WhisperManager::prepare_join` and `TtsManager::prepare_join` on a
+  blocking thread. Missing files refuse the join with "The Whisper mode needs downloads:
+  open VoiceBro → Whisper tab and press Download", and the window opens its dialog (4.8); a
+  load error refuses it with the error.
+- *Leave.* `on_leave` detaches the assistant and drops what Whisper cut or queued for the
+  guild. After the last leave it calls `release` on both, which unload 0.5 s later unless
+  the bot joined again first.
+- *Settings.* `mode` configures the assistant, the wake manager (Vosk off or on), Whisper
+  and the voice, then switches every gate (below); when the bot is in a channel and the new
+  mode is Whisper, both `prepare_join` on a thread of their own, and missing files wait for
+  the window's OK. `whisper` configures Whisper (a model or device change reloads in the
+  background while the old model serves; language, threads and phrases apply to the next
+  utterance) and the gates (the phrases). `tts` configures the voice (the speed at once, a
+  voice change reloads in the background).
+- *The switch at once* (`switch_mode`): for every gate the assistant is detached and the
+  output flushed; the falling tone plays when a session was active and earcons are on. A new
+  gate in the new mode is built on the same output, with the old gate's speaker names and
+  participants, registered, and the assistant attached in the new mode. The bot stays in
+  the channel. The log says "guild <g>: the assistant switched to the <realtime | whisper>
+  mode", and the panels are refreshed.
+- `assistant_mode()` names the mode for `/status` and the panel (4.2).
+- *Shutdown* configures both with the realtime mode, which unloads them.
 
 **Codec failures** (change `opus-codec-experiment`): `Runtime::start` spawns a task that
 drains the `CodecFailureHub` (4.1). For each report `handle_codec_failure` logs
@@ -1125,7 +1333,7 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
 - UI: static HTML, CSS and JS with `withGlobalTauri: true`, no framework or bundler. The
   window has a tab bar with **Console,
   Codex chat, Status,
-  Performance, System, Settings, Config**, cards, and a status bar (Discord state in colour,
+  Performance, System, Settings, Config, Whisper**, cards, and a status bar (Discord state in colour,
   guild count, voice channel count, uptime, a memory slot while memory measurement is on,
   the build stamp). Switching tabs
   keeps each tab's content and scroll position. Four themes (Dark, Darcula, Light,
@@ -1138,9 +1346,11 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     scrolled).
   - Status renders from one `status` snapshot (`renderStatus`): the connected guilds on the
     left (`DiscordStatus.guilds`, read from the serenity cache), and fact tiles on the right:
-    Discord state, bot account, voice channel, people in it, assistant engine, the gates
-    (session state, assistant ready, last phrase, held frames), wake word, mute, Codex
-    account, call, Codex thread, mute hotkey, token stored, build; then connection errors
+    Discord state, bot account, voice channel, people in it, assistant engine, assistant
+    mode, the gates (session state, assistant ready, last phrase, held frames), wake word,
+    in the Whisper mode only Whisper (state and model), Whisper device (in use, with the
+    fallback reason) and Local voice, then mute, Codex account, call, Codex thread, mute
+    hotkey, token stored, build; then connection errors
     and the counters behind a details toggle. Events trigger a refresh; a 5 s timer backs
     it up. Buttons: Mute, Connect, Disconnect, Sign in to Codex, Check Codex, Refresh.
     When the status has no Codex executable, the Codex area shows the install offer
@@ -1262,6 +1472,17 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     state stays `needs_download`, so only a new trigger opens it again, and the card's
     notice stays.
     `apps/desktop/ui-dev/check-wake-dialog.mjs` runs all of this against the mock.
+    **The Whisper subject** (change `whisper-mode`, design D10): the same dialog, with
+    `data-subject="whisper"` and the title "The Whisper mode is not installed", lists every
+    file the selected Whisper model, device and voice need (`whisper_requirements {model,
+    device, voice}`: Whisper's files, then the voice's, each file once), always with the
+    total, and the download-by-hand part. It opens in the Whisper mode with files missing:
+    after a `/join` refused for them (`join`: the refusal's log line seen within 5 s), after
+    a switch to the Whisper mode (`mode`, within 10 s), and before a model, device or voice
+    choice on the Whisper tab is saved (`choice`: nothing is saved until Download, and Cancel
+    puts the previous value back). Never because the window started. Download calls
+    `whisper_download {model, voice}`, which gives both managers their consent, and the
+    progress follows `status.whisper` and `status.tts`.
   - **Codec failure notice** (`<dialog id="codec-failure">`, change
     `opus-codec-experiment`): opened with `showModal()` by `AppEvent::CodecFailure`
     (`showCodecFailure`), in the install dialog's style with the error colour as its border.
@@ -1303,9 +1524,10 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     account read as Check, then a code; its error shows under the buttons),
     `owner_link_cancel` and `owner_unlink`, disable the three buttons meanwhile and refresh
     the status.
-  - **Collapsible cards** (Settings and Config): each of the eight cards has `data-card`
-    (`appearance`, `diagnostics` on Settings; `discord`, `access`, `audio`, `assistant`,
-    `codex`, `hotkey` on Config), its title inside a `<button class=
+  - **Collapsible cards** (Settings, Config and Whisper): each of the twelve cards has
+    `data-card` (`appearance`, `diagnostics` on Settings; `discord`, `access`, `audio`,
+    `assistant`, `codex`, `hotkey` on Config; `whisper-mode`, `whisper-recognition`,
+    `whisper-phrases`, `whisper-voice` on Whisper), its title inside a `<button class=
     "card-toggle" aria-expanded aria-controls>` with a CSS chevron, and its body in
     `.card-body`, which `hidden` hides; "Discord and Codex" keeps its badge in the title
     row. A click, Enter or Space toggles the card at once and saves the whole list with one
@@ -1342,6 +1564,35 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     colour. `loadCapabilities` writes the read time on every load (the start read and a
     join publish an `assistant` event, which loads them) and rebuilds the lists only when
     the models or voices changed, keeping the stored choice.
+  - **Whisper** (change `whisper-mode`, design D13), after Config: four foldable cards whose
+    fields save each change, with their help lines, validation messages and the tab's
+    feedback line `#whisper-feedback`.
+    - *Mode*: "Assistant mode" (`assistant.mode`: Realtime voice, or Whisper); its help line
+      says what leaves the PC in each mode, and that `codex.model` and
+      `codex.reasoning_effort` set how fast each answer comes in the Whisper mode. Below it,
+      "In use now" from `status.whisper` and `status.tts`: recognition, device (with the
+      fallback reason), voice, and the last answer's timings.
+    - *Speech recognition*: Model (`whisper.model`, from `whisper_models`, grouped as
+      Multilingual, English only, Russian-tuned and Your models, each with its size, note
+      and download state), Device (CPU or NVIDIA GPU (CUDA)), CPU threads, Language
+      (`whisper_languages`: Automatic, the ten wake catalog languages, then the rest of
+      Whisper's list), the download notice and "Open Whisper models folder"
+      (`open_whisper_models_folder`).
+    - *Phrases*: the two `whisper.phrases` lists (commas or line breaks; a list never set
+      shows the defaults of the chosen language and is filled again when the language
+      changes) and a second "Activation" control on `session.mode`, shared with Config.
+    - *Voice*: Voice (`tts.voice`, from `tts_voices`, grouped by engine and language with
+      the size and "downloaded", "to download" or "built into Windows", then a line with
+      the data license and the phonemizer), Speed (`tts.speed`, a slider of kind `factor`
+      shown as "1.25×", saved on release), Preview (`tts_preview {voice, speed}` returns WAV
+      bytes, played in an `<audio>` element in the window only) and the download notice.
+
+    A model, device or voice whose files are missing asks in the install dialog first. The
+    download notices render from `status.whisper.state` and `status.tts.state`, and their
+    Download asks for everything the selection needs. While the mode is Whisper, the Config
+    tab's Vosk fields (wake phrases, wake engine, wake model) are disabled with the note
+    "Whisper mode: the phrases are on the Whisper tab", and the Codex card's Voice and
+    Answer handoff help lines say "realtime mode only".
   - Codex chat shows the chat log entries (pulled at start,
     then one `chat` event per entry, at most 600 rows), one row each with the time, a
     coloured source label and the text. Labels: the speaker's name for a user transcript,
@@ -1354,8 +1605,11 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     `codex_sign_in`, `codex_check`, `codex_install_info`, `codex_install`,
     `codex_models`, `owner_link_start`, `owner_link_cancel`, `owner_unlink`, `capabilities`,
     `discord_text_channels`, `wake_models`, `wake_download`, `wake_requirements`,
+    `whisper_models`, `tts_voices`, `whisper_requirements`, `whisper_download`,
+    `tts_preview`, `whisper_languages`, `open_whisper_models_folder`,
     `chat_log`, `log_history`, `system_status`, `memory_status`, `open_log_folder`,
-    `open_models_folder`, `open_assets_folder`.
+    `open_models_folder`, `open_assets_folder`. `tts_preview` runs on a blocking thread:
+    it loads a voice of its own for the sample.
 - Checking the window without a person: start the app with
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`; the page is then
   reachable through the Chrome DevTools protocol (evaluate expressions, take screenshots).
@@ -1370,21 +1624,29 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
   connected and `setConnected(on)` changes it, `?post_answers=<value>&answers_channel=<id>`
   starts with that answer posting stored, `?owner=linked` with Alex linked and `?owner_only`
   with the Access switch on; `completeLink(name)`, `wrongCode()` and `expireCode()` act as
-  Discord and the clock on a waiting code, and `owner()` returns the link state),
+  Discord and the clock on a waiting code, and `owner()` returns the link state; for the
+  Whisper mode the catalogs as the app lists them, `?whisper` (the Whisper mode with its
+  files on disk), `?whisper_missing` (nothing downloaded) and `?gpu_fallback` (Whisper
+  loaded in a channel, the GPU asked for and the CPU used, one measured answer), a refused
+  `join()` with files missing, and `failNextWhisperDownload`, `completeWhisperDownload`,
+  `placeWhisperFiles`, `setCuda` and `whisperTurn`),
   `make.mjs`, which writes `ui-dev/index.html` from `ui/index.html` with the mock loaded
   first, and `serve.mjs`, which serves it on `http://127.0.0.1:5174/` for browsers that do
-  not run scripts from `file://`. Two headless checks drive the mock in Edge and stop at
-  the first failure: `check-wake-dialog.mjs` (the install dialog) and
+  not run scripts from `file://`. Three headless checks drive the mock in Edge and stop at
+  the first failure: `check-wake-dialog.mjs` (the install dialog),
   `check-config-tab.mjs` (which cards each tab holds, the two ways of saving on Config,
   the collapsible cards of both tabs, the switches' size, label and keyboard, the Codex lists and
-  Refresh lists, and Post answers to Discord with its channel list).
+  Refresh lists, and Post answers to Discord with its channel list) and
+  `check-whisper-tab.mjs` (the Whisper tab's fields and cards, the disabled Vosk fields, and
+  the install dialog's Whisper subject).
 - Window lifecycle: destroying the main window exits the app, which stops `codex.exe`.
 
 ### 4.9 Probe binary (`apps/probe`)
 
 A headless dev binary over `voicebro-core`: Codex handshake and account check, WebRTC call
 with a WAV, Vosk corpus runs, Credential Manager round trip, timer jitter, memory
-measurement. Not shipped. It exists so that every external API is probed live before code
+measurement, and for the Whisper mode `whisper`, `whisper-corpus` and `tts` (4.12). Not
+shipped. It exists so that every external API is probed live before code
 is built on it.
 
 ### 4.10 Distribution (`apps/desktop/tauri.conf.json`, `scripts/`)
@@ -1420,8 +1682,9 @@ is built on it.
   `apps/desktop/installer-hooks.nsh` defines `NSIS_HOOK_POSTINSTALL` (the installer
   language for the uninstaller, the icon notice above) and `NSIS_HOOK_POSTUNINSTALL`:
   only when "Delete the application data" is checked and not in update mode, it removes
-  `logs`, `assets`, `models`, `codex-workspace`, `webview-data`, `settings.json`,
-  `owner-link.bin` (with their `.tmp` files), runs
+  `logs`, `assets` (the Whisper and voice downloads too), `models`, `whisper-models`,
+  `codex-workspace`, `webview-data`, `settings.json`, `owner-link.bin` (with their `.tmp`
+  files), runs
   `cmdkey /delete:VoiceBro/discord_token`, and removes the then empty install folder.
   Tauri's own deletion of `%APPDATA%` / `%LOCALAPPDATA%\com.voicebro.desktop` stays.
 - **Release script** `scripts\build-release.ps1`: checks that `tauri.conf.json` and
@@ -1447,8 +1710,19 @@ is built on it.
   ships the Opus text as its own `COPYING` and is listed with it in section 1), plus a line
   that `ring`'s own `LICENSE-*` files cover its BoringSSL code; (3) the installer: NSIS 3.13 and Tauri's
   `nsis_tauri_utils` 0.5.3 with texts kept in `scripts\notices\`, and the WebView2 Runtime
-  installer it downloads when the runtime is missing; (4) Vosk and the two catalog models,
-  downloaded after the OK; (5) the Codex CLI, needed but not shipped. Each native entry is
+  installer it downloads when the runtime is missing; (4) what is downloaded after the OK:
+  Vosk and its catalog models, and the Whisper mode's files (change `whisper-mode`):
+  whisper.cpp 1.9.5 (MIT), NVIDIA's CUDA 12.4 runtime under the CUDA EULA's redistributable
+  terms (only with the GPU runtime), each Whisper model with its license, Silero VAD 6.2.0
+  (MIT), sherpa-onnx 2.0.1 (Apache-2.0) with ONNX Runtime 1.28.2 (MIT), Supertonic 3 under
+  BigScience OpenRAIL-M with its use restrictions, piper-phonemize 1.5.9 (GPL-3.0, with
+  espeak-ng inside; not shipped, a separate download loaded at run time, its source
+  linked), each Piper voice with its data license, and Kokoro English (Apache-2.0); the
+  texts of whisper.cpp, Silero VAD, ONNX Runtime and Supertonic 3 are kept in
+  `scripts\notices\`. The script's lists of Whisper models and Piper voices must name
+  exactly the entries of `stt\catalog.rs` and `tts\catalog.rs`: an entry on one side only
+  stops it. (5) the Codex CLI, needed but not shipped. None of the Whisper mode's files is
+  in the installer or the zip. Each native entry is
   pinned to the crate version it was checked for: another version, or a missing kept text,
   stops the script with an error and no file is written. A Tauri CLI update can change the
   NSIS and plug-in versions; check them in `tauri-bundler`'s `nsis/mod.rs` when it does.
@@ -1499,6 +1773,302 @@ open to everyone.
   (`link_ended`: "the Codex account changed"); signing out keeps it. The join goes on in
   either case: only the voice is limited.
 
+### 4.12 Speech to text and the local voice (`stt/`, `tts/`)
+
+Change `whisper-mode`: the parts of the Whisper mode (`assistant.mode = whisper`).
+whisper.cpp turns the people's speech into text on this PC and the gate spots the phrases
+in it (4.3), Codex answers the questions as text turns (4.5), and a local voice speaks the
+answer. Nothing of it runs in the realtime mode. The model and the voice load at a `/join`
+in this mode and unload 0.5 s after the last leave (4.7). Every file is pinned by SHA-256,
+never ships with the app, and is downloaded through the shared asset store (4.4) only after
+the user agrees in the window (4.8).
+
+**Speech to text (`stt/`)**
+
+```rust
+/// A loaded speech-to-text model. One thread owns it.
+pub trait SpeechToText: Send {
+    fn transcribe(&mut self, audio: &[f32], options: &DecodeOptions) -> Result<RawTranscript, SttError>; // 16 kHz mono, -1..1
+}
+pub struct DecodeOptions { pub language: String, pub threads: u32, pub prompt: Option<String> }
+
+/// Loads a model: whisper.cpp, or a fake in tests. `Loaded` says which device it runs on.
+pub trait Engine: Send + Sync {
+    fn load(&self, request: &LoadRequest) -> Result<Loaded, SttError>;
+}
+
+/// Receives the transcripts: the registry, which routes them to the guild's gate.
+pub trait TranscriptSink: Send + Sync {
+    fn on_transcript(&self, transcript: Transcript);
+}
+```
+
+- **The runtime** (`whisper/ffi.rs`, `whisper/mod.rs`, design D8): whisper.cpp v1.9.5, from
+  the nightly tag `b5454` (the same commit). Two pinned zips:
+  - CPU, 8.9 MB: kept are `whisper.dll`, `ggml.dll`, `ggml-base.dll` and the
+    `ggml-cpu-*.dll` variants;
+  - NVIDIA GPU, CUDA 12.4, 685 MB: the same plus `ggml-cuda.dll`, `cudart64_12.dll`,
+    `cublas64_12.dll` and `cublasLt64_12.dll`, about 1.15 GB unpacked. It needs no
+    `nvrtc*.dll`.
+- **Loading.** `WhisperRuntime::load` loads `ggml-base.dll`, `ggml.dll` and `whisper.dll` by
+  full path (`LOAD_WITH_ALTERED_SEARCH_PATH`) and refuses a `whisper_version()` other than
+  `1.9.5`. It sends whisper.cpp's and ggml's log into the app log (`whisper_log_set`). It
+  then loads each `ggml-cpu-*` variant of the folder, asks its own `ggml_backend_score`,
+  and registers the best one with `ggml_backend_load` (alderlake on the test PC); the
+  runtime loads in about 0.01 s. The CUDA backend is added only when the GPU device is
+  chosen (`enable_cuda`): the three CUDA libraries are loaded first by full path, so ggml's
+  plain `LoadLibraryW` of `ggml-cuda.dll` binds to them, and on the CPU device no CUDA
+  context exists, even from the GPU folder. No process-wide `SetDllDirectoryW`: it would
+  also change where `onnxruntime.dll` is looked for.
+- **Once per process.** The runtime is loaded on first use from the GPU folder when it is
+  on disk (it holds the CPU set too), else from the CPU folder, and stays loaded: ggml's
+  backend registry is global, and CUDA's libraries are not made to be unloaded. Only the
+  model is freed after the last leave. When the CPU runtime was loaded in this run and the
+  GPU runtime is downloaded later, the GPU needs a restart of the app, and the fallback
+  reason says so.
+- **Struct mirrors.** `whisper_context_params`, `whisper_full_params` and
+  `whisper_vad_params` are `#[repr(C)]` mirrors of the v1.9.5 header, passed by value. The
+  pinned hash and the version check make them valid. The gated test
+  `whisper_runtime_when_enabled` (`VOICEBRO_WHISPER_DIR`) compares the library's greedy and
+  context defaults with the header's, field by field, and transcribes two corpus WAVs.
+  Raw pointers stay in `ffi.rs`; `Context` frees the model on drop.
+- **One context and its own state.** `Context::full` calls `whisper_full` on the context's
+  default state, because whisper.cpp applies its VAD only there (`whisper_full_with_state`
+  skips it). Only the transcriber thread touches the context; the header says it is not
+  thread-safe.
+- **The device** (`choose_device`, design D11). `whisper.device = gpu` loads with `use_gpu`
+  and flash attention when ggml registered a GPU device after `enable_cuda`. Otherwise the
+  model loads on the CPU, with the reason: "no CUDA device", "CUDA did not load: …", "the
+  GPU runtime is not on disk", or "the CPU runtime was loaded before the GPU runtime was
+  downloaded; restart VoiceBro to use the GPU". The log line is "Whisper device: gpu
+  requested, cpu used: <reason>", and the status carries the reason.
+- **Decoding** (`decode_params`, design D5): greedy (`best_of` 1), temperature 0 with
+  whisper.cpp's fallback steps, `no_context`, nothing printed, `suppress_nst`, the
+  no-speech threshold 0.6, the language (`auto` or the code), and as `initial_prompt` the
+  phrases in effect joined with commas, so they are spelled as the user typed them. The
+  VAD is on, with `ggml-silero-v6.2.0.bin` and whisper.cpp's VAD defaults. `n_threads` is
+  `whisper.threads`, or for 0 `auto_threads()`: half the logical processors, at most 16
+  (12 on the test PC, the fastest of 4, 6, 8 and 12 for every model).
+- **The catalog** (`catalog.rs`, design D9): thirteen models, each a single pinned `.bin`
+  (`AssetKind::File`) in `assets\<id>\`:
+  - multilingual: tiny, base and small (q8_0), medium (q5_0), large-v3-turbo (q5_0, q8_0
+    and full precision) and large-v3 (q5_0);
+  - English only: base.en and small.en (q8_0), distil-large-v3.5;
+  - Russian-tuned, from community uploaders: large-v3-turbo Russian (MIT) and large-v3
+    Podlodka (q5_0, Apache-2.0).
+
+  The ggerganov models are pinned to one Hugging Face commit, the others to their own
+  repositories' commits. Each entry has a group, a one-line note and a license. The Silero
+  VAD model (0.9 MB, MIT) comes with every setup. The default is `whisper-base-q8_0` on the
+  CPU. `LANGUAGES` lists the 100 language codes whisper.cpp knows.
+- **The user's own models** (`local.rs`): `whisper-models\` in the data folder. Every
+  `.bin` file there is the model `local:<file name>`, listed once at start
+  (`scan_local_models`, which creates the folder); other files are skipped with a log line,
+  and a name with a separator, a colon or `..` is no id. The app never writes there.
+- **The cutter** (`cutter.rs`, thread `voicebro-whisper-cut`, designs D2 and D3). Per guild
+  and SSRC it downsamples each 48 kHz stereo frame to 16 kHz mono with `StereoDownsampler`,
+  appends it, and counts the voiced frames (peak ≥ 700). On each `Tick`, a speaker absent
+  for 35 ticks (700 ms) ends the utterance:
+  - fewer than 12 voiced frames (240 ms) is noise, dropped and counted;
+  - otherwise 300 ms of silence is added, and the clip is padded to 1 s, since whisper.cpp
+    returns nothing for shorter clips.
+
+  The `Utterance` carries the instant of its last frame, the speech end of the latency
+  line. At 28 s an utterance is cut, and the rest starts a new one. Silence is counted in
+  receive ticks, so a late tick or a busy transcriber never ends an utterance early.
+- **The transcriber** (`transcriber.rs`, thread `voicebro-whisper`). A queue of 8
+  utterances; a ninth drops the oldest waiting, counted and logged. One at a time it runs
+  the model in the manager's slot, then `clean`:
+  - segments above the no-speech threshold, and segments that are only a note in brackets
+    ("[BLANK_AUDIO]", "(music)", "*…*"), are dropped;
+  - nothing left is noise;
+  - one word four or more times in a row is a hallucination, counted and logged without
+    the text.
+
+  The rest goes to the sink as a `Transcript`: the SSRC, the text, the language used or
+  detected, the instants, the audio length, the model and the device. What Whisper heard
+  is a detail line.
+- **Phrases** (`phrases.rs`, design D4). `decide(text, mode, active, phrases)` compares in
+  the matching form of 4.4 (`phrase_occurrences` on the utterance's words, so punctuation,
+  case and "ё" do not matter) and returns `Activate {phrase, question}` (the words after
+  the phrase as Whisper wrote them, if any), `Deactivate {phrase}`, `Question` or `Ignore`
+  (4.3). `whisper.phrases` is one pair of lists for every language; a list never set takes
+  the default phrases of the wake catalog entry for `whisper.language` (English for `auto`,
+  none for a language the catalog lacks). Whisper writes any word, so there is no
+  vocabulary check.
+- **`WhisperManager`** (`manager.rs`, designs D10, D12 and D15):
+  - *`configure(settings)`*, at start and on the `mode` and `whisper` parts. In the realtime
+    mode it unloads and is `Off`. In the Whisper mode it checks, in the calling thread,
+    which files the model needs on the device: the GPU runtime for `gpu`, for `cpu` the GPU
+    runtime when it is on disk and else the CPU runtime, the model and the VAD model.
+    Without the user's consent for that model and device it publishes `NeedsDownload
+    {items}`, and nothing is requested from the network.
+  - *The consent* (`download(model)`, refused unless the model is the selected one and
+    something waits) is held in memory only. A thread of its own downloads (`Downloading`,
+    `Installing`), then the state is `Idle`, or the model loads when the bot is in a
+    channel.
+  - *A model or device change* while loaded reloads in the background and swaps the model
+    in its slot; the old one serves until then. Language, threads and phrases apply to the
+    next utterance through the shared `DecodeOptions`. A newer `configure` makes an older
+    background job give way (a generation counter).
+  - *`prepare_join`* loads now, or refuses with `JOIN_NEEDS_DOWNLOADS` while files are
+    missing. *`release`* unloads 0.5 s later unless a join came first (a presence counter).
+  - *It implements `WakeFeed`*: frames and ticks go to the cutter's channel only while a
+    model is loaded, and a full channel counts a dropped frame. `clear_guild` drops what is
+    cut or queued for a guild.
+- **`Status.whisper`** (`WhisperStatus`, `AppEvent::Whisper`): the state (`off`,
+  `needs_download`, `downloading`, `installing`, `idle`, `loading`, `ready`, `error`), the
+  model, the device requested and in use, the fallback reason, the backend ("CUDA0: NVIDIA
+  GeForce RTX 5090 Laptop GPU", "CPU ggml-cpu-alderlake, 12 threads"), the language, the
+  load time, the phrases in effect and the counters: queued, transcribed, dropped late,
+  dropped as noise, dropped as hallucination, the last transcription time and audio length.
+
+**The local voice (`tts/`)**
+
+```rust
+/// A loaded voice. One thread owns it.
+pub trait Synth: Send {
+    fn sample_rate(&self) -> u32;
+    /// Mono audio in -1..1; `None` when `stop` turned true during the synthesis.
+    fn synthesize(&mut self, text: &str, language: Option<&str>, speed: f32, stop: &dyn Fn() -> bool)
+        -> Result<Option<Vec<f32>>, TtsError>;
+}
+
+/// Loads a voice by id: sherpa-onnx and the Windows voices, or a fake in tests.
+pub trait Loader: Send + Sync {
+    fn load(&self, voice: &str, assets_dir: &Path) -> Result<Box<dyn Synth>, TtsError>;
+}
+```
+
+- **sherpa-onnx** (`sherpa.rs`, design D9b): v2.0.1, the CPU build. Its 7.9 MB archive keeps
+  `sherpa-onnx-c-api.dll` and its `onnxruntime.dll` (1.28.2).
+  - `onnxruntime.dll` is loaded first, by full path, so the C API binds to it and not to
+    Windows 11's own older `System32\onnxruntime.dll`; the log names the path. The library
+    loads once per process and stays.
+  - The config structs are mirrored by hand from the v2.0.1 `c-api.h`; a test checks their
+    sizes and offsets.
+  - Only `SherpaOnnxOfflineTtsGenerateWithConfig` is used. Its progress callback returns 0
+    when the piece's epoch ended, which stops the synthesis.
+  - The provider is `cpu`, with threads per engine: Supertonic 2, Piper 4, Kokoro 8, the
+    fastest measured. The silence scale is 0.2.
+  - Supertonic 3 reads raw text with `extra = {"lang": …}`: the question's language when
+    Supertonic knows it, else `na`, which lets the model infer it. It runs 5 steps. Piper
+    and Kokoro get the phoneme codepoints of the text.
+- **piper-phonemize** (`phonemize.rs`): v1.5.9, GPL-3.0, a separate 0.4 MB download that only
+  Piper and Kokoro need, loaded at run time.
+  - `PiperPhonemizeInitialize` gets the first voice's `espeak-ng-data` once per process (every
+    voice archive carries the same data) and returns espeak's sample rate, 22050, on
+    success.
+  - `PiperPhonemizeText` gives the codepoints per sentence for the voice's espeak voice:
+    from the Piper voice's `.onnx.json`, `en-us` for Kokoro.
+  - espeak-ng keeps global state, so there is one call at a time in the process.
+- **The Windows voices** (`windows.rs`): `Windows.Media.SpeechSynthesis.SpeechSynthesizer`
+  through the `windows` crate 0.62, already in the lock file through Tauri. `AllVoices`
+  gives the list at run time, as `windows:<token>` (the last part of the voice's registry
+  id). A synthesis writes a WAV stream at the speaking rate of `tts.speed`, read by walking
+  its RIFF chunks; another rate than 16 kHz is resampled to it. No download.
+- **The catalog** (`catalog.rs`): the engine and the phonemizer as assets, and the voice
+  packs, each with its data license:
+  - Supertonic 3: one 129 MB archive, ten voices (F1–F5, M1–M5) in 31 languages, 44.1 kHz,
+    BigScience OpenRAIL-M;
+  - seventeen Piper voices in the ten wake catalog languages, 67–116 MB each, 22.05 kHz;
+    voices whose data is non-commercial or AGPL are left out;
+  - Kokoro English: 320 MB, eleven voices, 24 kHz, Apache-2.0.
+
+  Ids are `supertonic3:F1` … `supertonic3:M5`, `piper:<voice>`, `kokoro-en:<speaker>` and
+  `windows:<token>`. `assets_for(voice)` is the engine, the phonemizer for Piper and
+  Kokoro, and the pack. The default is `supertonic3:F1`: it needs no GPL component and
+  speaks every wake catalog language.
+- **What is read** (`text.rs`, design D7). A `SentenceSplitter` per turn cuts the streamed
+  text into pieces:
+  - at `.`, `!`, `?` or `…` before whitespace, or at a line break;
+  - the first piece of each agent message also at a comma, so the first audio comes sooner;
+  - a piece under 20 characters waits for the next one; a piece over 300 is cut at its last
+    comma, semicolon or space;
+  - `finish` gives the rest when the message completes.
+
+  `speakable` drops code blocks and table rows (the chat keeps them), reads `[text](url)`
+  as the text and a bare URL as its host, and removes heading, list, quote and emphasis
+  markers and emoji; an underscore inside a word stays.
+- **`SpeechPlayer`** (`player.rs`): the guild's output pulls one 20 ms frame from it per read,
+  as from the call's jitter buffer.
+  - It holds the synthesized 48 kHz audio, mono duplicated to stereo, and plays it in order.
+  - `voice_ahead` is true while it holds a frame with a peak of 256 or more, so sending
+    toward Discord starts before the voice plays (4.1).
+  - It reports the first played frame of each turn (`on_first_played`, the last step of the
+    latency line) and answers `own_latency`.
+  - `flush` raises its epoch and drops what it holds; audio of an older epoch is refused.
+    The output's own flush and mute call `reset`.
+- **`TtsManager`** (`manager.rs`):
+  - *`configure`* works like `WhisperManager`'s, for the voice's files (the engine, the
+    phonemizer, the pack; nothing for a Windows voice), with its own consent per voice.
+    The speed applies at once.
+  - *`prepare_join`* loads the voice and warms it up with one short synthesis; *`release`*
+    unloads it 0.5 s after the last leave.
+  - *One thread, `voicebro-tts`,* takes the queued pieces (epoch, text, language, player,
+    turn) in order. It waits while the player holds more than 20 s, skips a piece whose
+    epoch ended, synthesizes, resamples to 48 kHz (`Resampler`, 4.1) and pushes the audio.
+  - *`preview(voice, speed)`* loads a voice of its own for the call and reads
+    `preview_sentence`: a neutral sentence about the weather in London in the voice's
+    language (English for Supertonic). It returns WAV bytes for the window and never
+    reaches Discord.
+- **`Status.tts`** (`TtsStatus`, `AppEvent::Tts`): the state (as Whisper's), the voice, the
+  engine, the sample rate, the load time, the last answer's time from queueing its first
+  piece to its audio, and the pieces spoken and skipped.
+
+**Measured on the development PC** (Intel Core Ultra 9 275HX, 24 logical processors; RTX
+5090 Laptop GPU, 24 GB; design.md holds the full numbers). Whisper encodes a 30 s window,
+so a clip's time barely depends on its length:
+
+| Whisper model and device | Per 2–10 s utterance |
+|---|---|
+| tiny (q8_0), CPU, 12 threads | 0.23–0.28 s |
+| base (q8_0), CPU, 12 threads (loads in 0.08 s) | 0.54–0.56 s |
+| small (q8_0), CPU, 12 threads | 1.7–1.8 s |
+| medium (q5_0), CPU, 12 threads | 6.4–9.5 s |
+| large-v3-turbo (q5_0), CPU, 12 threads | 11.1–11.3 s |
+| large-v3-turbo (q5_0), GPU (loads in 0.44–0.55 s) | 115–140 ms |
+
+On the GPU, the CUDA 12.4 build runs on Blackwell through the driver's JIT of its PTX: the
+very first transcription after installing took 25 s, and the driver caches the result.
+large-v3-turbo (q5_0) then holds about 826 MB of video memory (573 MB of weights plus the
+KV and compute buffers, from ggml's log lines).
+
+| Voice, CPU | First sentence | Real-time factor |
+|---|---|---|
+| Supertonic 3, 2 threads (loads in about 0.5 s) | about 0.47 s | 0.13 |
+| Piper | 0.09–0.16 s | about 0.03 |
+| Kokoro English, 8 threads | about 0.6 s | 0.19 |
+| Windows | 5–20 ms per sentence | |
+
+Supertonic was slower with more than 2 threads. Whisper large-v3-turbo read back 89–92 % of
+the words of every voice's output, so Kokoro's espeak phonemes work under sherpa-onnx 2.0.
+
+**Tests and probes.** Unit tests without models cover the cutter's rules, the phrase
+decisions, the gate in the Whisper mode, the splitter and `speakable`, the resampler, the
+player's flush and epochs, both managers with fake engines and a fake fetch, and the text
+session against the fake Codex (4.5). The probes:
+
+- `probe whisper <wav> [--model id] [--device cpu|gpu] [--language xx] [--threads n]
+  [--prompt text]` prints the text, the language, the load time and the transcription
+  time; `--bench` repeats the clip to 2, 5 and 10 s and prints the median of three runs
+  each;
+- `probe whisper-corpus [--languages en,ru] [--no-prompt]` runs every WAV of the wake corpus
+  (`target\wake-corpus\<lang>\`) through Whisper and `decide` with that language's default
+  phrases, then three noise-only clips the probe makes (silence, steady noise of peak 300,
+  a game-like mix) with every language's phrases in the prompt, one line per file and a
+  total; a noise clip that gives a phrase fails it;
+- `probe tts <voice id> "<text>" <out.wav>` reads a sentence, and with `--bench` the fixed
+  sentences about Bangkok and London with 2, 4 and 8 threads: load, first audio, real-time
+  factor, WAVs in `target\tts-listen\`, and how much of each Whisper reads back.
+
+They take their files from `--assets`, `VOICEBRO_WHISPER_DIR` or
+`target\whisper-test\assets\` through the asset store.
+
+**Not tested:** a real Discord channel with two or more people and a game running, the
+Whisper mode's wake phrase in a channel, and the comparison of both modes' resource use.
+These are the user's tests.
+
 ## 5. Data flow
 
 ### Audio in
@@ -1509,9 +2079,15 @@ Discord UDP ─► songbird (DAVE, Opus decode; with opus-rs only DAVE, and the
    ─► owner filter (4.11: everyone, nobody, or the owner's account only; the
       others counted as ignored_frames and not decoded with opus-rs)
    ─► mix (i32 sum, clamp) ─► RelayGate.process_tick(mixed, per_speaker)
-        ├─► per speaker (frame, tick n), then Tick n ─► WakeFeed (bounded channel)
-        │      ─► wake worker thread ─► 16 k mono ─► recognizer ─► PhraseSpotter ─► gate.on_phrase
-        └─► if session active and not muted: Frame ─► AudioPorts.input (FIFO, 5 frames)
+        ├─► per speaker (frame, tick n), then Tick n ─► ModeFeed
+        │      ├─► realtime mode, wake word: WakeFeed (bounded channel)
+        │      │      ─► wake worker thread ─► 16 k mono ─► recognizer ─► PhraseSpotter ─► gate.on_phrase
+        │      └─► Whisper mode, both session modes: WhisperManager (bounded channel, 256)
+        │             ─► voicebro-whisper-cut: 16 k mono per speaker; ends after 35 silent ticks
+        │             ─► utterance queue (8, drop oldest) ─► voicebro-whisper: whisper_full + VAD
+        │             ─► noise guards ─► Transcript ─► RelayRegistry ─► gate.on_transcript
+        │                    ─► activation (+ question) │ deactivation │ question ─► session.user_text
+        └─► realtime mode, session active, not muted: Frame ─► AudioPorts.input (FIFO, 5 frames)
                ─► assistant (Codex: send thread, 20 ms clock, 2-frame prefill,
                   oldest frame or silence ─► downmix ─► Opus ─► RTP)
 ```
@@ -1521,8 +2097,11 @@ Discord UDP ─► songbird (DAVE, Opus decode; with opus-rs only DAVE, and the
 ```text
 Codex: remote track ─► RTP packets ─► JitterBuffer (by sequence number, target 3..8)
    ◄─ pulled as FrameProvider: decode, FEC, concealment, 20 ms frames
+Whisper mode: item/agentMessage/delta ─► SentenceSplitter ─► speakable() ─► TTS queue (epoch)
+   ─► voicebro-tts: synthesize ─► Resampler to 48 kHz ─► SpeechPlayer (at most 20 s ahead)
+   ◄─ pulled as FrameProvider: 20 ms frames in order
 stub assistant, tests ─► OutputHandle.push(Frame) ─► OutputQueue (jitter 3..8 frames)
-   both ─► PcmSource::fill_frame (flush epoch, mute, gain, earcons)
+   all ─► PcmSource::fill_frame (flush epoch, mute, gain, earcons)
       └─► sending wish (audible now or ahead; off after 500 ms with nothing audible)
           ─► watch ─► session task ─► songbird Driver::mute(!on)
    ─► OpusOutput: Opus with FEC (expected loss from Discord's reports) ◄─ songbird mixer thread
@@ -1552,6 +2131,19 @@ voice delegates a task ─► Codex agent: turn/started, items, turn/completed (
    ─► runtime answer handler: current assistant.post_answers ─► off: nothing
       │ else DiscordRuntime::post_answer: resolve channel, format, split, post (no mentions)
       └─► posted: log, clear `answers` error │ refused: `answers` error, log │ skipped: log
+
+Whisper mode:
+/join ─► prepare_join: Codex as above, then Whisper and the voice load
+   ─► files missing: "Not joined: The Whisper mode needs downloads: …" │ loaded: join, gate, CodexTextSession
+activation phrase in Whisper's text ─► gate: Waiting→Active, rising tone, call_context
+   ─► the words after the phrase, if any, as the first question
+question ─► CodexTextSession: flush the voice, turn/interrupt the running turn (if any)
+   ─► turn/start {text, additionalContext} ─► deltas spoken ─► turn/completed (completed)
+   ─► AgentAnswer {guild, task: question, last agent text} ─► AudioPorts.answers (as above)
+deactivation phrase / idle timeout / mute ─► session_wanted(false): voice flushed, turn interrupted
+assistant.mode changed ─► Vosk off or on, Whisper and the voice configured,
+   every gate rebuilt in the new mode on the same output; the bot stays in the channel
+last /leave ─► Whisper and the voice unload 0.5 s later
 ```
 
 ### Settings
@@ -1560,7 +2152,10 @@ voice delegates a task ─► Codex agent: turn/started, items, turn/completed (
 UI patch ─► command save_settings ─► Settings::validate ─► store ─► Runtime::apply(diff)
    ─► gates (mode, timeout, earcons, labels, deactivation phrases on a wake change), gains (shared atomics), wake engine (phrases, model),
       Codex (thread settings), Discord (restart on token change), hotkey (re-register);
-      answer posting: nothing (read by the answer handler at the next answer)
+      answer posting: nothing (read by the answer handler at the next answer);
+      mode: assistant, wake engine, Whisper, voice, every gate switched at once;
+      whisper: Whisper (model or device reloads in the background), gates (phrases);
+      tts: the voice (speed at once, another voice reloads in the background)
 ```
 
 ## 6. Contracts and constants
@@ -1598,6 +2193,19 @@ Values that are known to work. Change them only with a measurement or a corpus r
 | Default mute hotkey | `Ctrl+Alt+M`; empty disables |
 | Codex history cap | 100 items or 24 000 bytes |
 | Realtime version | `v3` (`v1`/`v2` are rejected) |
+| Whisper input | 16 kHz mono `f32`, from each speaker's 48 kHz stereo frames through `StereoDownsampler` |
+| Whisper utterance end | 35 receive ticks (700 ms) without a frame from that speaker |
+| Longest utterance | 28 s, then cut; the rest starts a new one |
+| Shortest utterance transcribed | 12 voiced frames (240 ms, peak ≥ 700); fewer is noise |
+| Utterance padding | 300 ms of silence after the speech, then at least 1 s in all |
+| Toward the cutter / utterance queue | 256 messages, a full channel drops and counts / 8 utterances, the oldest waiting dropped and counted |
+| Whisper decoding | greedy, temperature 0 with whisper.cpp's fallback, `no_context`, Silero VAD 6.2.0 with whisper.cpp's defaults, no-speech threshold 0.6; one word 4 times in a row is a hallucination |
+| Whisper CPU threads | `whisper.threads`; 0 is half the logical processors, at most 16 |
+| Whisper and voice unload | 0.5 s after the last leave; the runtime libraries stay loaded |
+| Voice pieces | end at `. ! ? …` before whitespace or at a line break, the first piece of a message also at a comma; at least 20, at most 300 characters |
+| Voice ahead of playback | at most 20 s |
+| Voice threads | Supertonic 3: 2, 5 steps; Piper: 4; Kokoro: 8 |
+| Voice resampling | polyphase windowed sinc, 32 taps per phase, Blackman, cut-off 0.92 of the lower Nyquist |
 
 ## 7. Observability
 
@@ -1611,7 +2219,7 @@ Values that are known to work. Change them only with a measurement or a corpus r
   verbose log (`diagnostics.verbose_log`, the `VERBOSE_LOG` flag the shell sets at start
   and on every settings change), writes everything. Detail lines are logged with
   `detail!("<area>", …)`, target `detail::<area>`: what the recognizer heard
-  (`detail::wake`), the per-turn latency (`detail::latency`), the call's buffer, track and
+  (`detail::wake`), what Whisper heard and dropped (`detail::whisper`), the per-turn latency (`detail::latency`), the call's buffer, track and
   end-of-call counters (`detail::rtc`), the delivery lines (`detail::delivery`), the
   speaker-to-SSRC mapping (`detail::receive`), the copy of each chat entry
   (`detail::chat`) and the text of each posted answer (`detail::answers`). The file rotates at 1 MB and keeps one archived file, about 2 MB.
@@ -1638,6 +2246,33 @@ Values that are known to work. Change them only with a measurement or a corpus r
   `since_phrase_end`. The gaps line comes once 10 s passed since a speaker's first bridged
   gap; the lag line when a message is processed more than 500 ms after the gate fed it;
   each at most once per 10 s.
+- **The Whisper mode** (change `whisper-mode`, design D15), at info level in every build and
+  without what people said:
+
+  ```text
+  Whisper runtime: whisper.cpp 1.9.5 from <folder>, CPU backend <ggml-cpu variant>
+  Whisper model <id> loaded on <cpu|gpu> in <ms> ms (<backend>)
+  Whisper device: gpu requested, cpu used: <reason>
+  Whisper model <id> unloaded
+  [whisper:<guild>] the transcriber is 8 utterances behind; dropped the oldest (<s> s, <n> so far)
+  [whisper:<guild>] dropped a repeated-word transcription as a hallucination (<n> so far)
+  [whisper] <ggml's buffer-size and device lines>
+  voice engine: sherpa-onnx from <folder>, onnxruntime <path>
+  phonemizer: piper-phonemize from <folder>, espeak-ng data <folder>
+  voice <id> loaded in <ms> ms, warmed up in <ms> ms (<rate> Hz)
+  voice <id> unloaded
+  gate <g>: activation phrase «<phrase>» in Whisper's text; the assistant is listening
+  gate <g>: deactivation phrase «<phrase>» from Whisper's text; the session ended, waiting for the activation phrase
+  guild <g>: the assistant switched to the <realtime|whisper> mode
+  ```
+
+  whisper.cpp's and ggml's own log goes through `whisper_log_set`: its errors and warnings
+  as warnings, the lines with sizes and devices ("CUDA0 model buffer size = … MiB", the KV
+  and compute buffers) at info, so the log shows what Whisper holds on the GPU; the rest at
+  debug. The app does not measure GPU memory itself. The private working set (Memory,
+  below) includes the in-process engines. What Whisper heard is a detail line, `[whisper:<g>]
+  ssrc <n> heard in <ms> ms (<s> s, <language>): <text>`, and so are the utterances dropped
+  as noise or as a hallucination.
 - Connection errors (Codex process, RTC call, Discord) surface in the status snapshot, not
   only in the log. The source `answers` (change `post-assistant-answers`) is set when
   Discord refuses an answer's post, or the chosen channel is gone, and cleared by the next
@@ -1685,6 +2320,19 @@ Values that are known to work. Change them only with a measurement or a corpus r
   "ChatGPT audio -> Discord relay handoff" is the time the answer waited in the jitter
   buffer. The last 50 measurements per guild, with their local time, are
   `Status.latency`.
+
+  In the Whisper mode the output reports nothing (`own_latency`, 4.1). The text session
+  measures each answer itself (`WhisperTiming`) and logs one line when its first voice
+  frame plays; the report, of kind `whisper` with its four timings, joins `Status.latency`:
+
+  ```text
+  [latency:<guild>] whisper turn <n>: speech end -> text <ms> ms (<s> s of audio, <model>, <device>); text -> Codex first words <ms> ms; first words -> voice <ms> ms; speech end -> voice <ms> ms
+  ```
+
+  "Speech end" is when the gate handed over the utterance's last frame, so "speech end ->
+  text" holds the 700 ms that end the utterance, the wait in the queue and the
+  transcription. "Codex first words" is the turn's first `item/agentMessage/delta`; "voice"
+  is the first played frame of the turn's voice. An interrupted turn is not measured.
 - **Memory** is the private working set, the number Task Manager shows as "Memory", and
   only that is compared or reported. `apps/desktop/src/memory.rs` walks the process tree
   from the app's id with a ToolHelp snapshot (the app, its `msedgewebview2.exe`
@@ -1708,8 +2356,12 @@ Values that are known to work. Change them only with a measurement or a corpus r
 - Errors: `thiserror` enums per module in the core; `String` only at the Tauri boundary.
 - No panics on the audio paths; a bad frame is dropped and counted.
 - Bounded queues everywhere, with an explicit overflow policy (drop oldest) and a counter.
-- Locks are never held across an `await` or across FFI calls into Vosk.
-- FFI (Vosk) is wrapped in safe types with `Drop`; raw pointers never leave `wake/vosk/`.
+- Locks are never held across an `await` or across FFI calls into Vosk. The Whisper model
+  and the voice sit in a mutex that only their own thread holds during a call; a reload or
+  an unload takes it between calls.
+- FFI (Vosk, whisper.cpp and ggml, sherpa-onnx, piper-phonemize) is wrapped in safe types
+  with `Drop`; raw pointers never leave `wake/vosk/`, `stt/whisper/ffi.rs`, `tts/sherpa.rs`
+  and `tts/phonemize.rs`.
 - Release builds optimize for speed (`opt-level = 3`, thin LTO, one codegen unit, symbols
   stripped), not for size: the hot paths are FIR filters, mixing and Opus, and the binary
   is small next to the model and the Codex process anyway. They unwind on panic
@@ -1727,7 +2379,11 @@ Values that are known to work. Change them only with a measurement or a corpus r
 |---|---|
 | A wake engine (sherpa-onnx, a KWS) | `wake/<engine>/` implementing `WakeEngine`, `LoadedModel`, `SpeechRecognizer`; catalog entries; nothing in `PhraseSpotter` or the gate |
 | A model or language | A `ModelEntry` in the catalog (URL, SHA-256, license) |
-| An assistant or an auth path (API key, another provider) | `assistant/<engine>/` implementing `Assistant` and `AssistantSession` over `AudioPorts`, sending its agent's final answers as `AgentAnswer` through `AudioPorts.answers` to have them posted; nothing in the gate or Discord |
+| A Whisper model | A `WhisperModelEntry` in `stt/catalog.rs` (a single-file `Asset` with URL, SHA-256 and size, the group, the note, the license) and its line in `scripts\third-party-notices.ps1` |
+| A voice | A `VoiceEntry` in `tts/catalog.rs`, with its `VoicePack` (URL, SHA-256, data license, sample rate, whether it needs the phonemizer); a Piper voice also in `scripts\third-party-notices.ps1` |
+| A speech-to-text engine | `stt::manager::Engine` loading a `SpeechToText`; nothing in the cutter, the transcriber, the phrases or the gate |
+| A voice engine | A `Synth` returned by `tts::manager::Loader`, its files as assets; nothing in the splitter, the player or the text session |
+| An assistant or an auth path (API key, another provider) | `assistant/<engine>/` implementing `Assistant` and `AssistantSession` over `AudioPorts` (with `user_text` and `working` for the Whisper mode's questions in words), sending its agent's final answers as `AgentAnswer` through `AudioPorts.answers` to have them posted; nothing in the gate or Discord |
 | A setting | One field in `Settings`, its validation, its `apply` branch, its UI control |
 | A UI | Anything that can call the commands and subscribe to the event; the core is unchanged |
 
@@ -1735,5 +2391,6 @@ Values that are known to work. Change them only with a measurement or a corpus r
 
 All of VoiceBro's own code is written by the project's author; no one else's code is copied
 into it (the libraries it is built with are dependencies, listed in the README). Every module
-(the Codex assistant, the wake engine, the session gate, the audio core, the Discord adapter,
-the member panel, the settings, the desktop shell and the UI) follows this document.
+(the Codex assistant, the wake engine, speech to text and the local voice, the session gate,
+the audio core, the Discord adapter, the member panel, the settings, the desktop shell and
+the UI) follows this document.

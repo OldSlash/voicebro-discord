@@ -29,6 +29,7 @@
     RMDir /r "$INSTDIR\logs"
     RMDir /r "$INSTDIR\assets"
     RMDir /r "$INSTDIR\models"
+    RMDir /r "$INSTDIR\whisper-models"
     RMDir /r "$INSTDIR\codex-workspace"
     RMDir /r "$INSTDIR\webview-data"
     Delete "$INSTDIR\settings.json"

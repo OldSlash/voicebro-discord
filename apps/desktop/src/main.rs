@@ -264,6 +264,82 @@ fn open_assets_folder(state: State<'_, AppState>) -> Result<String, String> {
     open_folder(&dir)
 }
 
+/// The Whisper models for the Whisper tab: the catalog with whether each is downloaded,
+/// then the user's own models in `whisper-models` (change `whisper-mode`).
+#[tauri::command]
+fn whisper_models(
+    state: State<'_, AppState>,
+) -> Vec<voicebro_core::stt::manager::WhisperModelInfo> {
+    state.runtime.whisper().models()
+}
+
+/// The voices: the catalog with what is downloaded, then the voices Windows has.
+#[tauri::command]
+fn tts_voices(state: State<'_, AppState>) -> Vec<voicebro_core::tts::manager::VoiceInfo> {
+    state.runtime.tts().voices()
+}
+
+/// What choosing `model` on `device` and `voice` would download, for the install dialog's
+/// Whisper subject: Whisper's files first, then the voice's.
+#[tauri::command]
+fn whisper_requirements(
+    state: State<'_, AppState>,
+    model: String,
+    device: String,
+    voice: String,
+) -> Result<Vec<voicebro_core::wake::DownloadItem>, String> {
+    let device = voicebro_core::settings::WhisperDevice::try_from(device)?;
+    let mut items = state.runtime.whisper().requirements(&model, device)?;
+    for item in state.runtime.tts().requirements(&voice)? {
+        if !items.iter().any(|known| known.file == item.file) {
+            items.push(item);
+        }
+    }
+    Ok(items)
+}
+
+/// The user agreed to download what the selected Whisper model and voice need.
+#[tauri::command]
+fn whisper_download(
+    state: State<'_, AppState>,
+    model: String,
+    voice: String,
+) -> Result<(), String> {
+    let heard = state.runtime.whisper().download(&model);
+    let spoken = state.runtime.tts().download(&voice);
+    match (heard, spoken) {
+        (Err(heard), Err(spoken)) => Err(format!("{heard}; {spoken}")),
+        _ => Ok(()),
+    }
+}
+
+/// Preview: the voice reads its sample sentence; the WAV plays in the window only.
+#[tauri::command]
+async fn tts_preview(
+    state: State<'_, AppState>,
+    voice: String,
+    speed: f32,
+) -> Result<Vec<u8>, String> {
+    let tts = state.runtime.tts().clone();
+    tauri::async_runtime::spawn_blocking(move || tts.preview(&voice, speed))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// The languages Whisper knows, as (code, English name), in whisper.cpp's order; the window
+/// lists the wake catalog's ten first.
+#[tauri::command]
+fn whisper_languages() -> Vec<(&'static str, &'static str)> {
+    voicebro_core::stt::catalog::LANGUAGES.to_vec()
+}
+
+/// Opens `whisper-models`, where the user puts their own ggml Whisper models.
+#[tauri::command]
+fn open_whisper_models_folder(state: State<'_, AppState>) -> Result<String, String> {
+    let dir = state.runtime.whisper().models_dir().to_path_buf();
+    open_folder(&dir)
+}
+
 #[tauri::command]
 fn chat_log(state: State<'_, AppState>) -> Vec<ChatEntry> {
     state
@@ -750,6 +826,13 @@ fn main() {
             wake_models,
             wake_download,
             wake_requirements,
+            whisper_models,
+            tts_voices,
+            whisper_requirements,
+            whisper_download,
+            tts_preview,
+            whisper_languages,
+            open_whisper_models_folder,
             chat_log,
             log_history,
             system_status,

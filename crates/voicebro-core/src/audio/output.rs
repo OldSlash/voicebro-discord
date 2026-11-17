@@ -50,6 +50,11 @@ pub trait FrameProvider: Send + Sync {
     fn voice_ahead(&self) -> bool {
         false
     }
+    /// The provider measures its own turns (the Whisper mode's voice, change
+    /// `whisper-mode`): the output then tells the latency tracker nothing.
+    fn own_latency(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -385,7 +390,9 @@ impl PcmSource {
                 inner.counters.played += 1;
                 if self.pulled.peak() >= SIGNAL_PEAK {
                     inner.last_signal = Some(Instant::now());
-                    note_answer(&inner, provider.arrival(), &mut self.latency_lines);
+                    if !provider.own_latency() {
+                        note_answer(&inner, provider.arrival(), &mut self.latency_lines);
+                    }
                     voiced = true;
                 }
                 from_provider = true;

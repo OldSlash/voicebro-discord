@@ -16,7 +16,9 @@ use crate::secrets::{SecretError, SecretKey, SecretStore};
 use crate::settings::store::{SettingsStore, StoreError};
 use crate::settings::{AssistantSettings, PostAnswers, SessionMode, Settings, ValidationError};
 use crate::status::{ConnectionErrors, HotkeyStatus, SecretStatus, Status};
-use crate::wake::WakeManager;
+use crate::stt::manager::WhisperManager;
+use crate::tts::manager::TtsManager;
+use crate::wake::{WakeFeed, WakeManager};
 use serde_json::Value;
 use serenity::all::GuildId;
 use std::collections::HashSet;
@@ -52,6 +54,9 @@ impl ErrorReporter for ConnectionErrors {
 struct GateHost {
     registry: RelayRegistry,
     wake: WakeManager,
+    /// Whisper and the local voice of the Whisper mode (change `whisper-mode`).
+    whisper: WhisperManager,
+    tts: TtsManager,
     assistant: Arc<dyn Assistant>,
     events: EventBus,
     errors: Arc<ConnectionErrors>,
@@ -75,6 +80,25 @@ fn signed_in_account(status: &crate::assistant::AssistantStatus) -> Option<Strin
     })
 }
 
+/// The gates' feed: the receive path's frames reach Vosk in realtime mode and Whisper in
+/// the Whisper mode; each takes them only while it runs.
+struct ModeFeed {
+    wake: WakeManager,
+    whisper: WhisperManager,
+}
+
+impl WakeFeed for ModeFeed {
+    fn feed(&self, guild: u64, ssrc: u32, tick: u64, frame: &[i16]) {
+        self.wake.feed(guild, ssrc, tick, frame);
+        self.whisper.feed(guild, ssrc, tick, frame);
+    }
+
+    fn tick(&self, guild: u64, tick: u64) {
+        self.wake.tick(guild, tick);
+        self.whisper.tick(guild, tick);
+    }
+}
+
 impl VoiceHost for GateHost {
     fn owner_filter(&self) -> u64 {
         self.owner.filter()
@@ -95,7 +119,14 @@ impl VoiceHost for GateHost {
 
     fn prepare_join(&self, guild: u64) -> JoinPreparation<'_> {
         Box::pin(async move {
-            match self.assistant.prepare(guild).await {
+            let prepared = match self.assistant.prepare(guild).await {
+                Ok(()) => self
+                    .prepare_whisper()
+                    .await
+                    .map_err(crate::assistant::AssistantError::Unavailable),
+                Err(error) => Err(error),
+            };
+            match prepared {
                 Ok(()) => {
                     self.errors.report("assistant", None);
                     // The account was just read: a link made with another one ends here,
@@ -148,11 +179,77 @@ impl VoiceHost for GateHost {
                 .clone(),
             self.registry.is_muted(),
             self.events.clone(),
-            Some(Arc::new(self.wake.clone())),
+            Some(Arc::new(ModeFeed {
+                wake: self.wake.clone(),
+                whisper: self.whisper.clone(),
+            })),
             Some(Arc::clone(&self.errors) as Arc<dyn ErrorReporter>),
         );
         output.use_latency(gate.latency(), guild);
         self.registry.register(Arc::clone(&gate));
+        self.attach(guild, &gate, receiver, output);
+    }
+
+    fn on_leave(&self, guild: u64) {
+        self.assistant.detach(guild);
+        self.whisper.clear_guild(guild);
+        if let Some(gate) = self.registry.unregister(guild) {
+            gate.output().flush();
+        }
+        // Whisper and the voice unload 0.5 s after the last leave, as Codex stops.
+        if self.registry.all().is_empty() {
+            self.whisper.release();
+            self.tts.release();
+        }
+    }
+
+    fn assistant_state(&self, guild: u64) -> AssistantState {
+        let Some(gate) = self.registry.get(guild) else {
+            return AssistantState::Off;
+        };
+        let status = gate.status();
+        if status.muted {
+            AssistantState::Muted
+        } else if status.mode == SessionMode::WakeWord && !status.active {
+            AssistantState::WaitingForWakeWord
+        } else {
+            AssistantState::Listening
+        }
+    }
+
+    fn assistant_mode(&self) -> &'static str {
+        if self
+            .gate_settings
+            .lock()
+            .expect("gate settings lock")
+            .whisper
+        {
+            crate::discord::MODE_WHISPER
+        } else {
+            crate::discord::MODE_REALTIME
+        }
+    }
+
+    fn toggle_mute(&self) -> bool {
+        let muted = self.registry.toggle_muted();
+        self.after_mute_change(muted);
+        muted
+    }
+
+    fn is_muted(&self) -> bool {
+        self.registry.is_muted()
+    }
+}
+
+impl GateHost {
+    /// Attaches the assistant to a gate, in the mode the settings name now.
+    fn attach(
+        &self,
+        guild: u64,
+        gate: &Arc<RelayGate>,
+        receiver: crate::audio::FrameReceiver,
+        output: OutputHandle,
+    ) {
         match self.assistant.attach(
             guild,
             AudioPorts {
@@ -173,39 +270,76 @@ impl VoiceHost for GateHost {
         }
     }
 
-    fn on_leave(&self, guild: u64) {
-        self.assistant.detach(guild);
-        if let Some(gate) = self.registry.unregister(guild) {
-            gate.output().flush();
+    /// In the Whisper mode a join also loads Whisper and the voice (design D12), off the
+    /// async threads; missing files refuse it with the reply that sends the user to the
+    /// Whisper tab.
+    async fn prepare_whisper(&self) -> Result<(), String> {
+        let (whisper, tts) = (self.whisper.clone(), self.tts.clone());
+        let result = tokio::task::spawn_blocking(move || {
+            let heard = whisper.prepare_join();
+            let spoken = tts.prepare_join();
+            heard.and(spoken)
+        })
+        .await
+        .map_err(|error| format!("the Whisper mode did not load: {error}"))
+        .and_then(|result| result);
+        // A refused join holds nothing: a download agreed later loads only for a join.
+        if result.is_err() && self.registry.all().is_empty() {
+            self.whisper.release();
+            self.tts.release();
+        }
+        result
+    }
+
+    /// The mode changed while the bot is in voice channels (design D1): every session ends
+    /// with the falling tone, the assistant is attached again in the new mode to a new gate
+    /// on the same output, and the bot stays in the channel.
+    fn switch_mode(&self, settings: &Settings) {
+        let gate_settings = GateSettings::from_settings(settings);
+        *self.gate_settings.lock().expect("gate settings lock") = gate_settings.clone();
+        for old in self.registry.all() {
+            let guild = old.guild();
+            self.assistant.detach(guild);
+            old.output().flush();
+            if old.status().active && settings.session.earcons {
+                old.output().play_earcon(
+                    crate::audio::Earcon::Deactivate,
+                    settings.session.earcon_volume,
+                );
+            }
+            let output = old.output().clone();
+            let (sender, receiver) = frame_channel(INPUT_CAPACITY);
+            let gate = RelayGate::new(
+                guild,
+                sender,
+                Arc::clone(&self.registry.gains().input),
+                output.clone(),
+                gate_settings.clone(),
+                self.registry.is_muted(),
+                self.events.clone(),
+                Some(Arc::new(ModeFeed {
+                    wake: self.wake.clone(),
+                    whisper: self.whisper.clone(),
+                })),
+                Some(Arc::clone(&self.errors) as Arc<dyn ErrorReporter>),
+            );
+            for (ssrc, name) in old.speaker_names() {
+                gate.set_speaker_name(ssrc, &name);
+            }
+            gate.set_participants(&old.participants());
+            output.use_latency(gate.latency(), guild);
+            self.registry.register(Arc::clone(&gate));
+            self.attach(guild, &gate, receiver, output);
+            self.events.log(format!(
+                "guild {guild}: the assistant switched to the {} mode",
+                settings.assistant.mode.name()
+            ));
+        }
+        if let Some(discord) = self.discord.lock().expect("discord lock").as_ref() {
+            discord.mark_panels_dirty();
         }
     }
 
-    fn assistant_state(&self, guild: u64) -> AssistantState {
-        let Some(gate) = self.registry.get(guild) else {
-            return AssistantState::Off;
-        };
-        let status = gate.status();
-        if status.muted {
-            AssistantState::Muted
-        } else if status.mode == SessionMode::WakeWord && !status.active {
-            AssistantState::WaitingForWakeWord
-        } else {
-            AssistantState::Listening
-        }
-    }
-
-    fn toggle_mute(&self) -> bool {
-        let muted = self.registry.toggle_muted();
-        self.after_mute_change(muted);
-        muted
-    }
-
-    fn is_muted(&self) -> bool {
-        self.registry.is_muted()
-    }
-}
-
-impl GateHost {
     fn after_mute_change(&self, muted: bool) {
         log::info!("mute {}", if muted { "on" } else { "off" });
         self.events.publish(AppEvent::MuteChanged { muted });
@@ -439,6 +573,14 @@ impl Runtime {
         assistant: Arc<dyn Assistant>,
     ) -> Self {
         let registry = RelayRegistry::default();
+        let whisper = WhisperManager::new(
+            crate::paths::assets_dir(&data_dir),
+            crate::paths::whisper_models_dir(&data_dir),
+            events.clone(),
+            Arc::new(registry.clone()),
+        );
+        let tts = TtsManager::new(crate::paths::assets_dir(&data_dir), events.clone());
+        assistant.use_tts(tts.clone());
         let wake = WakeManager::with_default_engines(
             crate::paths::assets_dir(&data_dir),
             crate::paths::models_dir(&data_dir),
@@ -454,6 +596,8 @@ impl Runtime {
         let host = Arc::new(GateHost {
             registry,
             wake: wake.clone(),
+            whisper,
+            tts,
             assistant: Arc::clone(&assistant),
             events: events.clone(),
             errors: Arc::clone(&errors),
@@ -545,9 +689,14 @@ impl Runtime {
                 }
             });
         }
-        crate::wake::assets::cleanup_partial(&crate::paths::assets_dir(&self.data_dir));
+        crate::assets::cleanup_partial(&crate::paths::assets_dir(&self.data_dir));
         self.wake.scan_local_models();
         self.wake.configure(&self.settings());
+        // Whisper and the voice report missing files now, never download them, and load
+        // nothing until a join in the Whisper mode.
+        self.host.whisper.scan_local_models();
+        self.host.whisper.configure(&self.settings());
+        self.host.tts.configure(&self.settings());
         // Nothing of the assistant runs yet: its process starts at the first /join.
         self.assistant.configure(&self.settings());
         // An opus-rs panic on a join makes the bot leave that channel (design D5).
@@ -602,6 +751,10 @@ impl Runtime {
     /// Stops the wake engine and Discord; waits for Discord so the process can exit cleanly.
     pub fn shutdown(&self) {
         self.wake.stop();
+        let mut off = self.settings();
+        off.assistant.mode = crate::settings::AssistantMode::Realtime;
+        self.host.whisper.configure(&off);
+        self.host.tts.configure(&off);
         self.assistant.stop();
         let discord = Arc::clone(&self.discord);
         if discord.is_running() {
@@ -628,6 +781,14 @@ impl Runtime {
         &self.wake
     }
 
+    pub fn whisper(&self) -> &WhisperManager {
+        &self.host.whisper
+    }
+
+    pub fn tts(&self) -> &TtsManager {
+        &self.host.tts
+    }
+
     pub fn assistant(&self) -> &Arc<dyn Assistant> {
         &self.assistant
     }
@@ -650,6 +811,8 @@ impl Runtime {
         let settings = self.settings();
         let mut wake_dirty = false;
         let mut gates_dirty = false;
+        let mut whisper_dirty = false;
+        let mut mode_switched = false;
         for section in changed {
             log::info!("settings: {section} changed");
             match *section {
@@ -682,6 +845,19 @@ impl Runtime {
                     self.assistant.configure(&settings);
                 }
                 "codex" => self.assistant.configure(&settings),
+                // Change `whisper-mode`: the mode switches at once (D1); Whisper and the
+                // voice reload in the background, phrases apply from the next utterance.
+                "mode" => {
+                    mode_switched = true;
+                    wake_dirty = true;
+                    whisper_dirty = true;
+                    self.assistant.configure(&settings);
+                }
+                "whisper" => {
+                    whisper_dirty = true;
+                    gates_dirty = true;
+                }
+                "tts" => self.host.tts.configure(&settings),
                 // Read by the answer handler when each answer arrives: nothing restarts.
                 "answers" => {
                     let channel = match settings.assistant.answers_channel_id() {
@@ -730,6 +906,23 @@ impl Runtime {
         }
         if wake_dirty {
             self.wake.configure(&settings);
+        }
+        if whisper_dirty {
+            self.host.whisper.configure(&settings);
+        }
+        if mode_switched {
+            self.host.tts.configure(&settings);
+            self.host.switch_mode(&settings);
+            if settings.assistant.mode == crate::settings::AssistantMode::Whisper
+                && !self.host.registry.all().is_empty()
+            {
+                // In a channel already: load now; missing files wait for the window's OK.
+                let (whisper, tts) = (self.host.whisper.clone(), self.host.tts.clone());
+                std::thread::spawn(move || {
+                    let _ = whisper.prepare_join();
+                    let _ = tts.prepare_join();
+                });
+            }
         }
     }
 
@@ -875,6 +1068,8 @@ impl Runtime {
             connection_errors: self.errors.snapshot(),
             discord: self.discord.status(),
             wake: self.wake.status(),
+            whisper: self.host.whisper.status(),
+            tts: self.host.tts.status(),
             gates: self.host.registry.statuses(),
             audio: self.host.registry.gains().levels(),
             latency: self.host.registry.latency_reports(),
@@ -1819,6 +2014,99 @@ mod tests {
             events.try_recv().is_err(),
             "no event when the state did not change"
         );
+    }
+
+    /// Scenario "Switched to Whisper while in a channel" (change `whisper-mode`, task 8.2):
+    /// the session ends, the assistant is attached again on a new gate on the same output,
+    /// the bot stays, Vosk is off, and the missing Whisper files wait for the window.
+    #[test]
+    fn switching_the_mode_in_a_channel_replaces_the_session_and_keeps_the_bot() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({ "session": { "mode": "always" } }))
+            .unwrap();
+        let (output, _source) = output_pair();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.on_join(42, output.clone());
+        let old = runtime.host.registry.get(42).unwrap();
+        assert_eq!(host.assistant_mode(), crate::discord::MODE_REALTIME);
+
+        let changed = runtime
+            .save_settings(&json!({ "assistant": { "mode": "whisper" } }))
+            .unwrap();
+        assert_eq!(
+            changed.assistant.mode,
+            crate::settings::AssistantMode::Whisper
+        );
+        let new = runtime
+            .host
+            .registry
+            .get(42)
+            .expect("the bot stays in the channel");
+        assert!(!Arc::ptr_eq(&old, &new), "a new gate in the new mode");
+        assert_eq!(host.assistant_mode(), crate::discord::MODE_WHISPER);
+        let status = runtime.status();
+        assert_eq!(status.assistant.calls[0].guild_id, "42", "attached again");
+        assert_eq!(
+            status.wake.state,
+            crate::wake::WakeState::Off,
+            "Vosk is off"
+        );
+        assert!(
+            matches!(
+                status.whisper.state,
+                crate::stt::manager::WhisperState::NeedsDownload { .. }
+            ),
+            "{:?}",
+            status.whisper.state
+        );
+        assert!(matches!(
+            status.tts.state,
+            crate::tts::manager::TtsState::NeedsDownload { .. }
+        ));
+
+        runtime
+            .save_settings(&json!({ "assistant": { "mode": "realtime" } }))
+            .unwrap();
+        assert_eq!(host.assistant_mode(), crate::discord::MODE_REALTIME);
+        assert_eq!(
+            runtime.status().whisper.state,
+            crate::stt::manager::WhisperState::Off
+        );
+        assert_eq!(runtime.host.registry.all().len(), 1);
+        host.on_leave(42);
+        runtime.shutdown();
+    }
+
+    /// Scenario "Join prepares the assistant" in the Whisper mode with files missing: the
+    /// join is refused with the reply that sends the user to the Whisper tab.
+    #[test]
+    fn a_join_in_the_whisper_mode_without_its_files_is_refused() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({ "assistant": { "mode": "whisper" } }))
+            .unwrap();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        let refused = tokio_rt.block_on(host.prepare_join(42));
+        assert_eq!(
+            refused,
+            Err(crate::stt::manager::JOIN_NEEDS_DOWNLOADS.to_owned())
+        );
+        assert!(
+            !dir.path().join("assets").join("whisper-cpu-1.9.5").exists(),
+            "nothing was downloaded"
+        );
+        runtime
+            .save_settings(&json!({ "assistant": { "mode": "realtime" } }))
+            .unwrap();
+        assert_eq!(tokio_rt.block_on(host.prepare_join(42)), Ok(()));
+        runtime.shutdown();
     }
 
     #[test]

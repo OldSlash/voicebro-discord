@@ -12,6 +12,11 @@
 // default, `interrupted`, or `failed` with an error). `fake/transcript` (params `{threadId,
 // method, params}`) sends that notification with `threadId` added to its params, as the
 // realtime call's transcript notifications arrive.
+// Text turns (change `whisper-mode`): `turn/start` answers with the turn, then streams an
+// interim agent message and the final one as `item/agentMessage/delta` pieces, each item
+// completed, and `turn/completed`; `turn/interrupt` ends the running turn as `interrupted`.
+// `fake/turnDelay` (params `{ms}`) waits that long between the pieces; `fake/lastTurnStart`
+// returns the params of the last `turn/start`.
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
   console.log("codex-cli 0.0.0-fake");
@@ -60,6 +65,39 @@ const delegate = (threadId, outcome) => {
   const turn = { id: turnId, items: [], status: outcome, durationMs: 4200 };
   if (outcome === "failed") turn.error = { message: "the fake agent failed" };
   notify("turn/completed", { threadId, turn });
+};
+
+let turnDelay = 0;
+let lastTurnStart = null;
+const running = new Map();
+// A text turn: the question echoed in the answer, streamed in pieces.
+const textTurn = (threadId, turnId, question) => {
+  const steps = [];
+  const message = (n, text, phase) => {
+    const itemId = `${turnId}-${n}`;
+    const pieces = text.match(/.{1,12}/gs) || [];
+    for (const delta of pieces) {
+      steps.push(() => notify("item/agentMessage/delta", { threadId, turnId, itemId, delta }));
+    }
+    steps.push(() =>
+      notify("item/completed", { threadId, turnId, item: { id: itemId, type: "agentMessage", text, phase } }));
+  };
+  steps.push(() => notify("turn/started", { threadId, turn: { id: turnId, items: [], status: "inProgress" } }));
+  message(1, "Let me check that.", "commentary");
+  message(2, `You asked: ${question} In Bangkok it is sunny, 33 degrees, with rain later. In London it is 9 degrees.`, "final_answer");
+  steps.push(() => {
+    running.delete(threadId);
+    notify("turn/completed", { threadId, turn: { id: turnId, items: [], status: "completed", durationMs: 1200 } });
+  });
+  const state = { turnId, timer: null };
+  running.set(threadId, state);
+  const next = () => {
+    const step = steps.shift();
+    if (!step || running.get(threadId) !== state) return;
+    step();
+    if (steps.length) state.timer = setTimeout(next, turnDelay);
+  };
+  state.timer = setTimeout(next, 0);
 };
 
 const lines = require("readline").createInterface({ input: process.stdin });
@@ -120,6 +158,34 @@ lines.on("line", (line) => {
       delegate(params.threadId, params.outcome || "completed");
       break;
     }
+    case "turn/start": {
+      const params = message.params || {};
+      lastTurnStart = params;
+      turns += 1;
+      const turnId = `fake-turn-${turns}`;
+      const question = ((params.input || [])[0] || {}).text || "";
+      reply(message.id, { turn: { id: turnId, items: [], status: "inProgress" } });
+      textTurn(params.threadId, turnId, question);
+      break;
+    }
+    case "turn/interrupt": {
+      const params = message.params || {};
+      const state = running.get(params.threadId);
+      reply(message.id, {});
+      if (state && state.turnId === params.turnId) {
+        clearTimeout(state.timer);
+        running.delete(params.threadId);
+        notify("turn/completed", { threadId: params.threadId, turn: { id: state.turnId, items: [], status: "interrupted" } });
+      }
+      break;
+    }
+    case "fake/turnDelay":
+      turnDelay = (message.params || {}).ms || 0;
+      reply(message.id, {});
+      break;
+    case "fake/lastTurnStart":
+      reply(message.id, lastTurnStart);
+      break;
     case "fake/transcript": {
       const params = message.params || {};
       notify(params.method, { ...(params.params || {}), threadId: params.threadId });

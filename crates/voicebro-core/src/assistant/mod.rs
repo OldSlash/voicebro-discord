@@ -204,6 +204,8 @@ pub trait Assistant: Send + Sync {
     fn configure(&self, _settings: &Settings) {}
     /// Stops every call and the engine's process. Called at app exit.
     fn stop(&self) {}
+    /// The local voice the Whisper mode speaks with (change `whisper-mode`).
+    fn use_tts(&self, _tts: crate::tts::manager::TtsManager) {}
 }
 
 /// What the gate talks to. One per guild.
@@ -218,6 +220,43 @@ pub trait AssistantSession: Send + Sync {
     fn call_context(&self, caller: Option<String>, participants: &[String]);
     /// The names of the people now talking, whenever that set changes.
     fn speakers_changed(&self, names: &[String]);
+    /// A question in words (the Whisper mode, change `whisper-mode`). A realtime session
+    /// hears audio instead and ignores it.
+    fn user_text(&self, _question: UserText) {}
+    /// The assistant is still working on an answer (a turn runs or its voice plays), so the
+    /// idle timeout does not end the session.
+    fn working(&self) -> bool {
+        false
+    }
+}
+
+/// A question Whisper heard, with what the latency line needs (change `whisper-mode`,
+/// design D15).
+#[derive(Clone)]
+pub struct UserText {
+    /// The speaker's Discord name, when known.
+    pub speaker: Option<String>,
+    pub text: String,
+    /// The language Whisper used or detected (ISO 639-1).
+    pub language: Option<String>,
+    pub speech_end: Instant,
+    pub text_at: Instant,
+    pub audio_seconds: f64,
+    pub model: String,
+    pub device: String,
+    /// The guild's turn latency, where the answer's timings go.
+    pub latency: crate::latency::SharedLatency,
+}
+
+impl std::fmt::Debug for UserText {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UserText")
+            .field("speaker", &self.speaker)
+            .field("text", &self.text)
+            .field("language", &self.language)
+            .finish_non_exhaustive()
+    }
 }
 
 /// An assistant that answers nothing: it becomes ready a configurable time after a
@@ -314,6 +353,10 @@ pub struct StubSession {
     pub wanted_log: Mutex<Vec<bool>>,
     pub contexts: Mutex<Vec<(Option<String>, Vec<String>)>>,
     pub speakers: Mutex<Vec<Vec<String>>>,
+    /// The questions in words, as (speaker, text).
+    pub texts: Mutex<Vec<(Option<String>, String)>>,
+    /// What [`AssistantSession::working`] answers.
+    pub busy: AtomicBool,
     frames_heard: Arc<AtomicU64>,
 }
 
@@ -343,6 +386,8 @@ impl StubSession {
             wanted_log: Mutex::new(Vec::new()),
             contexts: Mutex::new(Vec::new()),
             speakers: Mutex::new(Vec::new()),
+            texts: Mutex::new(Vec::new()),
+            busy: AtomicBool::new(false),
             frames_heard,
         }
     }
@@ -389,6 +434,17 @@ impl AssistantSession for StubSession {
             .lock()
             .expect("stub speakers lock")
             .push(names.to_vec());
+    }
+
+    fn user_text(&self, question: UserText) {
+        self.texts
+            .lock()
+            .expect("stub texts lock")
+            .push((question.speaker, question.text));
+    }
+
+    fn working(&self) -> bool {
+        self.busy.load(Ordering::Acquire)
     }
 }
 
