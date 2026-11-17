@@ -9,7 +9,9 @@
 // own method, params `{threadId, outcome}`) plays a delegated task on that thread as Codex
 // CLI 0.167.0 sends it: `turn/started`, the task, an interim agent message, a web search, the
 // final agent message and `turn/completed` with `outcome` as its status (`completed` by
-// default, `interrupted`, or `failed` with an error).
+// default, `interrupted`, or `failed` with an error). `fake/transcript` (params `{threadId,
+// method, params}`) sends that notification with `threadId` added to its params, as the
+// realtime call's transcript notifications arrive.
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
   console.log("codex-cli 0.0.0-fake");
@@ -116,6 +118,12 @@ lines.on("line", (line) => {
       const params = message.params || {};
       reply(message.id, {});
       delegate(params.threadId, params.outcome || "completed");
+      break;
+    }
+    case "fake/transcript": {
+      const params = message.params || {};
+      notify(params.method, { ...(params.params || {}), threadId: params.threadId });
+      reply(message.id, {});
       break;
     }
     default:

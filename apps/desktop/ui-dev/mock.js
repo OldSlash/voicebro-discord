@@ -66,24 +66,27 @@
   let checkAddsModel = false;
   // As `wake_models` answers: the catalog with its download state, then the models folder.
   // `asset` is the mock's own: the label the app gives the model's archive.
+  // Each model's default phrases (activation | deactivation), as the catalog carries them.
   const catalog = [
-    ["vosk-model-small-en-us-0.15", "en-US", "English (US) 0.15", "English", 41205931],
-    ["vosk-model-small-ru-0.22", "ru", "Russian 0.22", "Russian", 46220000],
-    ["vosk-model-small-cs-0.4-rhasspy", "cs", "Czech 0.4", "Czech", 46088666, "MIT"],
-    ["vosk-model-small-nl-0.22", "nl", "Dutch 0.22", "Dutch", 40441176],
-    ["vosk-model-small-fr-0.22", "fr", "French 0.22", "French", 42233323],
-    ["vosk-model-small-de-0.15", "de", "German 0.15", "German", 46499967],
-    ["vosk-model-small-it-0.22", "it", "Italian 0.22", "Italian", 49665141],
-    ["vosk-model-small-pl-0.22", "pl", "Polish 0.22", "Polish", 52979372],
-    ["vosk-model-small-pt-0.3", "pt-BR", "Portuguese (Brazil) 0.3", "Portuguese (Brazil)", 32453112],
-    ["vosk-model-small-es-0.42", "es", "Spanish 0.42", "Spanish", 39817833],
-  ].map(([id, language, name, asset, bytes, license = "Apache-2.0"]) => ({
+    ["vosk-model-small-en-us-0.15", "en-US", "English (US) 0.15", "English", 41205931, ["bro"], ["peace out"]],
+    ["vosk-model-small-ru-0.22", "ru", "Russian 0.22", "Russian", 46220000, ["братан"], ["отбой"]],
+    ["vosk-model-small-cs-0.4-rhasspy", "cs", "Czech 0.4", "Czech", 46088666, ["brácha"], ["čau"], "MIT"],
+    ["vosk-model-small-nl-0.22", "nl", "Dutch 0.22", "Dutch", 40441176, ["maat"], ["doei doei"]],
+    ["vosk-model-small-fr-0.22", "fr", "French 0.22", "French", 42233323, ["mon frère"], ["à la prochaine", "a la prochaine"]],
+    ["vosk-model-small-de-0.15", "de", "German 0.15", "German", 46499967, ["bruder"], ["bis dann"]],
+    ["vosk-model-small-it-0.22", "it", "Italian 0.22", "Italian", 49665141, ["fratello"], ["arrivederci"]],
+    ["vosk-model-small-pl-0.22", "pl", "Polish 0.22", "Polish", 52979372, ["ziomek"], ["do widzenia"]],
+    ["vosk-model-small-pt-0.3", "pt-BR", "Portuguese (Brazil) 0.3", "Portuguese (Brazil)", 32453112, ["irmão"], ["até mais"]],
+    ["vosk-model-small-es-0.42", "es", "Spanish 0.42", "Spanish", 39817833, ["hermano"], ["hasta luego"]],
+  ].map(([id, language, name, asset, bytes, activation, deactivation, license = "Apache-2.0"]) => ({
     id, engine: "vosk", language, display_name: `Vosk small ${name}`, license, source: "catalog",
-    installed: false, bytes, asset: `Vosk ${asset} model`,
+    installed: false, bytes, default_activation: activation, default_deactivation: deactivation,
+    asset: `Vosk ${asset} model`,
   }));
   const wakeModels = [
     ...catalog,
-    { id: "local:vosk-model-small-ca-0.4", engine: "vosk", language: "ca", display_name: "vosk-model-small-ca-0.4", license: "", source: "local", installed: true, bytes: 0 },
+    // Catalan is no catalog language: no default phrases.
+    { id: "local:vosk-model-small-ca-0.4", engine: "vosk", language: "ca", display_name: "vosk-model-small-ca-0.4", license: "", source: "local", installed: true, bytes: 0, default_activation: [], default_deactivation: [] },
   ];
   // `?fresh` in the page's address: a first start in an empty folder (English selected, no
   // phrases, nothing downloaded, the bot in no voice channel). Otherwise the Russian model
@@ -159,11 +162,16 @@
     label: "Vosk library", host: "github.com", bytes: 14900000,
     file: "vosk-win64-0.3.45.zip", page: "https://github.com/alphacep/vosk-api/releases/tag/v0.3.45",
   };
-  // Missing lists are empty, as the app fills them when it reads the document.
-  function selectedPhrases() {
-    const entry = settings.wake.phrases[settings.wake.model] || {};
-    return { activation: entry.activation || [], deactivation: entry.deactivation || [] };
+  // A list never set is the model's defaults; a stored list, even empty, is the user's.
+  function phrasesOf(doc, id) {
+    const entry = doc.wake.phrases[id] || {};
+    const model = wakeModels.find((candidate) => candidate.id === id) || {};
+    return {
+      activation: entry.activation ?? model.default_activation ?? [],
+      deactivation: entry.deactivation ?? model.default_deactivation ?? [],
+    };
   }
+  const selectedPhrases = () => phrasesOf(settings, settings.wake.model);
   // What choosing `id` needs to download, as `wake_requirements` answers.
   function requirements(id) {
     const model = wakeModels.find((entry) => entry.id === id);
@@ -296,19 +304,27 @@
     }
     return target;
   }
-  const normalize = (phrases) => phrases.map((p) => String(p).trim().toLowerCase()).filter(Boolean);
+  // The matching form, as `phrase_words` makes it: lower case, "ё" as "е", every character
+  // that is not a letter or a digit a space.
+  const matchingForm = (phrase) =>
+    String(phrase).toLowerCase().replace(/ё/g, "е").split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(" ");
+  // The phrases in effect as the status shows them: as typed, trimmed, the empty ones gone.
+  const normalize = (phrases) => phrases.map((p) => String(p).trim()).filter((p) => matchingForm(p));
   // The app's messages, `<field>: <message>`, for the cases the checks use.
   function validate(doc) {
     const timeout = doc.session.idle_timeout_seconds;
     if (timeout !== 0 && !(timeout >= 5 && timeout <= 3600)) {
       throw `session.idle_timeout_seconds: ${timeout} is outside 0 or 5..3600`;
     }
-    for (const [model, lists] of Object.entries(doc.wake.phrases || {})) {
-      const activation = normalize(lists.activation || []);
-      const deactivation = normalize(lists.deactivation || []);
-      const shared = activation.find((phrase) => deactivation.includes(phrase));
-      if (shared) {
-        throw `wake.phrases.${model}.deactivation: «${shared}» is in both the activation and the deactivation list of «${model}»`;
+    for (const model of Object.keys(doc.wake.phrases || {})) {
+      const lists = phrasesOf(doc, model);
+      const deactivation = lists.deactivation.filter((phrase) => matchingForm(phrase));
+      for (const activation of lists.activation) {
+        const form = matchingForm(activation);
+        const shared = form && deactivation.find((phrase) => matchingForm(phrase) === form);
+        if (shared) {
+          throw `wake.phrases.${model}.deactivation: «${activation.trim()}» in the activation list and «${shared.trim()}» in the deactivation list of «${model}» are the same phrase`;
+        }
       }
     }
     const local = doc.wake.model.startsWith("local:") ? doc.wake.model.slice(6) : null;

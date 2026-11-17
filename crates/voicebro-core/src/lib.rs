@@ -38,11 +38,15 @@ pub use secrets::{SecretKey, SecretStore};
 pub use settings::Settings;
 pub use status::Status;
 
+/// The test binary's one logger: it keeps every record, of every test, so a test finds its
+/// own lines by a marker only it logs.
 #[cfg(test)]
-mod detail_tests {
-    use std::sync::Mutex;
+pub(crate) mod test_log {
+    use std::sync::{Mutex, Once};
 
-    static RECORDS: Mutex<Vec<(String, log::Level, String)>> = Mutex::new(Vec::new());
+    pub type Record = (String, log::Level, String);
+
+    static RECORDS: Mutex<Vec<Record>> = Mutex::new(Vec::new());
 
     struct Capture;
     impl log::Log for Capture {
@@ -59,18 +63,36 @@ mod detail_tests {
         fn flush(&self) {}
     }
 
+    /// Installs the capturing logger at info level, once per test binary.
+    pub fn install() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let _ = log::set_boxed_logger(Box::new(Capture));
+            log::set_max_level(log::LevelFilter::Info);
+        });
+    }
+
+    /// The records whose text contains `marker`, in the order they were logged.
+    pub fn containing(marker: &str) -> Vec<Record> {
+        RECORDS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, _, text)| text.contains(marker))
+            .cloned()
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
     #[test]
     fn a_detail_line_logs_at_info_with_its_own_target() {
-        // The only test that installs a logger; other tests' records land here too.
-        let _ = log::set_boxed_logger(Box::new(Capture));
-        log::set_max_level(log::LevelFilter::Info);
+        crate::test_log::install();
         let marker = "detail-test-marker-17";
         crate::detail!("wake", "[wake] 1/2 heard: {marker}");
-        let records = RECORDS.lock().unwrap();
-        let line = records
-            .iter()
-            .find(|(_, _, text)| text.contains(marker))
-            .expect("the line was logged");
+        let records = crate::test_log::containing(marker);
+        let line = records.first().expect("the line was logged");
         assert_eq!(line.0, "detail::wake");
         assert!(line.0.starts_with(crate::DETAIL_TARGET_PREFIX));
         assert_eq!(line.1, log::Level::Info);

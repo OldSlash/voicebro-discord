@@ -75,6 +75,9 @@ pub struct AudioPorts {
     /// Where the session sends the final answers of its agent's completed tasks, for the
     /// runtime to post to Discord.
     pub answers: crate::assistant::AnswerSink,
+    /// Where the session hands the text of the people's speech its recognizer heard, for
+    /// the gate's deactivation check.
+    pub heard: Arc<dyn crate::assistant::HeardSink>,
 }
 
 #[cfg(test)]
@@ -91,6 +94,7 @@ mod tests {
             output: output.clone(),
             failures: crate::audio::codec::CodecFailures::none(),
             answers: crate::assistant::AnswerSink::none(),
+            heard: crate::assistant::no_heard(),
         };
         assert!(!sender.send(Frame::from_slice(&[1])));
         let frame = ports.input.try_recv().expect("frame arrives");

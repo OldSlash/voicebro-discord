@@ -178,61 +178,28 @@ mod tests {
         }
     }
 
-    fn phrase_set_from_env() -> PhraseSet {
-        // "activation one, activation two | deactivation" in VOICEBRO_WAKE_PHRASES.
-        let spec = std::env::var("VOICEBRO_WAKE_PHRASES").unwrap_or_default();
-        let (activation, deactivation) = spec.split_once('|').unwrap_or((spec.as_str(), ""));
+    /// Phrases as the settings fields take them: "a, b | c" (activation | deactivation),
+    /// comma-separated, each one or more words.
+    fn phrase_set(spec: &str) -> PhraseSet {
+        let (activation, deactivation) = spec.split_once('|').unwrap_or((spec, ""));
         let list = |text: &str| -> Vec<String> {
-            text.split(',')
-                .map(|p| p.trim().to_lowercase())
+            text.split([',', '\n'])
+                .map(str::trim)
                 .filter(|p| !p.is_empty())
+                .map(str::to_owned)
                 .collect()
         };
-        PhraseSet {
-            activation: list(activation),
-            deactivation: list(deactivation),
-        }
+        PhraseSet::new(&list(activation), &list(deactivation))
     }
 
-    /// Per catalog model: a greeting of its language and the corpus test's own phrases.
-    /// The catalog carries no phrases; these belong to the tests.
-    const CATALOG_WORDS: &[(&str, &[&str])] = &[
-        (
-            "vosk-model-small-en-us-0.15",
-            &["hello", "hey bro", "brother", "goodbye"],
-        ),
-        ("vosk-model-small-ru-0.22", &["привет", "братан", "отбой"]),
-        (
-            "vosk-model-small-cs-0.4-rhasspy",
-            &["ahoj", "ahoj kámo", "konec"],
-        ),
-        (
-            "vosk-model-small-nl-0.22",
-            &["hallo", "hallo maat", "tot ziens"],
-        ),
-        (
-            "vosk-model-small-fr-0.22",
-            &["bonjour", "salut pote", "au revoir"],
-        ),
-        (
-            "vosk-model-small-de-0.15",
-            &["hallo", "hallo kumpel", "tschüss"],
-        ),
-        (
-            "vosk-model-small-it-0.22",
-            &["ciao", "ciao amico", "arrivederci"],
-        ),
-        (
-            "vosk-model-small-pl-0.22",
-            &["cześć", "cześć stary", "do widzenia"],
-        ),
-        ("vosk-model-small-pt-0.3", &["olá", "olá amigo", "tchau"]),
-        ("vosk-model-small-es-0.42", &["hola", "hola amigo", "adiós"]),
-    ];
+    fn phrase_set_from_env() -> PhraseSet {
+        phrase_set(&std::env::var("VOICEBRO_WAKE_PHRASES").unwrap_or_default())
+    }
 
-    /// Loads every catalog model from `VOICEBRO_VOSK_DIR` through the real library when
-    /// `VOICEBRO_WAKE_CATALOG=1` is set too, and checks that each knows the words above.
-    /// Prints the load time and the unknown words of every model, then fails on any.
+    /// Task 4.5: loads every catalog model from `VOICEBRO_VOSK_DIR` through the real
+    /// library when `VOICEBRO_WAKE_CATALOG=1` is set too, and checks that each knows every
+    /// word of its default phrases (scenario "Every default is known"). Prints the load time
+    /// and the unknown words of every model, then fails on any.
     #[test]
     fn catalog_models_load_when_enabled() {
         let (Ok(base), Ok("1")) = (
@@ -244,11 +211,12 @@ mod tests {
         let base = PathBuf::from(base);
         let mut failures = Vec::new();
         for entry in crate::wake::catalog::entries() {
-            let words = CATALOG_WORDS
+            let words: Vec<&str> = entry
+                .default_activation
                 .iter()
-                .find(|(id, _)| *id == entry.id)
-                .map(|(_, words)| *words)
-                .unwrap_or_else(|| panic!("no test words for {}", entry.id));
+                .chain(entry.default_deactivation)
+                .copied()
+                .collect();
             let started = std::time::Instant::now();
             let model = match VoskEngine.load(&base, &base.join(entry.asset.directory)) {
                 Ok(model) => model,
@@ -275,6 +243,34 @@ mod tests {
             // A vocabulary that "knows" nonsense would make the check above meaningless.
             if model.knows_word("zzqxvkw") != Some(false) {
                 failures.push(format!("{} claims to know a nonsense word", entry.id));
+            }
+            // Candidates for a default that failed the corpus, only printed:
+            // `VOICEBRO_WAKE_CANDIDATES="<model id>=word, two words;<model id>=…"`.
+            for spec in std::env::var("VOICEBRO_WAKE_CANDIDATES")
+                .unwrap_or_default()
+                .split(';')
+            {
+                let Some((id, list)) = spec.split_once('=') else {
+                    continue;
+                };
+                if id.trim() != entry.id {
+                    continue;
+                }
+                for candidate in list.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+                    let missing: Vec<&str> = candidate
+                        .split_whitespace()
+                        .filter(|word| model.knows_word(word) != Some(true))
+                        .collect();
+                    eprintln!(
+                        "{}: candidate «{candidate}» {}",
+                        entry.id,
+                        if missing.is_empty() {
+                            "known".to_owned()
+                        } else {
+                            format!("unknown {missing:?}")
+                        }
+                    );
+                }
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
@@ -312,15 +308,14 @@ mod tests {
             !phrases.is_empty(),
             "VOICEBRO_WAKE_PHRASES is required with VOICEBRO_VOSK_DIR"
         );
-        for phrase in phrases.activation.iter().chain(&phrases.deactivation) {
-            for word in phrase.split_whitespace() {
-                assert_eq!(
-                    model.knows_word(word),
-                    Some(true),
-                    "word {word} unknown to the model"
-                );
-            }
-        }
+        let (_, unknown) = crate::wake::worker::usable_phrases(
+            model.as_ref(),
+            &[phrases.activation.clone(), phrases.deactivation.clone()].concat(),
+        );
+        assert!(
+            unknown.is_empty(),
+            "words unknown to the model: {unknown:?}"
+        );
         let trailing = 75; // 1.5 s of 20 ms chunks
         let silence = vec![0i16; 320];
 
@@ -348,17 +343,19 @@ mod tests {
                 let mut speaker =
                     SpeakerState::new(model.new_recognizer().unwrap(), PhraseSpotter::new());
                 let mut kinds = Vec::new();
+                let mut confirmed = Vec::new();
                 for chunk in samples
                     .chunks(320)
                     .map(<[i16]>::to_vec)
                     .chain(std::iter::repeat_n(silence.clone(), extra_silence))
                 {
-                    for (kind, _, _) in speaker.accept_mono(&chunk, &phrases) {
+                    for (kind, phrase, since_end) in speaker.accept_mono(&chunk, &phrases) {
                         kinds.push(format!("{kind:?}"));
+                        confirmed.push(format!("«{phrase}» {since_end:.2} s after its end"));
                     }
                 }
                 eprintln!(
-                    "sequence {path}: heard {:?} -> {kinds:?}",
+                    "sequence {path}: heard {:?} -> {kinds:?} {confirmed:?}",
                     speaker.take_heard()
                 );
                 assert_eq!(
@@ -406,6 +403,249 @@ mod tests {
                 heard.is_some(),
                 "the wake phrase in the WAV file was not recognized"
             );
+        }
+    }
+
+    /// 16 kHz mono as 48 kHz stereo Discord frames of 20 ms (each sample held for three),
+    /// for the worker's real input path through its 48 → 16 kHz downsampler.
+    fn discord_frames(mono: &[i16]) -> Vec<Vec<i16>> {
+        mono.chunks(320)
+            .map(|chunk| {
+                let mut frame: Vec<i16> = chunk
+                    .iter()
+                    .flat_map(|&sample| std::iter::repeat_n(sample, 6))
+                    .collect();
+                frame.resize(1920, 0);
+                frame
+            })
+            .collect()
+    }
+
+    /// One run of [`vosk_gaps_when_assets_are_provided`]: the confirmed phrases with the
+    /// stream second of each, what Vosk heard, and the ticks from the WAV's last frame to
+    /// the first deactivation (negative: before the end).
+    struct GapRun {
+        hits: Vec<(PhraseKind, String, f64)>,
+        heard: Vec<String>,
+        end_to_deactivation_ms: Option<i64>,
+    }
+
+    /// How the speaker's frames reach the recognizer.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Feeding {
+        /// The worker before change `voice-recognition-rework`: zeros fed once a speaker's
+        /// frames stop for 60 ms (3 ticks), one more per tick, up to 75.
+        OldClock,
+        /// The frames back to back, the missing ticks ignored.
+        BackToBack,
+        /// The worker of design D1: frames and receive ticks through `SpeakerState`.
+        Ticks,
+    }
+
+    /// Plays `frames` as a speaker whose frames go missing for `hole` ticks every
+    /// `every` frames (songbird's refill: the audio is delayed, not lost), then Discord's
+    /// end of speech (5 zero frames, then no frames for 2 s of ticks).
+    fn run_with_holes(
+        model: &dyn crate::wake::LoadedModel,
+        frames: &[Vec<i16>],
+        phrases: &PhraseSet,
+        feeding: Feeding,
+        every: usize,
+        phase: usize,
+        hole: u64,
+    ) -> GapRun {
+        let mut speaker = SpeakerState::new(model.new_recognizer().unwrap(), PhraseSpotter::new());
+        let mut stream = frames.to_vec();
+        stream.extend(std::iter::repeat_n(vec![0i16; 1920], 5));
+        let wav_end_index = frames.len() - 1;
+        let mut run = GapRun {
+            hits: Vec::new(),
+            heard: Vec::new(),
+            end_to_deactivation_ms: None,
+        };
+        let mut tick = 0u64;
+        let mut wav_end_tick = None;
+        let mut last_frame_tick = 0u64;
+        let mut old_fed = 0u64;
+        let now = std::time::Instant::now();
+        let frames_end = frames.len() as u64;
+        let record = |hits: Vec<(PhraseKind, String, f64)>,
+                      tick: u64,
+                      speaker: &mut SpeakerState,
+                      wav_end_tick: Option<u64>,
+                      run: &mut GapRun| {
+            for (kind, phrase, since_end) in hits {
+                if kind == PhraseKind::Deactivate && run.end_to_deactivation_ms.is_none() {
+                    // Before the WAV's end, its last frame's tick is not known yet; without
+                    // holes it is the frame count.
+                    let end = wav_end_tick.unwrap_or(frames_end);
+                    run.end_to_deactivation_ms = Some((tick as i64 - end as i64) * 20);
+                }
+                run.hits.push((kind, phrase, since_end));
+            }
+            if let Some(text) = speaker.take_heard() {
+                run.heard.push(text);
+            }
+        };
+        let old_silence = |speaker: &mut SpeakerState, quiet: u64, fed: &mut u64| {
+            let mut hits = Vec::new();
+            if quiet >= 3 {
+                let due = quiet.min(75);
+                while *fed < due {
+                    *fed += 1;
+                    hits.extend(speaker.accept_mono(&[0i16; 320], phrases));
+                }
+            }
+            hits
+        };
+        for (index, frame) in stream.iter().enumerate() {
+            if index > 0 && (index + phase).is_multiple_of(every) {
+                // The hole: ticks pass, the speaker's frames do not come.
+                for _ in 0..hole {
+                    tick += 1;
+                    let hits = match feeding {
+                        Feeding::Ticks => speaker.on_tick(tick, phrases),
+                        Feeding::OldClock => {
+                            old_silence(&mut speaker, tick - last_frame_tick, &mut old_fed)
+                        }
+                        Feeding::BackToBack => Vec::new(),
+                    };
+                    record(hits, tick, &mut speaker, wav_end_tick, &mut run);
+                }
+            }
+            tick += 1;
+            old_fed = 0;
+            last_frame_tick = tick;
+            let hits = match feeding {
+                Feeding::Ticks => {
+                    let mut hits = speaker.accept_discord(frame, phrases, tick, now);
+                    hits.extend(speaker.on_tick(tick, phrases));
+                    hits
+                }
+                _ => speaker.accept_discord(frame, phrases, tick, now),
+            };
+            if index == wav_end_index {
+                wav_end_tick = Some(tick);
+            }
+            record(hits, tick, &mut speaker, wav_end_tick, &mut run);
+        }
+        // Discord sends nothing more; 2 s of receive ticks pass.
+        for _ in 0..100 {
+            tick += 1;
+            let hits = match feeding {
+                Feeding::Ticks => speaker.on_tick(tick, phrases),
+                Feeding::OldClock | Feeding::BackToBack => {
+                    old_silence(&mut speaker, tick - last_frame_tick, &mut old_fed)
+                }
+            };
+            record(hits, tick, &mut speaker, wav_end_tick, &mut run);
+        }
+        run
+    }
+
+    /// Task 1.2 / 2.3: the regression test of change `voice-recognition-rework` with the
+    /// real model, gated by `VOICEBRO_VOSK_DIR`. Feeds `VOICEBRO_WAKE_GAPS_WAV` (default:
+    /// the corpus' `ru-goodbye.wav` next to the assets folder; several files separated by
+    /// `;`) as a speaker whose frames go missing for 6 ticks every 0.5 s, as songbird's
+    /// refill does: with zeros where the frames were missing (the old worker), back to back,
+    /// and through the D1 worker's ticks. Model `VOICEBRO_WAKE_GAPS_MODEL` (default the
+    /// Russian one) and phrases `VOICEBRO_WAKE_GAPS_PHRASES` (default "братан | отбой").
+    /// Then the end of a sentence without holes, old worker against D1: the time from the
+    /// WAV's end to the deactivation. The D1 run must equal the back-to-back run, and the
+    /// default file must confirm the deactivation.
+    #[test]
+    fn vosk_gaps_when_assets_are_provided() {
+        let Ok(base) = std::env::var("VOICEBRO_VOSK_DIR") else {
+            return;
+        };
+        let base = PathBuf::from(base);
+        let default_wav = base
+            .parent()
+            .map(|parent| parent.join("ru").join("ru-goodbye.wav"))
+            .unwrap_or_default();
+        let wavs = std::env::var("VOICEBRO_WAKE_GAPS_WAV")
+            .unwrap_or_else(|_| default_wav.display().to_string());
+        let model_folder = std::env::var("VOICEBRO_WAKE_GAPS_MODEL")
+            .unwrap_or_else(|_| crate::wake::catalog::RUSSIAN_SMALL.to_owned());
+        let phrases = phrase_set(
+            &std::env::var("VOICEBRO_WAKE_GAPS_PHRASES")
+                .unwrap_or_else(|_| "братан | отбой".to_owned()),
+        );
+        let model = VoskEngine
+            .load(&base, &base.join(&model_folder))
+            .expect("model loads");
+        for wav in wavs.split(';').filter(|path| !path.trim().is_empty()) {
+            if !std::path::Path::new(wav).is_file() {
+                eprintln!("gaps: {wav} is missing; skipped");
+                continue;
+            }
+            let frames = discord_frames(&wav_samples(wav));
+            eprintln!("== gaps: {wav} ({} frames)", frames.len());
+            let kinds = |run: &GapRun| -> Vec<(PhraseKind, String)> {
+                run.hits.iter().map(|(k, p, _)| (*k, p.clone())).collect()
+            };
+            let deactivated = |run: &GapRun| {
+                run.hits
+                    .iter()
+                    .any(|(kind, _, _)| *kind == PhraseKind::Deactivate)
+            };
+            // Five phases of the holes against the speech, so they fall into different words.
+            let mut confirmed = [0usize; 3];
+            for phase in [0, 5, 10, 15, 20] {
+                let mut runs = Vec::new();
+                for feeding in [Feeding::OldClock, Feeding::BackToBack, Feeding::Ticks] {
+                    let run =
+                        run_with_holes(model.as_ref(), &frames, &phrases, feeding, 25, phase, 6);
+                    eprintln!(
+                        "  holes of 6 ticks every 0.5 s, phase {phase}, {feeding:?}: heard {:?}; confirmed {:?}",
+                        run.heard,
+                        run.hits
+                            .iter()
+                            .map(|(kind, phrase, since)| format!(
+                                "{kind:?} «{phrase}» {since:.2} s after its end"
+                            ))
+                            .collect::<Vec<_>>()
+                    );
+                    runs.push(run);
+                }
+                for (count, run) in confirmed.iter_mut().zip(&runs) {
+                    *count += usize::from(deactivated(run));
+                }
+                assert_eq!(
+                    kinds(&runs[2]),
+                    kinds(&runs[1]),
+                    "{wav}: the D1 worker hears what the back-to-back stream does"
+                );
+                if wavs == default_wav.display().to_string() {
+                    assert!(
+                        deactivated(&runs[2]),
+                        "{wav}: the D1 run confirms the deactivation"
+                    );
+                }
+            }
+            eprintln!(
+                "  deactivation confirmed in 5 phases: zeros (old worker) {}, back to back {}, D1 ticks {}",
+                confirmed[0], confirmed[1], confirmed[2]
+            );
+            // The end of a sentence as Discord sends it: the speech without the WAV's own
+            // trailing silence, then 5 zero frames and nothing.
+            let mut spoken = frames.clone();
+            while spoken
+                .last()
+                .is_some_and(|frame| crate::audio::peak(frame) < 500)
+            {
+                spoken.pop();
+            }
+            for feeding in [Feeding::OldClock, Feeding::Ticks] {
+                let run =
+                    run_with_holes(model.as_ref(), &spoken, &phrases, feeding, usize::MAX, 0, 0);
+                eprintln!(
+                    "  end of the sentence, no holes, {feeding:?}: deactivation {} ms after the WAV's last frame",
+                    run.end_to_deactivation_ms
+                        .map(|ms| ms.to_string())
+                        .unwrap_or_else(|| "never".to_owned())
+                );
+            }
         }
     }
 }

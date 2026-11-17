@@ -162,7 +162,8 @@
       control.checked = Boolean(value);
       percentLabel(control);
     } else if (control.dataset.kind === "list") {
-      control.value = Array.isArray(value) ? value.join("\n") : "";
+      // Phrases are separated by commas; a phrase may have several words.
+      control.value = Array.isArray(value) ? value.join(", ") : "";
     } else {
       control.value = value == null ? "" : value;
     }
@@ -240,12 +241,20 @@
     }
     select.value = text;
   }
+  // What a field shows: the stored value, or for a phrase list never set the selected
+  // model's default phrases, which `wake_models` lists with each model.
+  function shownValue(control) {
+    const value = readByPath(stored, pathOf(control));
+    if (value !== undefined || !control.dataset.phrases) return value;
+    const model = wakeModels.find((entry) => entry.id === stored?.wake?.model);
+    return model?.[`default_${control.dataset.phrases}`] ?? [];
+  }
   // Writes a field from the stored settings unless it is being edited or holds a value of
   // its own; `force` after the field's own successful save.
   function fillField(control, force) {
     if (!stored) return;
     if (!force && (stateOf(control.id) !== "clean" || isBusy(control))) return;
-    writeControl(control, readByPath(stored, pathOf(control)));
+    writeControl(control, shownValue(control));
     if (control.tagName === "SELECT" && !control.options.length) return;
     mirrorListed(control);
   }
@@ -351,7 +360,7 @@
     control.addEventListener("input", () => {
       if (control.dataset.kind === "percent" || control.dataset.kind === "bool") percentLabel(control);
       if (stateOf(control.id) === "saving") return;
-      const differs = !stored || !sameValue(controlValue(control), readByPath(stored, pathOf(control)));
+      const differs = !stored || !sameValue(controlValue(control), shownValue(control));
       if (stateOf(control.id) !== "error") setState(control.id, differs ? "dirty" : "clean");
     });
     control.addEventListener("change", () => {
@@ -476,6 +485,7 @@
       wakeModels = await invoke("wake_models");
       buildWakeLists();
       showPhraseModel();
+      document.querySelectorAll("[data-phrases]").forEach((phrases) => fillField(phrases, false));
     } catch (error) {
       appendLog(`wake_models failed: ${error}`);
     }

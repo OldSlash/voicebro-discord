@@ -139,11 +139,13 @@ pub fn migrate_v1(document: &mut Value) {
     };
     let take_list = |wake: &mut serde_json::Map<String, Value>, key: &str| {
         wake.remove(key)
-            .filter(|list| list.as_array().is_some_and(|items| !items.is_empty()))
+            .filter(Value::is_array)
+            .unwrap_or_else(|| Value::Array(Vec::new()))
     };
     let activation = take_list(wake, "activation_phrases");
     let deactivation = take_list(wake, "deactivation_phrases");
-    if activation.is_none() && deactivation.is_none() {
+    let is_empty = |list: &Value| list.as_array().is_none_or(Vec::is_empty);
+    if is_empty(&activation) && is_empty(&deactivation) {
         let default = crate::wake::catalog::default_entry().id;
         wake.insert("model".to_owned(), Value::String(default.to_owned()));
         log::info!("settings: a version-1 file without wake phrases now selects {default}");
@@ -164,13 +166,11 @@ pub fn migrate_v1(document: &mut Value) {
         let entry = phrases
             .entry(model)
             .or_insert_with(|| Value::Object(Default::default()));
+        // Both lists, the empty one too: a version-1 list the user left empty stays empty
+        // rather than taking the model's default phrases.
         if let Some(entry) = entry.as_object_mut() {
-            if let Some(list) = activation {
-                entry.insert("activation".to_owned(), list);
-            }
-            if let Some(list) = deactivation {
-                entry.insert("deactivation".to_owned(), list);
-            }
+            entry.insert("activation".to_owned(), activation);
+            entry.insert("deactivation".to_owned(), deactivation);
         }
     }
     log::info!("settings: the wake phrases moved under the model they were set for");

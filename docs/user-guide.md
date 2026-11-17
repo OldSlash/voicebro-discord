@@ -126,8 +126,37 @@ Open **Config → Assistant**.
   them comes with the installer; each is downloaded once, after you agree. Each model
   keeps its own phrases, so switching languages loses nothing.
 - **Activation phrases** and **Deactivation phrases** belong to the model chosen below
-  them: one per line, or separated by commas. Words the model does not know are listed
-  under the field.
+  them. Separate phrases with commas; a phrase may have several words, for example
+  `Отбой братан, Заканчивай, Братан всё` holds three deactivation phrases. A line break
+  separates too. Every word must be in the model's vocabulary: words the model does not
+  know are listed under the field. Case and punctuation do not matter, and "ё" counts as
+  "е", so `Братан всё` matches when the recognizer writes "братан все".
+- **Every model comes with default phrases**, so the wake word works at once. The fields
+  show them until you change them:
+
+  | Wake model | Activation | Deactivation |
+  |---|---|---|
+  | English (US) | bro | peace out |
+  | Russian | братан | отбой |
+  | Czech | brácha | čau |
+  | Dutch | maat | doei doei |
+  | French | mon frère | à la prochaine, a la prochaine |
+  | German | bruder | bis dann |
+  | Italian | fratello | arrivederci |
+  | Polish | ziomek | do widzenia |
+  | Portuguese (Brazil) | irmão | até mais |
+  | Spanish | hermano | hasta luego |
+
+  Each was checked with the small model of its language on spoken samples. A model you
+  added to the models folder takes the defaults of its language when its folder name says
+  which one, for example `vosk-model-small-de-0.21`; any other starts with empty fields.
+
+  Change a default or remove it: what you type replaces the default of that field only.
+  An emptied field stays empty; the default does not come back.
+- The deactivation phrase also counts when the assistant's own call hears it: during an
+  answer the voice call transcribes what people say, and a deactivation phrase in that
+  text ends the session even when the wake word missed it. The voice stops at once and
+  the falling tone plays.
 - When the wake word's files are not on this PC, the notice under **Wake model** in
   **Config → Assistant** says so, and so does **Wake word** on the **Status** tab. It
   lists what is needed: the Vosk recognizer, 15 MB from github.com, once, and the model,
@@ -157,15 +186,15 @@ Open **Config → Assistant**.
 
 Good phrases are easy to recognize and rare in game talk:
 
-- Two words work better than one short one. In our tests `hey bro` and `brother` were
+- Two words work better than one short one. In our tests `hey bro` and `peace out` were
   always recognized; a lone `bro` at the start of a sentence was sometimes heard as
   another word.
 - If a phrase can be written two ways, add both, for example `goodbye` and `good bye`.
 - Check what the model hears. The **Console** shows a "heard:" line for everything the
   recognizer understood; if it writes your phrase differently, use its spelling. In our
-  tests the small Czech model heard "kámo" as "kámoš" and the small French model heard
-  "pote" as "pâte", while "hallo maat", "ciao amico", "cześć stary" and "hallo kumpel"
-  were recognized every time.
+  tests the small Czech model heard "kámo" as "samo", the small French model heard
+  "tchao" as "tiens" and wrote "a la prochaine" without the accent, and the small
+  Portuguese model heard "mano" as "humano", so those are not the defaults.
 - Keep the deactivation phrase distinct: it cuts off the current answer.
 
 ## 6. Add another language

@@ -160,6 +160,7 @@ impl VoiceHost for GateHost {
                 output,
                 failures: self.codec_failures.for_guild(guild),
                 answers: self.answers.clone(),
+                heard: Arc::new(self.registry.clone()),
             },
         ) {
             Ok(session) => gate.set_session(session),
@@ -515,8 +516,12 @@ impl Runtime {
             }
         };
         *self.settings.write().expect("settings lock") = settings;
-        *self.host.gate_settings.lock().expect("gate settings lock") =
-            GateSettings::from_settings(&self.settings());
+        let gate_settings = GateSettings::from_settings(&self.settings());
+        log::info!(
+            "settings: {}",
+            crate::gate::transcript_phrases_line(&gate_settings)
+        );
+        *self.host.gate_settings.lock().expect("gate settings lock") = gate_settings;
         self.host.registry.gains().apply(&self.settings().audio);
         *self.host.opus_codec.lock().expect("opus codec lock") =
             self.settings().diagnostics.codec();
@@ -666,7 +671,12 @@ impl Runtime {
                 // Shared atomics: the next frame sent and the next frame played use the
                 // new gains, and nothing is rebuilt.
                 "audio" => self.host.registry.gains().apply(&settings.audio),
-                "wake" => wake_dirty = true,
+                // The gates check the call's transcript for the selected model's
+                // deactivation phrases; a phrase change never ends a session.
+                "wake" => {
+                    wake_dirty = true;
+                    gates_dirty = true;
+                }
                 "assistant" => {
                     gates_dirty = true;
                     self.assistant.configure(&settings);
@@ -711,6 +721,10 @@ impl Runtime {
         }
         if gates_dirty {
             let gate_settings = GateSettings::from_settings(&settings);
+            log::info!(
+                "settings: {}",
+                crate::gate::transcript_phrases_line(&gate_settings)
+            );
             *self.host.gate_settings.lock().expect("gate settings lock") = gate_settings.clone();
             self.host.registry.apply_settings(&gate_settings);
         }

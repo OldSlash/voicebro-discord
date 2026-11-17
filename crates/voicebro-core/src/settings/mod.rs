@@ -241,8 +241,8 @@ pub struct WakeSettings {
 }
 
 impl Default for WakeSettings {
-    /// No phrases by default: the user chooses them in the settings. The wake engine
-    /// reports an empty list in its status instead of listening for nothing.
+    /// No stored phrases: every model starts with its default phrases (change
+    /// `voice-recognition-rework`, design D7), which the user can change or remove.
     fn default() -> Self {
         let model = catalog::default_entry();
         Self {
@@ -254,16 +254,47 @@ impl Default for WakeSettings {
 }
 
 impl WakeSettings {
-    /// The phrases of the selected model; empty when it has none yet.
-    pub fn selected_phrases(&self) -> ModelPhrases {
-        self.phrases.get(&self.model).cloned().unwrap_or_default()
+    /// The phrases in effect for the selected model: each list as stored, or the model's
+    /// defaults for a list never set.
+    pub fn selected_phrases(&self) -> PhraseLists {
+        self.phrases_of(&self.model)
+    }
+
+    /// The phrases in effect for `model`: each list as stored, or the model's defaults
+    /// (a local model's those of its folder's catalog language) for a list never set.
+    pub fn phrases_of(&self, model: &str) -> PhraseLists {
+        let stored = self.phrases.get(model);
+        let defaults = catalog::default_phrases(model);
+        let pick = |stored: Option<&Vec<String>>, default: &[&str]| -> Vec<String> {
+            match stored {
+                Some(list) => list.clone(),
+                None => default.iter().map(|phrase| (*phrase).to_owned()).collect(),
+            }
+        };
+        let (activation, deactivation) = defaults.unwrap_or((&[], &[]));
+        PhraseLists {
+            activation: pick(stored.and_then(|s| s.activation.as_ref()), activation),
+            deactivation: pick(stored.and_then(|s| s.deactivation.as_ref()), deactivation),
+        }
     }
 }
 
-/// One model's activation and deactivation phrases, as the user entered them.
+/// One model's activation and deactivation phrases, as the user entered them. A list that
+/// is absent (`None`) was never set and means the model's default phrases; a list that is
+/// present, even empty, is the user's. Serde leaves an absent list out of the file, so a save
+/// that names one list writes only that one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelPhrases {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activation: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deactivation: Option<Vec<String>>,
+}
+
+/// The phrases in effect for one model, stored or default, as the user typed them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct PhraseLists {
     pub activation: Vec<String>,
     pub deactivation: Vec<String>,
 }
@@ -471,13 +502,31 @@ fn invalid(field: &str, message: impl Into<String>) -> ValidationError {
     }
 }
 
-/// Lower-cased, trimmed, empty entries removed. The form the recognizer matches against.
-pub fn normalize_phrases(phrases: &[String]) -> Vec<String> {
-    phrases
-        .iter()
-        .map(|phrase| phrase.trim().to_lowercase())
-        .filter(|phrase| !phrase.is_empty())
+/// The words of a text in the matching form every phrase comparison uses (change
+/// `voice-recognition-rework`, design D3): lower case, "ё" as "е", and every character that
+/// is not a letter or a digit a space. A phrase is its word list; a phrase with no word is
+/// no phrase. The wake engine, the call's transcript and the save validation all compare
+/// in this form.
+pub fn phrase_words(text: &str) -> Vec<String> {
+    lower_words(text)
+        .into_iter()
+        .map(|word| fold_word(&word))
         .collect()
+}
+
+/// The words of a text, lower case, split at every character that is not a letter or a
+/// digit, without folding "ё": what a vocabulary is asked about besides the folded form.
+pub fn lower_words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// One lower-case word in the matching form: "ё" as "е".
+pub fn fold_word(word: &str) -> String {
+    word.replace('ё', "е")
 }
 
 const MODIFIERS: &[&str] = &[
@@ -541,22 +590,33 @@ impl Settings {
             }
         }
 
-        // Empty lists are allowed: they are the starting state, and the wake engine shows
-        // them as "no phrases configured" rather than the save being refused. The same
-        // phrase may belong to two models; only one model's lists must not overlap.
-        for (model, lists) in &self.wake.phrases {
-            let activation = normalize_phrases(&lists.activation);
-            let deactivation = normalize_phrases(&lists.deactivation);
-            if let Some(shared) = activation
+        // Empty lists are allowed: the wake engine shows them as "no phrases configured"
+        // rather than the save being refused. The same phrase may belong to two models;
+        // only one model's lists must not overlap, compared in the matching form and with
+        // the model's defaults in effect for a list never set.
+        for model in self.wake.phrases.keys() {
+            let lists = self.wake.phrases_of(model);
+            let deactivation: Vec<(&String, Vec<String>)> = lists
+                .deactivation
                 .iter()
-                .find(|phrase| deactivation.contains(phrase))
-            {
-                return Err(invalid(
-                    &format!("wake.phrases.{model}.deactivation"),
-                    format!(
-                        "«{shared}» is in both the activation and the deactivation list of «{model}»"
-                    ),
-                ));
+                .map(|phrase| (phrase, phrase_words(phrase)))
+                .filter(|(_, words)| !words.is_empty())
+                .collect();
+            for activation in &lists.activation {
+                let words = phrase_words(activation);
+                if words.is_empty() {
+                    continue;
+                }
+                if let Some((shared, _)) = deactivation.iter().find(|(_, other)| *other == words) {
+                    return Err(invalid(
+                        &format!("wake.phrases.{model}.deactivation"),
+                        format!(
+                            "«{}» in the activation list and «{}» in the deactivation list of «{model}» are the same phrase",
+                            activation.trim(),
+                            shared.trim()
+                        ),
+                    ));
+                }
             }
         }
         let model = self.wake.model.as_str();
@@ -1140,9 +1200,190 @@ mod tests {
 
     fn phrases(activation: &[&str], deactivation: &[&str]) -> ModelPhrases {
         ModelPhrases {
-            activation: activation.iter().map(|p| (*p).to_owned()).collect(),
-            deactivation: deactivation.iter().map(|p| (*p).to_owned()).collect(),
+            activation: Some(activation.iter().map(|p| (*p).to_owned()).collect()),
+            deactivation: Some(deactivation.iter().map(|p| (*p).to_owned()).collect()),
         }
+    }
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| (*v).to_owned()).collect()
+    }
+
+    /// Task 4.1: the matching form.
+    #[test]
+    fn phrase_words_lower_case_fold_yo_and_split_at_non_letters() {
+        assert_eq!(phrase_words("Отбой братан"), ["отбой", "братан"]);
+        assert_eq!(phrase_words(" отбой   братан "), ["отбой", "братан"]);
+        assert_eq!(phrase_words("Братан всё"), ["братан", "все"]);
+        assert_eq!(phrase_words("Заканчивай"), ["заканчивай"]);
+        assert_eq!(phrase_words("Отбой братан!"), phrase_words("отбой, братан"));
+        assert_eq!(phrase_words("подъём"), phrase_words("подъем"));
+        assert_eq!(phrase_words("по-моему"), ["по", "моему"]);
+        assert!(phrase_words("").is_empty());
+        assert!(phrase_words("   ").is_empty());
+        assert!(
+            phrase_words(" , ! ").is_empty(),
+            "no letter or digit is no phrase"
+        );
+        assert_eq!(lower_words("Братан ВСЁ"), ["братан", "всё"]);
+    }
+
+    /// Task 4.3, scenario "One model's list saved": only the named list is written; the
+    /// other stays absent and keeps its default.
+    #[test]
+    fn a_save_naming_one_list_writes_only_that_one() {
+        let patched = Settings::default()
+            .with_patch(&json!({ "wake": { "phrases": { ENGLISH: { "activation": ["bro"] } } } }))
+            .unwrap();
+        patched.validate().unwrap();
+        assert_eq!(
+            patched.wake.phrases[ENGLISH],
+            ModelPhrases {
+                activation: Some(strings(&["bro"])),
+                deactivation: None
+            }
+        );
+        let written = serde_json::to_value(&patched).unwrap();
+        assert_eq!(
+            written["wake"]["phrases"][ENGLISH],
+            json!({ "activation": ["bro"] }),
+            "the absent list is not written"
+        );
+        assert_eq!(patched.wake.selected_phrases().deactivation, ["peace out"]);
+    }
+
+    /// Scenario "An empty list stays empty".
+    #[test]
+    fn an_empty_list_stays_empty() {
+        let patched = Settings::default()
+            .with_patch(&json!({ "wake": { "phrases": { ENGLISH: { "deactivation": [] } } } }))
+            .unwrap();
+        let text = serde_json::to_string(&patched).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.wake.phrases[ENGLISH].deactivation, Some(Vec::new()));
+        assert!(back.wake.selected_phrases().deactivation.is_empty());
+        assert_eq!(back.wake.selected_phrases().activation, ["bro"]);
+    }
+
+    /// Scenario "A settings file without phrases", and an entry an earlier build wrote
+    /// (both lists present) kept as it is.
+    #[test]
+    fn defaults_fill_lists_never_set_and_stored_lists_stay_the_users() {
+        let without: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
+        assert!(without.wake.phrases.is_empty());
+        assert_eq!(
+            without.wake.selected_phrases(),
+            PhraseLists {
+                activation: strings(&["bro"]),
+                deactivation: strings(&["peace out"]),
+            }
+        );
+        let written = serde_json::to_value(&without).unwrap();
+        assert_eq!(
+            written["wake"]["phrases"],
+            json!({}),
+            "the defaults are not written into the file"
+        );
+        let earlier: Settings = serde_json::from_str(
+            r#"{ "version": 2, "wake": { "model": "vosk-model-small-ru-0.22", "phrases": {
+                 "vosk-model-small-ru-0.22": { "activation": ["братан"], "deactivation": [] } } } }"#,
+        )
+        .unwrap();
+        assert_eq!(earlier.wake.selected_phrases().activation, ["братан"]);
+        assert!(
+            earlier.wake.selected_phrases().deactivation.is_empty(),
+            "an earlier build's empty list stays the user's"
+        );
+        let mut settings = Settings::default();
+        settings.wake.model = catalog::RUSSIAN_SMALL.to_owned();
+        assert_eq!(settings.wake.selected_phrases().activation, ["братан"]);
+        assert_eq!(settings.wake.selected_phrases().deactivation, ["отбой"]);
+    }
+
+    /// Scenario "A list set by the user": the other list keeps its default.
+    #[test]
+    fn a_set_list_replaces_only_its_own_default() {
+        let mut settings = Settings::default();
+        settings.wake.model = catalog::RUSSIAN_SMALL.to_owned();
+        settings.wake.phrases.insert(
+            catalog::RUSSIAN_SMALL.to_owned(),
+            ModelPhrases {
+                activation: None,
+                deactivation: Some(strings(&["отбой братан", "заканчивай"])),
+            },
+        );
+        let lists = settings.wake.selected_phrases();
+        assert_eq!(lists.activation, ["братан"]);
+        assert_eq!(lists.deactivation, ["отбой братан", "заканчивай"]);
+    }
+
+    /// Scenarios "A local model of a catalog language" and "… of another language".
+    #[test]
+    fn a_local_model_takes_the_defaults_of_its_folders_language() {
+        let mut settings = Settings::default();
+        settings.wake.model = "local:vosk-model-small-de-0.21".to_owned();
+        let lists = settings.wake.selected_phrases();
+        assert_eq!(lists.activation, ["bruder"]);
+        assert_eq!(lists.deactivation, ["bis dann"]);
+        settings.wake.model = "local:vosk-model-small-en-us-zamia-0.5".to_owned();
+        assert_eq!(settings.wake.selected_phrases().activation, ["bro"]);
+        settings.wake.model = "local:vosk-model-small-ca-0.4".to_owned();
+        assert_eq!(settings.wake.selected_phrases(), PhraseLists::default());
+        settings.wake.model = "local:my-model".to_owned();
+        assert_eq!(settings.wake.selected_phrases(), PhraseLists::default());
+    }
+
+    /// Task 4.4, scenario "The same phrase written two ways in both lists".
+    #[test]
+    fn the_same_phrase_written_two_ways_in_both_lists_is_refused() {
+        let mut settings = Settings::default();
+        settings.wake.phrases.insert(
+            catalog::RUSSIAN_SMALL.to_owned(),
+            phrases(&["Братан всё"], &["братан  все"]),
+        );
+        let error = settings.validate().unwrap_err();
+        assert_eq!(
+            error.field,
+            format!("wake.phrases.{}.deactivation", catalog::RUSSIAN_SMALL)
+        );
+        for part in [
+            "activation",
+            "deactivation",
+            catalog::RUSSIAN_SMALL,
+            "Братан всё",
+        ] {
+            assert!(error.message.contains(part), "{part}: {}", error.message);
+        }
+    }
+
+    /// Scenario "A phrase kept as typed".
+    #[test]
+    fn a_phrase_is_stored_as_typed() {
+        let patched = Settings::default()
+            .with_patch(&json!({ "wake": { "phrases": { catalog::RUSSIAN_SMALL: {
+                "deactivation": ["Отбой братан", "Заканчивай", "Братан всё"] } } } }))
+            .unwrap();
+        patched.validate().expect("valid");
+        let text = serde_json::to_string(&patched).unwrap();
+        assert!(text.contains("Отбой братан"), "{text}");
+        assert!(text.contains("Братан всё"), "{text}");
+    }
+
+    /// A user activation list that holds the model's default deactivation phrase is refused.
+    #[test]
+    fn a_users_list_that_holds_the_other_default_is_refused() {
+        let mut settings = Settings::default();
+        settings.wake.phrases.insert(
+            ENGLISH.to_owned(),
+            ModelPhrases {
+                activation: Some(strings(&["bro", "Peace out!"])),
+                deactivation: None,
+            },
+        );
+        let error = settings.validate().unwrap_err();
+        assert_eq!(error.field, format!("wake.phrases.{ENGLISH}.deactivation"));
+        assert!(error.message.contains("Peace out!"), "{}", error.message);
+        assert!(error.message.contains("peace out"), "{}", error.message);
     }
 
     const ENGLISH: &str = "vosk-model-small-en-us-0.15";
@@ -1193,7 +1434,13 @@ mod tests {
             .with_patch(&json!({ "wake": { "phrases": { ENGLISH: { "activation": ["bro"] } } } }))
             .unwrap();
         patched.validate().unwrap();
-        assert_eq!(patched.wake.phrases[ENGLISH], phrases(&["bro"], &[]));
+        assert_eq!(
+            patched.wake.phrases[ENGLISH],
+            ModelPhrases {
+                activation: Some(strings(&["bro"])),
+                deactivation: None
+            }
+        );
         assert_eq!(
             patched.wake.phrases[catalog::RUSSIAN_SMALL],
             settings.wake.phrases[catalog::RUSSIAN_SMALL]
@@ -1201,17 +1448,26 @@ mod tests {
         assert_eq!(settings.changed_sections(&patched), vec!["wake"]);
     }
 
+    /// Scenario "Phrases of another model": the selected model without an entry has its
+    /// own defaults, not the other model's phrases.
     #[test]
-    fn the_selected_model_without_an_entry_has_no_phrases() {
+    fn the_selected_model_without_an_entry_has_its_defaults() {
         let mut settings = Settings::default();
         settings
             .wake
             .phrases
             .insert(catalog::RUSSIAN_SMALL.to_owned(), phrases(&["братан"], &[]));
         assert_eq!(settings.wake.model, ENGLISH);
-        assert_eq!(settings.wake.selected_phrases(), ModelPhrases::default());
+        assert_eq!(
+            settings.wake.selected_phrases(),
+            PhraseLists {
+                activation: strings(&["bro"]),
+                deactivation: strings(&["peace out"]),
+            }
+        );
         settings.wake.model = catalog::RUSSIAN_SMALL.to_owned();
         assert_eq!(settings.wake.selected_phrases().activation, ["братан"]);
+        assert!(settings.wake.selected_phrases().deactivation.is_empty());
     }
 
     #[test]
@@ -1256,13 +1512,18 @@ mod tests {
     }
 
     #[test]
-    fn phrase_lists_start_empty_and_that_is_valid() {
+    fn no_phrases_are_stored_at_first_and_the_defaults_are_valid() {
         let settings = Settings::default();
         assert!(settings.wake.phrases.is_empty());
-        assert_eq!(settings.wake.selected_phrases(), ModelPhrases::default());
-        settings
-            .validate()
-            .expect("empty lists are the starting state");
+        assert_eq!(settings.wake.selected_phrases().activation, ["bro"]);
+        settings.validate().expect("the starting state is valid");
+        let mut cleared = Settings::default();
+        cleared
+            .wake
+            .phrases
+            .insert(ENGLISH.to_owned(), phrases(&[], &[]));
+        cleared.validate().expect("emptied lists are valid");
+        assert_eq!(cleared.wake.selected_phrases(), PhraseLists::default());
     }
 
     #[test]

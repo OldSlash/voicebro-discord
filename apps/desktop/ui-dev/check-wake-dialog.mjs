@@ -271,7 +271,7 @@ const scenarios = [
     expect(!r.during.manual && !r.during.notice, `the links show during the download: ${JSON.stringify(r.during)}`);
     expect(r.unpacking, "no checking-and-unpacking step");
     expect(r.closed, "the dialog did not close after the download");
-    expect(r.state === "no_phrases", r.state);
+    expect(r.state === "ready", r.state);
     expect(r.label.endsWith("· downloaded"), r.label);
     expect(r.download?.model === "vosk-model-small-en-us-0.15", JSON.stringify(r.download));
   }],
@@ -291,7 +291,7 @@ const scenarios = [
     expect(r.failed.primary === "Try again" && r.failed.secondary === "Close", JSON.stringify(r.failed));
     expect(r.failed.manual.shown && same(r.failed.manual.files, ENGLISH_FILES), `dialog: ${JSON.stringify(r.failed.manual)}`);
     expect(r.failed.notice.shown && same(r.failed.notice.files, ENGLISH_FILES), `notice: ${JSON.stringify(r.failed.notice)}`);
-    expect(r.closed && r.state === "no_phrases", `closed ${r.closed}, state ${r.state}`);
+    expect(r.closed && r.state === "ready", `closed ${r.closed}, state ${r.state}`);
   }],
   ["archives put there by hand: checked and unpacked, never Downloading", async () => {
     await load("?fresh");
@@ -307,7 +307,7 @@ const scenarios = [
     expect(r.closed, "the dialog did not close");
     expect(!r.texts.some((text) => /download/i.test(text)), `the dialog spoke of a download: ${JSON.stringify(r.texts)}`);
     expect(r.texts.includes("Checking and unpacking the Vosk library…") && r.texts.includes("Checking and unpacking the Vosk English model…"), JSON.stringify(r.texts));
-    expect(r.state === "no_phrases" && r.downloads === 1, `state ${r.state}, ${r.downloads} calls`);
+    expect(r.state === "ready" && r.downloads === 1, `state ${r.state}, ${r.downloads} calls`);
   }],
   ["Hide during a download: the download goes on in the card's notice", async () => {
     await load("?fresh");
@@ -317,11 +317,11 @@ const scenarios = [
       await until(() => $("wake-install-secondary").textContent === "Hide", 4000);
       $("wake-install-secondary").click(); await sleep(400);
       const hidden = { open: dialog.open, notice: $("wake-download").hidden ? "" : $("wake-download-text").textContent };
-      await until(() => window.__mock.wakeState().kind === "no_phrases", 10000);
+      await until(() => window.__mock.wakeState().kind === "ready", 10000);
       return { hidden, state: window.__mock.wakeState().kind };`);
     expect(!r.hidden.open, "the dialog stayed open");
     expect(r.hidden.notice.startsWith("Downloading the"), `notice: ${r.hidden.notice}`);
-    expect(r.state === "no_phrases", r.state);
+    expect(r.state === "ready", r.state);
   }],
   ["during a download the list does not change and a hidden Download does nothing", async () => {
     await load("?fresh");
@@ -379,7 +379,7 @@ const scenarios = [
     const save = r.order.indexOf("save_settings:vosk-model-small-de-0.15");
     const download = r.order.indexOf("wake_download:vosk-model-small-de-0.15");
     expect(save >= 0 && download > save, JSON.stringify(r.order));
-    expect(r.closed && r.state === "no_phrases", `closed ${r.closed}, state ${r.state}`);
+    expect(r.closed && r.state === "ready", `closed ${r.closed}, state ${r.state}`);
   }],
   ["choice of an installed model: saved at once, no dialog", async () => {
     await load("?fresh");

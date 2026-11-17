@@ -1,6 +1,7 @@
 //! Vetted wake-word models. Settings refer to a model by its `id`; the engine that loads it
-//! is named by `engine`. The catalog describes models and where to get them; the phrases
-//! to spot are the user's and live in the settings file.
+//! is named by `engine`. The catalog describes models, where to get them and the default
+//! phrases each comes with (change `voice-recognition-rework`, design D7); the phrases the
+//! user sets live in the settings file and replace a model's defaults list by list.
 
 /// A downloadable archive with a pinned hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +37,10 @@ pub struct ModelEntry {
     /// The name without the size: the window shows the size from `asset.size`.
     pub display_name: &'static str,
     pub license: &'static str,
+    /// The language's slang for "bro": the activation phrases of a list never set.
+    pub default_activation: &'static [&'static str],
+    /// A slang farewell rare in game talk: the deactivation phrases of a list never set.
+    pub default_deactivation: &'static [&'static str],
     pub asset: Asset,
 }
 
@@ -55,6 +60,8 @@ const ENTRIES: &[ModelEntry] = &[
         language: "en-US",
         display_name: "Vosk small English (US) 0.15",
         license: "Apache-2.0",
+        default_activation: &["bro"],
+        default_deactivation: &["peace out"],
         asset: Asset {
             label: "Vosk English model",
             page: MODELS_PAGE,
@@ -71,6 +78,8 @@ const ENTRIES: &[ModelEntry] = &[
         language: "ru",
         display_name: "Vosk small Russian 0.22",
         license: "Apache-2.0",
+        default_activation: &["братан"],
+        default_deactivation: &["отбой"],
         asset: Asset {
             label: "Vosk Russian model",
             page: MODELS_PAGE,
@@ -89,6 +98,8 @@ const ENTRIES: &[ModelEntry] = &[
         language: "cs",
         display_name: "Vosk small Czech 0.4",
         license: "MIT",
+        default_activation: &["brácha"],
+        default_deactivation: &["čau"],
         asset: Asset {
             label: "Vosk Czech model",
             page: MODELS_PAGE,
@@ -105,6 +116,8 @@ const ENTRIES: &[ModelEntry] = &[
         language: "nl",
         display_name: "Vosk small Dutch 0.22",
         license: "Apache-2.0",
+        default_activation: &["maat"],
+        default_deactivation: &["doei doei"],
         asset: Asset {
             label: "Vosk Dutch model",
             page: MODELS_PAGE,
@@ -121,6 +134,9 @@ const ENTRIES: &[ModelEntry] = &[
         language: "fr",
         display_name: "Vosk small French 0.22",
         license: "Apache-2.0",
+        default_activation: &["mon frère"],
+        // The small French model writes "a" for "à" when the phrase is said alone.
+        default_deactivation: &["à la prochaine", "a la prochaine"],
         asset: Asset {
             label: "Vosk French model",
             page: MODELS_PAGE,
@@ -137,6 +153,8 @@ const ENTRIES: &[ModelEntry] = &[
         language: "de",
         display_name: "Vosk small German 0.15",
         license: "Apache-2.0",
+        default_activation: &["bruder"],
+        default_deactivation: &["bis dann"],
         asset: Asset {
             label: "Vosk German model",
             page: MODELS_PAGE,
@@ -153,6 +171,8 @@ const ENTRIES: &[ModelEntry] = &[
         language: "it",
         display_name: "Vosk small Italian 0.22",
         license: "Apache-2.0",
+        default_activation: &["fratello"],
+        default_deactivation: &["arrivederci"],
         asset: Asset {
             label: "Vosk Italian model",
             page: MODELS_PAGE,
@@ -169,6 +189,8 @@ const ENTRIES: &[ModelEntry] = &[
         language: "pl",
         display_name: "Vosk small Polish 0.22",
         license: "Apache-2.0",
+        default_activation: &["ziomek"],
+        default_deactivation: &["do widzenia"],
         asset: Asset {
             label: "Vosk Polish model",
             page: MODELS_PAGE,
@@ -185,6 +207,8 @@ const ENTRIES: &[ModelEntry] = &[
         language: "pt-BR",
         display_name: "Vosk small Portuguese (Brazil) 0.3",
         license: "Apache-2.0",
+        default_activation: &["irmão"],
+        default_deactivation: &["até mais"],
         asset: Asset {
             label: "Vosk Portuguese (Brazil) model",
             page: MODELS_PAGE,
@@ -202,6 +226,8 @@ const ENTRIES: &[ModelEntry] = &[
         language: "es",
         display_name: "Vosk small Spanish 0.42",
         license: "Apache-2.0",
+        default_activation: &["hermano"],
+        default_deactivation: &["hasta luego"],
         asset: Asset {
             label: "Vosk Spanish model",
             page: MODELS_PAGE,
@@ -225,6 +251,37 @@ pub fn find(id: &str) -> Option<&'static ModelEntry> {
 /// The model the settings start with.
 pub fn default_entry() -> &'static ModelEntry {
     &ENTRIES[0]
+}
+
+/// The catalog entry whose language a local model's folder name gives
+/// (`local:vosk-model-small-de-0.21` → German), compared by the primary language subtag.
+pub fn entry_for_language(language: &str) -> Option<&'static ModelEntry> {
+    let primary = |tag: &str| {
+        tag.split('-')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let wanted = primary(language);
+    if wanted.is_empty() {
+        return None;
+    }
+    ENTRIES
+        .iter()
+        .find(|entry| primary(entry.language) == wanted)
+}
+
+/// The default phrases (activation, deactivation) of a settings model id: a catalog
+/// model's own, a local model's those of its folder's catalog language, else none.
+pub fn default_phrases(model: &str) -> Option<(&'static [&'static str], &'static [&'static str])> {
+    let entry = match find(model) {
+        Some(entry) => entry,
+        None => {
+            let folder = crate::settings::local_model_folder(model)?;
+            entry_for_language(&super::local::language_of(folder))?
+        }
+    };
+    Some((entry.default_activation, entry.default_deactivation))
 }
 
 #[cfg(test)]
@@ -270,6 +327,68 @@ mod tests {
             languages,
             ["en-US", "ru", "cs", "nl", "fr", "de", "it", "pl", "pt-BR", "es"]
         );
+    }
+
+    /// Scenario "The defaults of the catalog".
+    #[test]
+    fn every_model_comes_with_its_default_phrases() {
+        let table: Vec<(&str, &[&str], &[&str])> = entries()
+            .iter()
+            .map(|entry| {
+                (
+                    entry.language,
+                    entry.default_activation,
+                    entry.default_deactivation,
+                )
+            })
+            .collect();
+        let expected: [(&str, &[&str], &[&str]); 10] = [
+            ("en-US", &["bro"], &["peace out"]),
+            ("ru", &["братан"], &["отбой"]),
+            ("cs", &["brácha"], &["čau"]),
+            ("nl", &["maat"], &["doei doei"]),
+            ("fr", &["mon frère"], &["à la prochaine", "a la prochaine"]),
+            ("de", &["bruder"], &["bis dann"]),
+            ("it", &["fratello"], &["arrivederci"]),
+            ("pl", &["ziomek"], &["do widzenia"]),
+            ("pt-BR", &["irmão"], &["até mais"]),
+            ("es", &["hermano"], &["hasta luego"]),
+        ];
+        assert_eq!(table, expected);
+        for entry in entries() {
+            let activation: Vec<Vec<String>> = entry
+                .default_activation
+                .iter()
+                .map(|p| crate::settings::phrase_words(p))
+                .collect();
+            for phrase in entry.default_deactivation {
+                assert!(
+                    !activation.contains(&crate::settings::phrase_words(phrase)),
+                    "{}: «{phrase}» in both lists",
+                    entry.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_local_model_finds_the_catalog_entry_of_its_language() {
+        assert_eq!(
+            default_phrases("local:vosk-model-small-de-0.21").map(|(a, _)| a),
+            Some(&["bruder"][..])
+        );
+        assert_eq!(
+            default_phrases("local:vosk-model-small-en-us-0.15").map(|(_, d)| d),
+            Some(&["peace out"][..])
+        );
+        assert_eq!(
+            default_phrases("local:vosk-model-small-pt-0.3").map(|(a, _)| a),
+            Some(&["irmão"][..])
+        );
+        assert_eq!(default_phrases("local:vosk-model-small-ca-0.4"), None);
+        assert_eq!(default_phrases("local:my-model"), None);
+        assert_eq!(default_phrases("local:../x"), None);
+        assert_eq!(default_phrases("nope"), None);
     }
 
     #[test]

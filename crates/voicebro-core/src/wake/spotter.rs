@@ -5,7 +5,8 @@
 //! in enough recent intermediate results. Each occurrence is reported once; the recognizer
 //! is never reset, so the words after a phrase are not lost.
 
-use super::{PhraseKind, PhraseSet, Recognition};
+use super::{Phrase, PhraseKind, PhraseSet, Recognition};
+use crate::settings::{fold_word, phrase_words};
 use std::collections::VecDeque;
 
 /// Intermediate results an activation phrase must stay in, in a row, before it counts
@@ -19,21 +20,25 @@ pub const DEACTIVATION_WINDOW: usize = 10;
 /// this long before.
 pub const PARTIAL_LAG_SECONDS: f64 = 0.15;
 
-/// Every occurrence of the phrases among `words`, in spoken order, as (index of its first
-/// word, number of words, phrase). Whole words only.
-fn phrase_occurrences<'a>(
-    words: &[&str],
-    phrases: &'a [String],
-) -> Vec<(usize, usize, &'a String)> {
+/// Every occurrence of the phrases among `words` (already in the matching form), in spoken
+/// order, as (index of its first word, number of words, phrase). Whole words only; at one
+/// place the first phrase of the list that fits wins.
+pub(crate) fn phrase_occurrences<'a, W: AsRef<str>>(
+    words: &[W],
+    phrases: &'a [Phrase],
+) -> Vec<(usize, usize, &'a Phrase)> {
     let mut found = Vec::new();
     let mut index = 0;
     while index < words.len() {
         let matched = phrases.iter().find_map(|phrase| {
-            let target: Vec<&str> = phrase.split_whitespace().collect();
+            let target = &phrase.words;
             (!target.is_empty()
                 && words.len() - index >= target.len()
-                && words[index..index + target.len()] == target[..])
-                .then_some((target.len(), phrase))
+                && words[index..index + target.len()]
+                    .iter()
+                    .zip(target)
+                    .all(|(word, wanted)| word.as_ref() == wanted))
+            .then_some((target.len(), phrase))
         });
         match matched {
             Some((length, phrase)) => {
@@ -47,28 +52,91 @@ fn phrase_occurrences<'a>(
 }
 
 /// The occurrences of the phrases in a result, in spoken order, each with the time it
-/// ended when the result carries word timings.
+/// ended when the result carries word timings. The recognizer's words are brought to the
+/// matching form first; a word that becomes several ("по-моему") keeps the original word's
+/// end time for each.
 pub fn find_occurrences(
     recognition: &Recognition,
-    phrases: &[String],
+    phrases: &[Phrase],
 ) -> Vec<(String, Option<f64>)> {
     if !recognition.words.is_empty() {
-        let words: Vec<&str> = recognition.words.iter().map(|w| w.word.as_str()).collect();
+        let mut words: Vec<String> = Vec::new();
+        let mut ends: Vec<f64> = Vec::new();
+        for word in &recognition.words {
+            for piece in phrase_words(&word.word) {
+                words.push(piece);
+                ends.push(word.end);
+            }
+        }
         return phrase_occurrences(&words, phrases)
             .into_iter()
-            .map(|(start, length, phrase)| {
-                (
-                    phrase.clone(),
-                    Some(recognition.words[start + length - 1].end),
-                )
-            })
+            .map(|(start, length, phrase)| (phrase.text.clone(), Some(ends[start + length - 1])))
             .collect();
     }
-    let words: Vec<&str> = recognition.text.split_whitespace().collect();
+    let words = phrase_words(&recognition.text);
     phrase_occurrences(&words, phrases)
         .into_iter()
-        .map(|(_, _, phrase)| (phrase.clone(), None))
+        .map(|(_, _, phrase)| (phrase.text.clone(), None))
         .collect()
+}
+
+/// A deactivation phrase found in the call's transcript of the people's speech.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptMatch {
+    /// The phrase as the user typed it.
+    pub phrase: String,
+    /// The match ends at the text's last word and nothing after it shows that the word
+    /// ended: the next piece may still extend it ("Good" + "bye", "stop" + "watch").
+    pub open: bool,
+}
+
+/// The first deactivation phrase in a turn's transcript so far, matched in the matching
+/// form as whole words (design D2, D3). A match that ends before the last word, or at a
+/// last word followed by a space or punctuation, is closed and ends the session at once.
+pub fn transcript_match(text: &str, phrases: &[Phrase]) -> Option<TranscriptMatch> {
+    transcript_match_after(text, phrases, 0)
+}
+
+/// [`transcript_match`] for a text that starts with `earlier_words` words already checked
+/// (the previous turn's): only a match that ends after them counts.
+pub fn transcript_match_after(
+    text: &str,
+    phrases: &[Phrase],
+    earlier_words: usize,
+) -> Option<TranscriptMatch> {
+    if phrases.is_empty() {
+        return None;
+    }
+    let words = phrase_words(text);
+    let mut occurrences = phrase_occurrences(&words, phrases);
+    occurrences.retain(|(start, length, _)| start + length > earlier_words);
+    let word_ended = text.chars().last().is_some_and(|c| !c.is_alphanumeric());
+    let closed = occurrences
+        .iter()
+        .find(|(start, length, _)| start + length < words.len() || word_ended);
+    closed
+        .or(occurrences.first())
+        .map(|(start, length, phrase)| TranscriptMatch {
+            phrase: phrase.text.clone(),
+            open: start + length == words.len() && !word_ended,
+        })
+}
+
+/// Whether a model knows a word of a phrase as typed: the lower-case word, its folded form
+/// ("всё" → "все"), or, for a word with an apostrophe or hyphen, each of its pieces.
+/// `knows` is the model's vocabulary check; `None` (cannot tell) counts as known.
+pub fn word_known(token: &str, knows: &dyn Fn(&str) -> Option<bool>) -> bool {
+    let known = |word: &str| knows(word) != Some(false);
+    let lower = token.to_lowercase();
+    let trimmed = lower.trim_matches(|c: char| !c.is_alphanumeric());
+    if trimmed.is_empty() {
+        return true;
+    }
+    known(trimmed)
+        || known(&fold_word(trimmed))
+        || crate::settings::lower_words(trimmed)
+            .iter()
+            .all(|piece| known(piece) || known(&fold_word(piece)))
 }
 
 /// Confirms one kind of phrase for one speaker.
@@ -81,6 +149,12 @@ pub struct Detector {
     first_seen: Option<f64>,
     /// Occurrences already reported in the current utterance.
     reported: usize,
+    /// Intermediate results since the last confirmation that held the next unreported
+    /// occurrence, and that occurrence's phrase: a final result that confirms nothing new
+    /// while this is above 0 is a near miss (design D5).
+    seen_partials: usize,
+    seen_phrase: Option<String>,
+    near_miss: Option<(String, usize)>,
 }
 
 impl Detector {
@@ -91,7 +165,16 @@ impl Detector {
             recent: VecDeque::new(),
             first_seen: None,
             reported: 0,
+            seen_partials: 0,
+            seen_phrase: None,
+            near_miss: None,
         }
+    }
+
+    /// The phrase and the number of intermediate results it was in, when the last final
+    /// result ended an utterance without confirming it.
+    pub fn take_near_miss(&mut self) -> Option<(String, usize)> {
+        self.near_miss.take()
     }
 
     pub fn activation() -> Self {
@@ -106,7 +189,7 @@ impl Detector {
     pub fn update(
         &mut self,
         recognition: &Recognition,
-        phrases: &[String],
+        phrases: &[Phrase],
         stream_seconds: f64,
     ) -> Option<(String, f64)> {
         let occurrences = if phrases.is_empty() {
@@ -121,6 +204,11 @@ impl Detector {
             let fresh = occurrences.into_iter().nth(self.reported);
             self.recent.clear();
             self.reported = 0;
+            let seen = std::mem::take(&mut self.seen_partials);
+            let seen_phrase = self.seen_phrase.take();
+            if fresh.is_none() && seen > 0 {
+                self.near_miss = seen_phrase.map(|phrase| (phrase, seen));
+            }
             return fresh.map(|(phrase, end)| {
                 let end = end
                     .or(first_seen.map(|seen| seen - PARTIAL_LAG_SECONDS))
@@ -139,6 +227,8 @@ impl Detector {
             }
             return None;
         };
+        self.seen_partials += 1;
+        self.seen_phrase = Some(phrase.clone());
         let first_seen = *self.first_seen.get_or_insert(stream_seconds);
         if self.recent.iter().filter(|seen| **seen).count() < self.needed {
             return None;
@@ -146,6 +236,8 @@ impl Detector {
         self.reported += 1;
         self.recent.clear();
         self.first_seen = None;
+        self.seen_partials = 0;
+        self.seen_phrase = None;
         Some((
             phrase,
             since_end(end.unwrap_or(first_seen - PARTIAL_LAG_SECONDS)),
@@ -207,6 +299,13 @@ impl PhraseSpotter {
         }
         hits
     }
+
+    /// A deactivation phrase seen in intermediate results that the utterance's final result
+    /// did not confirm: the phrase and in how many results it was. Activation phrases are
+    /// not reported.
+    pub fn take_near_miss(&mut self) -> Option<(String, usize)> {
+        self.deactivation.take_near_miss()
+    }
 }
 
 #[cfg(test)]
@@ -214,8 +313,8 @@ mod tests {
     use super::*;
     use crate::wake::Word;
 
-    fn phrases(values: &[&str]) -> Vec<String> {
-        values.iter().map(|v| (*v).to_owned()).collect()
+    fn phrases(values: &[&str]) -> Vec<Phrase> {
+        values.iter().filter_map(|v| Phrase::new(v)).collect()
     }
 
     fn word(word: &str, end: f64) -> Word {
@@ -240,22 +339,26 @@ mod tests {
         }
     }
 
-    fn find_phrase<'a>(text: &str, list: &'a [String]) -> Option<&'a String> {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        phrase_occurrences(&words, list).first().map(|(_, _, p)| *p)
+    fn find_phrase<'a>(text: &str, list: &'a [Phrase]) -> Option<&'a str> {
+        let words = phrase_words(text);
+        phrase_occurrences(&words, list)
+            .first()
+            .map(|(_, _, p)| p.text.as_str())
+    }
+
+    fn final_result(text: &str) -> Recognition {
+        Recognition {
+            is_final: true,
+            text: text.to_owned(),
+            words: Vec::new(),
+        }
     }
 
     #[test]
     fn phrases_match_whole_word_sequences_only() {
         let wake = phrases(&["hey buddy", "luna"]);
-        assert_eq!(
-            find_phrase("so hey buddy", &wake).map(String::as_str),
-            Some("hey buddy")
-        );
-        assert_eq!(
-            find_phrase("luna tell me", &wake).map(String::as_str),
-            Some("luna")
-        );
+        assert_eq!(find_phrase("so hey buddy", &wake), Some("hey buddy"));
+        assert_eq!(find_phrase("luna tell me", &wake), Some("luna"));
         assert_eq!(find_phrase("hey bud", &wake), None);
         assert_eq!(
             find_phrase("lunar night", &wake),
@@ -281,6 +384,178 @@ mod tests {
                 ("luna".to_owned(), Some(1.6))
             ]
         );
+    }
+
+    /// Task 4.2, scenario "A phrase of several words".
+    #[test]
+    fn a_phrase_of_several_words_counts_once_inside_a_sentence() {
+        let set = PhraseSet {
+            activation: phrases(&["братан"]),
+            deactivation: phrases(&["Отбой братан", "Заканчивай", "Братан всё"]),
+        };
+        let mut spotter = PhraseSpotter::new();
+        let mut hits = Vec::new();
+        for _ in 0..30 {
+            hits.extend(spotter.update(&partial("ну все отбой братан спасибо"), &set, 1.0));
+        }
+        hits.extend(spotter.update(&final_result("ну все отбой братан спасибо"), &set, 2.0));
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].0, PhraseKind::Deactivate);
+        assert_eq!(hits[0].1, "Отбой братан", "the phrase as typed");
+    }
+
+    /// Scenario "Only part of a phrase".
+    #[test]
+    fn only_part_of_a_phrase_does_not_count() {
+        let set = PhraseSet {
+            activation: Vec::new(),
+            deactivation: phrases(&["отбой братан"]),
+        };
+        let mut spotter = PhraseSpotter::new();
+        for _ in 0..30 {
+            assert!(spotter.update(&partial("отбой"), &set, 1.0).is_empty());
+        }
+        assert!(spotter.update(&final_result("отбой"), &set, 2.0).is_empty());
+    }
+
+    /// Scenario "«ё» typed, «е» recognized".
+    #[test]
+    fn a_phrase_typed_with_yo_matches_the_recognizers_ye() {
+        let set = PhraseSet {
+            activation: Vec::new(),
+            deactivation: phrases(&["Братан всё"]),
+        };
+        let mut spotter = PhraseSpotter::new();
+        let finished = Recognition {
+            is_final: true,
+            text: "братан все".to_owned(),
+            words: vec![word("братан", 0.5), word("все", 0.9)],
+        };
+        let hits = spotter.update(&finished, &set, 1.2);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, "Братан всё");
+        assert!((hits[0].2 - 0.3).abs() < 1e-9);
+        let known = |word: &str| Some(word != "всё");
+        assert!(word_known("всё", &known), "known through its folded form");
+        assert!(word_known("Всё,", &known));
+        assert!(!word_known("zyx", &|_| Some(false)));
+        let dont = |word: &str| Some(word == "don't");
+        assert!(
+            word_known("don't", &dont),
+            "a word with an apostrophe as a whole"
+        );
+    }
+
+    #[test]
+    fn a_recognized_word_that_splits_keeps_its_end_time() {
+        let finished = Recognition {
+            is_final: true,
+            text: "по-моему всё".to_owned(),
+            words: vec![word("по-моему", 0.6), word("всё", 1.0)],
+        };
+        assert_eq!(
+            find_occurrences(&finished, &phrases(&["моему", "по моему все"])),
+            vec![("по моему все".to_owned(), Some(1.0))]
+        );
+        assert_eq!(
+            find_occurrences(&finished, &phrases(&["моему"])),
+            vec![("моему".to_owned(), Some(0.6))]
+        );
+    }
+
+    /// Task 5.3: the transcript match.
+    #[test]
+    fn the_transcript_match_waits_for_a_word_that_may_go_on() {
+        let goodbye = phrases(&["goodbye"]);
+        assert_eq!(
+            transcript_match("Okay, GOODBYE!", &goodbye),
+            Some(TranscriptMatch {
+                phrase: "goodbye".to_owned(),
+                open: false
+            })
+        );
+        assert_eq!(
+            transcript_match(" Good", &goodbye),
+            None,
+            "the first piece alone is not the phrase"
+        );
+        assert_eq!(
+            transcript_match(" Goodbye", &goodbye),
+            Some(TranscriptMatch {
+                phrase: "goodbye".to_owned(),
+                open: true
+            }),
+            "\" Good\" + \"bye\" may still go on"
+        );
+        assert_eq!(
+            transcript_match(" Goodbye then", &goodbye).map(|m| m.open),
+            Some(false)
+        );
+        let stop = phrases(&["stop"]);
+        assert_eq!(transcript_match(" stop", &stop).map(|m| m.open), Some(true));
+        assert_eq!(transcript_match(" stopwatch", &stop), None);
+        let russian = phrases(&["отбой, братан"]);
+        assert_eq!(transcript_match(" Отбой", &russian), None);
+        assert_eq!(transcript_match(" Отбой, брат", &russian), None);
+        assert_eq!(
+            transcript_match(" Отбой, братан", &russian),
+            Some(TranscriptMatch {
+                phrase: "отбой, братан".to_owned(),
+                open: true
+            })
+        );
+        assert_eq!(
+            transcript_match(" Отбой, братан.", &russian).map(|m| m.open),
+            Some(false)
+        );
+        assert_eq!(
+            transcript_match("goodbye", &[]),
+            None,
+            "an empty list never matches"
+        );
+        assert_eq!(
+            transcript_match("goodbye and goodbye", &goodbye).map(|m| m.open),
+            Some(false),
+            "a closed occurrence wins over an open one"
+        );
+    }
+
+    /// Task 6.2: near misses of the deactivation phrase.
+    #[test]
+    fn a_deactivation_seen_in_partials_but_never_confirmed_is_a_near_miss() {
+        let set = PhraseSet {
+            activation: phrases(&["luna"]),
+            deactivation: phrases(&["dismiss"]),
+        };
+        let mut spotter = PhraseSpotter::new();
+        for _ in 0..3 {
+            assert!(spotter.update(&partial("ok dismiss"), &set, 1.0).is_empty());
+        }
+        assert!(spotter
+            .update(&final_result("ok this miss"), &set, 1.5)
+            .is_empty());
+        assert_eq!(spotter.take_near_miss(), Some(("dismiss".to_owned(), 3)));
+        assert_eq!(spotter.take_near_miss(), None, "reported once");
+
+        // Confirmed by intermediate results: no near miss.
+        for _ in 0..10 {
+            spotter.update(&partial("dismiss"), &set, 2.0);
+        }
+        spotter.update(&final_result("dismiss"), &set, 2.5);
+        assert_eq!(spotter.take_near_miss(), None);
+        // Confirmed by the final result: none either.
+        for _ in 0..2 {
+            spotter.update(&partial("dismiss"), &set, 3.0);
+        }
+        let hits = spotter.update(&final_result("dismiss"), &set, 3.5);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(spotter.take_near_miss(), None);
+        // An activation phrase seen but not confirmed is not reported.
+        for _ in 0..5 {
+            spotter.update(&partial("luna"), &set, 4.0);
+        }
+        spotter.update(&final_result("lunar"), &set, 4.5);
+        assert_eq!(spotter.take_near_miss(), None);
     }
 
     fn feed_until_hit(spotter: &mut PhraseSpotter, text: &str, limit: usize) -> Vec<Hit> {
