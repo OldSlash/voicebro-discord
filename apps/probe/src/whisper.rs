@@ -218,10 +218,12 @@ pub fn run(args: &[String]) -> anyhow::Result<Outcome> {
             segment.text.trim()
         ));
     }
-    let text = match clean(&raw, NO_SPEECH_THRESHOLD) {
+    let text = match clean(&raw, NO_SPEECH_THRESHOLD, audio.len() as f64 / 16_000.0) {
         Cleaned::Text(text) => text,
         Cleaned::NoSpeech => String::new(),
-        Cleaned::Hallucination(text) => format!("(dropped as a hallucination) {text}"),
+        Cleaned::Hallucination { text, repeats } => {
+            format!("(dropped as a hallucination: one word {repeats} times) {text}")
+        }
     };
     details.push(format!("text: {text}"));
     if args.iter().any(|arg| arg == "--bench") {
@@ -383,13 +385,15 @@ pub fn corpus(args: &[String]) -> anyhow::Result<Outcome> {
         let (mut language_good, mut language_total) = (0, 0);
         for file in files {
             let name = file.file_stem().unwrap().to_string_lossy().into_owned();
-            let audio = pad_like_the_app(read_wav_16k(&file).map_err(|error| anyhow!(error))?);
+            let speech = read_wav_16k(&file).map_err(|error| anyhow!(error))?;
+            let speech_seconds = speech.len() as f64 / 16_000.0;
+            let audio = pad_like_the_app(speech);
             let started = Instant::now();
             let raw = model
                 .transcribe(&audio, &options)
                 .map_err(|error| anyhow!("{error}"))?;
             seconds.push(started.elapsed().as_secs_f64());
-            let text = match clean(&raw, NO_SPEECH_THRESHOLD) {
+            let text = match clean(&raw, NO_SPEECH_THRESHOLD, speech_seconds) {
                 Cleaned::Text(text) => text,
                 _ => String::new(),
             };
@@ -439,7 +443,7 @@ pub fn corpus(args: &[String]) -> anyhow::Result<Outcome> {
         let raw = model
             .transcribe(&clip, &options)
             .map_err(|error| anyhow!("{error}"))?;
-        let cleaned = clean(&raw, NO_SPEECH_THRESHOLD);
+        let cleaned = clean(&raw, NO_SPEECH_THRESHOLD, clip.len() as f64 / 16_000.0);
         let text = match &cleaned {
             Cleaned::Text(text) => text.clone(),
             _ => String::new(),

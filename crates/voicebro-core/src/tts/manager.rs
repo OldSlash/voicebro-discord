@@ -74,6 +74,9 @@ pub struct TtsStatus {
     /// Pieces the voice could not read, and the last error.
     pub failed: u64,
     pub last_error: Option<String>,
+    /// The selected voice's files that are not on disk, in either mode (change
+    /// `whisper-config-layout`): the window's notice and its Download button.
+    pub missing: Vec<DownloadItem>,
 }
 
 impl Default for TtsStatus {
@@ -89,6 +92,7 @@ impl Default for TtsStatus {
             skipped: 0,
             failed: 0,
             last_error: None,
+            missing: Vec::new(),
         }
     }
 }
@@ -358,23 +362,40 @@ impl TtsManager {
         let generation = self.inner.generation.fetch_add(1, Ordering::AcqRel) + 1;
         *self.inner.speed.lock().expect("tts speed lock") = settings.tts.speed;
         let voice = settings.tts.voice.clone();
+        let missing = self.missing(&voice);
+        let items: Vec<DownloadItem> = missing
+            .as_ref()
+            .map(|missing| missing.iter().map(DownloadItem::of).collect())
+            .unwrap_or_default();
         self.update(|status| {
             status.voice = voice.clone();
             status.engine = Self::engine_name(&voice).to_owned();
+            status.missing = items;
         });
+        let agreed = self.inner.consent.lock().expect("consent lock").as_deref() == Some(&voice);
         if settings.assistant.mode != AssistantMode::Whisper {
             self.unload();
-            self.set_state(TtsState::Off);
+            // A download agreed in the realtime mode (change `whisper-config-layout`)
+            // fetches the files and loads nothing.
+            match missing {
+                Ok(missing) if !missing.is_empty() && agreed => {
+                    let manager = self.clone();
+                    std::thread::Builder::new()
+                        .name("voicebro-tts-load".to_owned())
+                        .spawn(move || manager.background(generation, voice, missing))
+                        .expect("spawn the voice loader thread");
+                }
+                _ => self.set_state(TtsState::Off),
+            }
             return;
         }
-        let missing = match self.missing(&voice) {
+        let missing = match missing {
             Ok(missing) => missing,
             Err(message) => {
                 self.set_state(TtsState::Error { message });
                 return;
             }
         };
-        let agreed = self.inner.consent.lock().expect("consent lock").as_deref() == Some(&voice);
         if !missing.is_empty() && !agreed {
             let items: Vec<DownloadItem> = missing.iter().map(DownloadItem::of).collect();
             self.inner.events.log(format!(
@@ -406,24 +427,41 @@ impl TtsManager {
         let manager = self.clone();
         std::thread::Builder::new()
             .name("voicebro-tts-load".to_owned())
-            .spawn(move || {
-                let _busy = manager.inner.busy.lock().expect("tts busy lock");
-                if manager.inner.generation.load(Ordering::Acquire) != generation {
-                    return;
-                }
-                if let Err(message) = manager.fetch_all(&missing) {
-                    manager.set_state(TtsState::Error { message });
-                    return;
-                }
-                if !manager.inner.wanted.load(Ordering::Acquire) {
-                    manager.set_state(TtsState::Idle);
-                    return;
-                }
-                if let Err(message) = manager.load(&voice) {
-                    manager.set_state(TtsState::Error { message });
-                }
-            })
+            .spawn(move || manager.background(generation, voice, missing))
             .expect("spawn the voice loader thread");
+    }
+
+    /// The download and the load of a `configure`, unless a newer one came first. In the
+    /// realtime mode it downloads only.
+    fn background(&self, generation: u64, voice: String, missing: Vec<Asset>) {
+        let _busy = self.inner.busy.lock().expect("tts busy lock");
+        if self.inner.generation.load(Ordering::Acquire) != generation {
+            return;
+        }
+        if let Err(message) = self.fetch_all(&missing) {
+            self.set_state(TtsState::Error { message });
+            return;
+        }
+        let still = self.missing(&voice).unwrap_or_default();
+        self.update(|status| status.missing = still.iter().map(DownloadItem::of).collect());
+        let whisper_mode = self
+            .inner
+            .settings
+            .lock()
+            .expect("tts settings lock")
+            .as_ref()
+            .is_some_and(|settings| settings.assistant.mode == AssistantMode::Whisper);
+        if !whisper_mode {
+            self.set_state(TtsState::Off);
+            return;
+        }
+        if !self.inner.wanted.load(Ordering::Acquire) {
+            self.set_state(TtsState::Idle);
+            return;
+        }
+        if let Err(message) = self.load(&voice) {
+            self.set_state(TtsState::Error { message });
+        }
     }
 
     fn fetch_all(&self, missing: &[Asset]) -> Result<(), String> {
@@ -607,10 +645,10 @@ impl TtsManager {
                 settings.tts.voice
             ));
         }
-        if !matches!(
-            self.status().state,
-            TtsState::NeedsDownload { .. } | TtsState::Error { .. }
-        ) {
+        // In either mode (change `whisper-config-layout`): whatever the selected voice
+        // misses, or a retry after a failed download.
+        let waiting = !self.missing(voice)?.is_empty();
+        if !waiting && !matches!(self.status().state, TtsState::Error { .. }) {
             return Err("nothing is waiting for a voice download".to_owned());
         }
         self.inner
@@ -910,5 +948,45 @@ mod tests {
         }
         wait(|| manager.status().spoken > 41);
         player.flush();
+    }
+
+    /// Change `whisper-config-layout`, tasks 1.2 and 1.3: in the realtime mode the status
+    /// lists the voice's missing files, and Download fetches them and loads nothing.
+    #[test]
+    fn the_realtime_mode_lists_the_voice_files_and_downloads_without_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        let read = Arc::new(Mutex::new(Vec::new()));
+        let fetched = Arc::new(Mutex::new(Vec::new()));
+        let fetch: Arc<Fetch> = {
+            let fetched = Arc::clone(&fetched);
+            Arc::new(
+                move |asset: &Asset, dir: &Path, _: &dyn Fn(assets::Progress)| {
+                    let folder = dir.join(asset.directory);
+                    std::fs::create_dir_all(&folder).unwrap();
+                    std::fs::write(folder.join(asset.marker), b"x").unwrap();
+                    fetched.lock().unwrap().push(asset.label.to_owned());
+                    Ok(())
+                },
+            )
+        };
+        let manager = TtsManager::with_parts(
+            Arc::new(FakeLoader {
+                delay: Duration::ZERO,
+                read: Arc::clone(&read),
+            }),
+            fetch,
+            dir.path().to_path_buf(),
+            EventBus::default(),
+        );
+        let settings = Settings::default();
+        manager.configure(&settings);
+        let status = manager.status();
+        assert_eq!(status.state, TtsState::Off);
+        assert_eq!(status.missing.len(), 2, "the engine and Supertonic 3");
+        assert!(manager.download("piper:ru_RU-denis-medium").is_err());
+        manager.download(&settings.tts.voice).unwrap();
+        wait(|| fetched.lock().unwrap().len() == 2 && manager.status().missing.is_empty());
+        assert_eq!(manager.status().state, TtsState::Off);
+        assert!(read.lock().unwrap().is_empty(), "no voice was loaded");
     }
 }

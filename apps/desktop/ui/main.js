@@ -92,7 +92,7 @@
     if (name === "config") loadTextChannels();
     // Which Whisper models and voices are on disk may have changed (a download, a file put
     // into the assets folder by hand).
-    if (name === "whisper") reloadWhisperLists();
+    if (name === "config" || name === "settings") reloadWhisperLists();
   }
   for (const button of tabButtons) button.addEventListener("click", () => showTab(button.dataset.tab));
 
@@ -256,23 +256,15 @@
   }
   // What a field shows: the stored value, or for a phrase list never set the selected
   // model's default phrases, which `wake_models` lists with each model. A Whisper phrase list
-  // never set shows the default phrases of the Whisper language (English for Automatic).
+  // never set shows "bro" or "peace out", whatever the language (change
+  // `whisper-config-layout`, D2).
   function shownValue(control) {
     const value = readByPath(stored, pathOf(control));
     if (value !== undefined) return value;
-    if (control.dataset.whisperPhrases) return whisperDefaultPhrases(control.dataset.whisperPhrases);
+    if (control.dataset.whisperPhrases) return WHISPER_DEFAULT_PHRASES[control.dataset.whisperPhrases] ?? [];
     if (!control.dataset.phrases) return value;
     const model = wakeModels.find((entry) => entry.id === stored?.wake?.model);
     return model?.[`default_${control.dataset.phrases}`] ?? [];
-  }
-  // The wake catalog's default phrases for a language, as the app picks them for Whisper:
-  // the catalog model whose language has the same primary subtag, none for other languages.
-  function whisperDefaultPhrases(list) {
-    const language = readByPath(stored, "whisper.language") || "auto";
-    const code = language === "auto" ? "en" : language.toLowerCase();
-    const model = wakeModels.find((entry) => entry.source === "catalog"
-      && String(entry.language || "").split("-")[0].toLowerCase() === code);
-    return model?.[`default_${list}`] ?? [];
   }
   // Writes a field from the stored settings unless it is being edited or holds a value of
   // its own; `force` after the field's own successful save.
@@ -296,7 +288,7 @@
     showVoiceInfo();
   }
 
-  // ---------- Collapsible cards on the Settings, Config and Whisper tabs (`ui.collapsed_cards`) ----------
+  // ---------- Collapsible cards on the Settings and Config tabs (`ui.collapsed_cards`) ----------
   // The title button folds a card to its title row. The state is saved like the theme; ids
   // this window does not know (from a newer build) are kept in the stored list. Not a form
   // field: no saved mark, no feedback line.
@@ -348,7 +340,7 @@
   function handoffHint() {
     const hint = HANDOFF_HINTS[$("codex-handoff").value];
     $("codex-handoff-hint").textContent = hint
-      ? `${hint} Realtime mode only. Applies from the next call. Default: conversation items.`
+      ? `${hint} Realtime voice mode only. Applies from the next call. Default: conversation items.`
       : "";
   }
   $("codex-handoff").addEventListener("change", handoffHint);
@@ -375,10 +367,8 @@
       if (control.id === "codex-model") applyEffortList();
       if (control.dataset.path.startsWith("diagnostics.")) applyDiagnostics();
       if (control.dataset.path === "assistant.mode") applyAssistantMode();
-      // Another Whisper language: its default phrases in the fields that hold no own list.
-      if (control.id === "whisper-language") {
-        document.querySelectorAll("[data-whisper-phrases]").forEach((phrases) => fillField(phrases, false));
-      }
+      // The CUDA runtime's notice follows the chosen device at once.
+      if (control.id === "whisper-device" && lastStatus) renderWhisperNotices(lastStatus);
     } catch (error) {
       // The rejected value stays so it can be corrected; the stored value is unchanged.
       setState(control.id, "error");
@@ -487,13 +477,12 @@
     select.value = current || "";
   }
   // The wake lists come from the catalog, which is fixed while the app runs: built once.
+  // (`wake.engine` has no field: Vosk is its only value, shown by Recognition.)
   function buildWakeLists() {
-    if (busyLists.has("wake-engine") || busyLists.has("wake-model")) {
+    if (busyLists.has("wake-model")) {
       pendingRebuilds.add("wake");
       return;
     }
-    const engines = [...new Set(wakeModels.map((model) => model.engine))];
-    fillSelect($("wake-engine"), engines.map((engine) => ({ value: engine, label: engine })), readByPath(stored, "wake.engine"));
     fillSelect(
       $("wake-model"),
       wakeModels.map((model) => ({ value: model.id, label: wakeModelLabel(model) })),
@@ -1280,16 +1269,21 @@
     installClose();
   });
 
-  // ---------- The Whisper tab (change `whisper-mode`, design D13) ----------
-  // The lists come from `whisper_models`, `tts_voices` and `whisper_languages`; the fields
-  // are written from the stored settings like every other field. The "In use now" lines, the
-  // download notices and the install dialog's Whisper subject follow the status (`whisper`
-  // and `tts`), never the form.
+  // ---------- The Whisper mode's fields (changes `whisper-mode`, `whisper-config-layout`) ----------
+  // Config → Assistant holds the mode, the Whisper model and the Whisper phrases (the rows of
+  // the mode shown, design D3); Config → Local voice the voice; Settings → Whisper the device,
+  // threads, language and what is in use (D4). The lists come from `whisper_models`,
+  // `tts_voices` and `whisper_languages`; the fields are written from the stored settings like
+  // every other field. The "In use now" lines, the download notices (from the status's
+  // `missing`, in both modes) and the install dialog's Whisper subject follow the status
+  // (`whisper` and `tts`), never the form.
   let whisperModels = [];
   let ttsVoices = [];
   let whisperLanguages = []; // [code, English name] in whisper.cpp's order
-  // The wake catalog's languages, listed first: they come with default phrases.
+  // The wake catalog's languages, listed first.
   const WAKE_LANGUAGES = ["en", "ru", "cs", "nl", "fr", "de", "it", "pl", "pt", "es"];
+  // A Whisper phrase list never set (`WhisperSettings::phrases_in_effect`), for every language.
+  const WHISPER_DEFAULT_PHRASES = { activation: ["bro"], deactivation: ["peace out"] };
   const MODEL_GROUPS = [
     ["multilingual", "Multilingual"],
     ["english_only", "English only"],
@@ -1304,8 +1298,6 @@
   const WHISPER_JOIN_REFUSED = "The Whisper mode needs downloads";
   // The fields whose choice may need files, and the requirement each one sets.
   const WHISPER_CHOICES = { "whisper-model": "model", "whisper-device": "device", "tts-voice": "voice" };
-  // The Config tab's fields that only the realtime mode uses (Vosk spots the phrases there).
-  const VOSK_FIELDS = ["activation-phrases", "deactivation-phrases", "wake-engine", "wake-model"];
   const WHISPER_MANUAL_NOTE = $("whisper-download-manual").querySelector(".manual-note").textContent;
 
   // Sizes below one megabyte keep a decimal (the phonemizer is 0.4 MB).
@@ -1356,13 +1348,13 @@
     }
     return [...groups.values()];
   }
-  // Automatic, then the ten languages with default phrases, then the rest in Whisper's order.
+  // Automatic, then the wake models' ten languages, then the rest in Whisper's order.
   function languageGroups() {
     const names = new Map(whisperLanguages);
     const option = (code) => ({ value: code, label: `${names.get(code)} (${code})` });
     return [
       { items: [{ value: "auto", label: "Automatic" }] },
-      { label: "Languages with default phrases", items: WAKE_LANGUAGES.filter((code) => names.has(code)).map(option) },
+      { label: "Languages of the wake models", items: WAKE_LANGUAGES.filter((code) => names.has(code)).map(option) },
       {
         label: "Other languages",
         items: whisperLanguages.map(([code]) => code).filter((code) => !WAKE_LANGUAGES.includes(code)).map(option),
@@ -1434,17 +1426,27 @@
   }
   $("tts-voice").addEventListener("input", showVoiceInfo);
 
-  // The Config tab follows the stored mode: the Vosk fields are disabled in the Whisper mode
-  // and keep their stored values for the way back.
+  // The stored mode decides which rows of Config → Assistant show (the other mode's are
+  // hidden, not disabled), the grey Recognition value, the Local voice card's note and the
+  // Settings → Whisper card's On/Off label. Like a field, it follows the stored settings,
+  // never a status refresh.
+  let lastStatus = null; // the last status, for redrawing the notices after a save
   const whisperMode = () => readByPath(stored, "assistant.mode") === "whisper";
   function applyAssistantMode() {
-    const on = whisperMode();
-    for (const id of VOSK_FIELDS) {
-      const control = $(id);
-      control.disabled = on;
-      control.closest("label")?.classList.toggle("is-off", on);
-    }
-    $("assistant-whisper-note").hidden = !on;
+    const mode = whisperMode() ? "whisper" : "realtime";
+    document.querySelectorAll("#card-assistant-body [data-mode]").forEach((row) => {
+      row.hidden = row.dataset.mode !== mode;
+    });
+    $("recognition-engine").value = mode === "whisper" ? "Whisper" : "Vosk";
+    $("local-voice-note").textContent = mode === "whisper"
+      ? "This voice reads Codex's answers into the voice channel."
+      : "Not used in the realtime voice mode: the Codex call speaks with its own voice (Codex → Voice). You can download a voice now for the Whisper mode.";
+    $("whisper-onoff").classList.toggle("is-on", mode === "whisper");
+    $("whisper-onoff-flag").textContent = mode === "whisper" ? "On" : "Off";
+    $("whisper-onoff-text").textContent = mode === "whisper"
+      ? ": the assistant runs in the Whisper mode."
+      : ": turn it on in Config → Assistant → Assistant mode.";
+    if (lastStatus) renderWhisperNotices(lastStatus);
   }
 
   // ---- A model, device or voice that needs files: the dialog asks before it is saved.
@@ -1454,13 +1456,13 @@
     voice: readByPath(stored, "tts.voice") ?? "",
     ...change,
   });
-  const whisperDownloadArgs = () => {
-    const { model, voice } = whisperSelection();
-    return { model, voice };
-  };
-  // In the realtime mode nothing of Whisper is fetched: the choice is saved, and the switch to
-  // the Whisper mode asks for what is missing then. In the Whisper mode a choice that adds a
-  // missing file opens the dialog with everything the mode then needs.
+  // One action per Download (design D5): Whisper's files of the selected model and device,
+  // or the selected voice's files. Each is accepted in either mode.
+  const downloadWhisper = () => invoke("whisper_download", { model: whisperSelection().model });
+  const downloadVoice = () => invoke("tts_download", { voice: whisperSelection().voice });
+  // In the realtime mode a choice is saved at once and its card shows what it misses, with
+  // Download. In the Whisper mode a choice that adds a missing file opens the dialog with
+  // everything the mode then needs.
   async function chooseWhisper(select) {
     const previous = readByPath(stored, select.dataset.path) ?? "";
     // The dialog is modal, but a script or a keyboard path can still reach the list: while
@@ -1506,13 +1508,13 @@
 
   // ---- The install dialog for the Whisper mode: the same dialog, subject `whisper`. It
   // opens at a /join refused for missing files, at a switch to the Whisper mode with files
-  // missing (`mode`) and before a choice on this tab is saved (`choice`); never because the
-  // window started. Download asks for every file the selected model, device and voice need.
+  // missing (`mode`) and, in the Whisper mode, before a model, device or voice choice that
+  // adds missing files is saved (`choice`); never because the window started. It lists
+  // Whisper's and the voice's missing files, and Download asks for both.
   const whisperInstall = {
     lastMode: "", // the assistant mode of the last status
     modeSince: 0, // when the mode turned to Whisper: the dialog may open for it for 10 s
     joinRefusedAt: 0, // when the app refused a /join for missing files
-    opening: false, // the full list is being read before the dialog opens
     failed: false, // the dialog shows a failed download
     choice: null, // { control, previous } while a choice waits for Download
   };
@@ -1535,8 +1537,8 @@
     installDialog.dataset.subject = "whisper";
     $("wake-install-title").textContent = "The Whisper mode is not installed";
     $("wake-install-text").textContent = {
-      join: "A /join was refused: the Whisper mode recognizes speech and speaks the answers on this PC with these files, which are not here yet. Download them now?",
-      mode: "The Whisper mode recognizes speech and speaks the answers on this PC with these files, which are not here yet. Download them now?",
+      join: "A /join was refused: the Whisper mode recognizes speech and speaks the answers on this PC with these files of Whisper and the local voice, which are not here yet. Download them now?",
+      mode: "The Whisper mode recognizes speech and speaks the answers on this PC with these files of Whisper and the local voice, which are not here yet. Download them now?",
       choice: choice ? `${capitalized(whisperChoiceName(choice))} needs these files, which are not on this PC yet. Download them now?` : "",
     }[reason];
     installSetItems(items, sizeText, true);
@@ -1547,39 +1549,23 @@
     $("wake-install-error").hidden = true;
     $("wake-install-note").textContent = choice
       ? `Nothing is saved or downloaded until you press Download. Cancel keeps ${whisperChoicePrevious(choice)}.`
-      : "Nothing is downloaded until you press Download. Not now keeps the notices on the Whisper tab.";
+      : "Nothing is downloaded until you press Download. Not now keeps the Download buttons in Config → Assistant and Config → Local voice.";
     installButtons("Download", choice ? "Cancel" : "Not now");
     installDialog.showModal();
     // As for the wake word: a stray Enter or Space must not agree to a download.
     $("wake-install-secondary").focus();
   }
-  // Each file once, in the order the parts list them.
-  function unionItems(parts) {
+  // What the status says is missing: Whisper's files (runtime, model, VAD), then the voice's,
+  // each file once. Computed by the app in both modes.
+  function missingItems(status) {
     const seen = new Set();
     const items = [];
-    for (const state of parts) {
-      for (const item of state.items || []) {
-        if (seen.has(item.file)) continue;
-        seen.add(item.file);
-        items.push(item);
-      }
+    for (const item of (status.whisper?.missing || []).concat(status.tts?.missing || [])) {
+      if (seen.has(item.file)) continue;
+      seen.add(item.file);
+      items.push(item);
     }
     return items;
-  }
-  // The full list for the selected model, device and voice; the status's lists if that fails.
-  async function openWhisperFromStatus(reason, parts) {
-    whisperInstall.opening = true;
-    whisperInstall.joinRefusedAt = 0;
-    whisperInstall.modeSince = 0;
-    let items = [];
-    try {
-      items = await invoke("whisper_requirements", whisperSelection());
-    } catch (error) {
-      appendLog(`whisper_requirements failed: ${error}`);
-    }
-    if (!items.length) items = unionItems(parts);
-    whisperInstall.opening = false;
-    if (!installDialog.open && items.length) whisperOpen(reason, items);
   }
   async function whisperInstallDownload() {
     const button = $("wake-install-primary");
@@ -1605,14 +1591,16 @@
     // Not "the download": files put into the assets folder are only checked and unpacked.
     $("wake-install-progress").textContent = "Starting…";
     showManual($("wake-install-manual"), false);
-    try {
-      await invoke("whisper_download", whisperDownloadArgs());
+    // Both parts; a part with nothing missing refuses, which is fine while the other starts.
+    const results = await Promise.allSettled([downloadWhisper(), downloadVoice()]);
+    const refusals = results.filter((result) => result.status === "rejected").map((result) => String(result.reason));
+    if (refusals.length < results.length) {
       install.downloading = true;
       installButtons(null, "Hide");
-    } catch (error) {
+    } else {
       $("wake-install-progress").hidden = true;
       $("wake-install-error").hidden = false;
-      $("wake-install-error").textContent = `Could not start the download: ${error}`;
+      $("wake-install-error").textContent = `Could not start the download: ${refusals.join("; ")}`;
       showManual($("wake-install-manual"), true);
       installButtons("Try again", "Close");
     }
@@ -1625,7 +1613,8 @@
   function renderWhisperInstall(status) {
     const parts = [status.whisper?.state || {}, status.tts?.state || {}];
     const mode = status.settings?.assistant?.mode ?? readByPath(stored, "assistant.mode") ?? "realtime";
-    const needs = parts.some((state) => state.kind === "needs_download");
+    const items = missingItems(status);
+    const needs = items.length > 0 || parts.some((state) => state.kind === "needs_download");
     if (installDialog.open && install.subject === "whisper") {
       // Whisper's files and the voice's download side by side: one line each.
       const active = parts.filter((state) => fetching(state.kind));
@@ -1642,12 +1631,11 @@
         $("wake-install-progress").hidden = true;
         $("wake-install-error").hidden = false;
         $("wake-install-error").textContent = `The download failed: ${failed.message}`;
+        // Only what is still missing, for downloading by hand.
+        if (!whisperInstall.failed) renderManual($("wake-install-manual"), items);
+        whisperInstall.failed = true;
         showManual($("wake-install-manual"), true);
         installButtons("Try again", "Close");
-        if (!whisperInstall.failed) {
-          whisperInstall.failed = true;
-          refreshWhisperManual();
-        }
       } else if (install.downloading && !needs && !failed) {
         installClose();
       }
@@ -1655,112 +1643,154 @@
     if (mode === "whisper" && whisperInstall.lastMode === "realtime") whisperInstall.modeSince = Date.now();
     if (mode !== "whisper") whisperInstall.modeSince = 0;
     const recent = (since, ms) => since > 0 && Date.now() - since < ms;
-    if (install.armed && !installDialog.open && !whisperInstall.opening && mode === "whisper" && needs) {
-      if (recent(whisperInstall.joinRefusedAt, 5000)) openWhisperFromStatus("join", parts);
-      else if (recent(whisperInstall.modeSince, 10000)) openWhisperFromStatus("mode", parts);
+    if (install.armed && !installDialog.open && mode === "whisper" && items.length) {
+      const reason = recent(whisperInstall.joinRefusedAt, 5000) ? "join"
+        : recent(whisperInstall.modeSince, 10000) ? "mode" : "";
+      if (reason) {
+        whisperInstall.joinRefusedAt = 0;
+        whisperInstall.modeSince = 0;
+        whisperOpen(reason, items);
+      }
     }
     whisperInstall.lastMode = mode;
   }
 
-  // ---- The download notices under the model and under the voice. Download in either asks
-  // for everything the selected model, device and voice need, as the dialog does.
-  const whisperNotices = {
-    whisper: { last: "", requestError: "", items: [] },
-    tts: { last: "", requestError: "", items: [] },
-  };
-  let whisperListsStale = false; // a download ended: the lists' "downloaded" marks changed
-  function renderWhisperNotice(part, state, otherState) {
-    const notice = whisperNotices[part];
-    const box = $(`${part}-download`);
-    const text = $(`${part}-download-text`);
-    const list = $(`${part}-download-items`);
-    const button = $(`${part}-download-button`);
-    const manual = $(`${part}-download-manual`);
-    const afterDownload = fetching(notice.last) || notice.last === "needs_download" || box.dataset.failed === "1";
+  // ---- The download notices (design D5), drawn from the status's `missing` in both modes:
+  // - `whisper`, under the Whisper model in Config → Assistant (shown in the Whisper mode):
+  //   the runtime of the selected device, the model and the VAD model;
+  // - `tts`, in Config → Local voice (both modes): the voice engine, the phonemizer for
+  //   Piper and Kokoro, and the voice;
+  // - `settings-whisper`, in Settings → Whisper under the device:
+  //   - in the realtime mode, every file the Whisper model chosen for the Whisper mode misses
+  //     (runtime, model, VAD), so it can be downloaded before the switch;
+  //   - in the Whisper mode, while NVIDIA GPU is chosen, the CUDA runtime only.
+  // Each Download asks for exactly its part: `whisper_download` (the runtime is part of the
+  // model's set for that device) or `tts_download`. The progress comes through the part's
+  // state (`downloading`, `installing`), in either mode.
+  const isRuntime = (item) => /^Whisper runtime/.test(item.label || "");
+  const SETTINGS_NOTICE = "settings-whisper";
+  const NOTICE_IDS = ["whisper", "tts", SETTINGS_NOTICE];
+  const NOTICE_PART = { whisper: "whisper", tts: "tts", [SETTINGS_NOTICE]: "whisper" };
+  function noticeText(id) {
+    if (id === "whisper") {
+      return "Whisper needs these files to write down what is said on this PC, and they are not here yet. Nothing is downloaded until you press Download.";
+    }
+    if (id === "tts") {
+      return "The voice needs these files to speak on this PC, and they are not here yet. Nothing is downloaded until you press Download.";
+    }
+    if (!whisperMode()) {
+      const model = whisperModelName(readByPath(stored, "whisper.model"));
+      return `The Whisper mode needs these files for ${model}, the model chosen for it (choose another in Config → Assistant once the mode is Whisper). Nothing is downloaded until you press Download.`;
+    }
+    return "NVIDIA GPU needs Whisper's CUDA runtime, which is not on this PC yet. Nothing is downloaded until you press Download.";
+  }
+  // Per notice: it listed files or its Download was pressed (`active`), a download of its part
+  // ran since (`fetched`), and a Download that could not start (`requestError`).
+  const noticeMemo = Object.fromEntries(NOTICE_IDS.map((id) => [id, { active: false, fetched: false, requestError: "" }]));
+  const partLast = { whisper: "", tts: "" }; // each part's last state, to see a download end
+  function noticeItems(id, status) {
+    const items = status[NOTICE_PART[id]]?.missing || [];
+    return id === SETTINGS_NOTICE && whisperMode() ? items.filter(isRuntime) : items;
+  }
+  function noticeShown(id) {
+    if (id === "whisper") return whisperMode();
+    if (id === SETTINGS_NOTICE) return !whisperMode() || readByPath(stored, "whisper.device") === "gpu";
+    return true;
+  }
+  function renderNotice(id, status) {
+    const state = status[NOTICE_PART[id]]?.state || {};
+    const items = noticeItems(id, status);
+    const memo = noticeMemo[id];
+    const box = $(`${id}-download`);
+    const text = $(`${id}-download-text`);
+    const list = $(`${id}-download-items`);
+    const button = $(`${id}-download-button`);
+    const manual = $(`${id}-download-manual`);
+    const total = $(`${id}-download-total`);
     list.innerHTML = "";
-    if (state.kind === "needs_download") {
-      box.hidden = false;
-      box.dataset.failed = "";
-      notice.items = state.items || [];
-      const what = part === "whisper"
-        ? "Whisper needs these files to recognize speech on this PC, and they are not here yet"
-        : "The voice needs these files to speak on this PC, and they are not here yet";
-      const also = otherState.kind === "needs_download"
-        ? ` Download also gets the files listed under ${part === "whisper" ? "Voice" : "Speech recognition"}.`
-        : "";
-      text.textContent = notice.requestError || `${what}; nothing is downloaded until you press Download.${also}`;
-      for (const item of notice.items) {
-        const line = document.createElement("li");
-        line.textContent = `${item.label} — ${sizeText(item.bytes)} from ${item.host}`;
-        list.appendChild(line);
-      }
-      renderManual(manual, notice.items);
-      showManual(manual, true);
-      button.hidden = false;
-      button.disabled = false;
-    } else if (fetching(state.kind)) {
+    if (total) total.textContent = "";
+    if (!noticeShown(id)) {
+      box.hidden = true;
+      return;
+    }
+    // In the Whisper mode the runtime's notice shows a download of Whisper's files only when
+    // it started it or listed the runtime; the others show every download of their part.
+    const runtimeOnly = id === SETTINGS_NOTICE && whisperMode();
+    if (fetching(state.kind) && (!runtimeOnly || memo.active)) {
+      memo.fetched = true;
       box.hidden = false;
       box.dataset.failed = "";
       text.textContent = whisperFetchText(state);
       showManual(manual, false);
       button.hidden = true;
-    } else if (state.kind === "error" && afterDownload) {
+    } else if (state.kind === "error" && (memo.fetched || box.dataset.failed === "1")) {
       box.hidden = false;
-      const firstError = box.dataset.failed !== "1";
       box.dataset.failed = "1";
       text.textContent = `The download failed: ${state.message}`;
+      renderManual(manual, items);
       showManual(manual, true);
-      if (firstError) refreshWhisperManual();
+      button.hidden = false;
+      button.disabled = false;
+    } else if (items.length) {
+      memo.active = true;
+      memo.fetched = false;
+      box.hidden = false;
+      box.dataset.failed = "";
+      let lead = memo.requestError || noticeText(id);
+      // The runtime's Download also gets what the selected model misses besides it.
+      const others = runtimeOnly ? (status.whisper?.missing || []).filter((item) => !isRuntime(item)) : [];
+      if (others.length && !memo.requestError) {
+        const bytes = others.reduce((sum, item) => sum + Number(item.bytes || 0), 0);
+        lead += ` Download also gets the other files the selected Whisper model needs (${sizeText(bytes)}).`;
+      }
+      text.textContent = lead;
+      for (const item of items) {
+        const line = document.createElement("li");
+        line.textContent = `${item.label} — ${sizeText(item.bytes)} from ${item.host}`;
+        list.appendChild(line);
+      }
+      if (total && items.length > 1) {
+        total.textContent = `${sizeText(items.reduce((sum, item) => sum + Number(item.bytes || 0), 0))} in total.`;
+      }
+      renderManual(manual, items);
+      showManual(manual, true);
       button.hidden = false;
       button.disabled = false;
     } else {
+      Object.assign(memo, { active: false, fetched: false, requestError: "" });
       box.hidden = true;
       box.dataset.failed = "";
     }
-    if (fetching(notice.last) && !fetching(state.kind)) whisperListsStale = true;
-    if (state.kind !== "needs_download") notice.requestError = "";
-    notice.last = state.kind || "";
   }
-  // After a failed download only what is still missing is listed for downloading by hand.
-  async function refreshWhisperManual() {
-    if (!invoke) return;
-    let items;
-    try {
-      items = await invoke("whisper_requirements", whisperSelection());
-    } catch (error) {
-      appendLog(`whisper_requirements failed: ${error}`);
-      return;
-    }
+  function renderWhisperNotices(status) {
+    for (const id of NOTICE_IDS) renderNotice(id, status);
+    // A download ended: the lists' "downloaded" marks changed.
+    let ended = false;
     for (const part of ["whisper", "tts"]) {
-      const mine = new Set(whisperNotices[part].items.map((item) => item.file));
-      const box = $(`${part}-download`);
-      const manual = $(`${part}-download-manual`);
-      renderManual(manual, items.filter((item) => mine.has(item.file)));
-      showManual(manual, !box.hidden && box.dataset.failed === "1");
+      const kind = status[part]?.state?.kind || "";
+      if (fetching(partLast[part]) && !fetching(kind)) ended = true;
+      partLast[part] = kind;
     }
-    if (installDialog.open && install.subject === "whisper") {
-      renderManual($("wake-install-manual"), items);
-      showManual($("wake-install-manual"), !$("wake-install-error").hidden);
-    }
+    if (ended) reloadWhisperLists();
   }
-  for (const part of ["whisper", "tts"]) {
-    $(`${part}-download-button`).addEventListener("click", async () => {
+  for (const id of NOTICE_IDS) {
+    $(`${id}-download-button`).addEventListener("click", async () => {
       if (!invoke) return;
-      const notice = whisperNotices[part];
-      const button = $(`${part}-download-button`);
+      const memo = noticeMemo[id];
+      const button = $(`${id}-download-button`);
       button.disabled = true;
       try {
-        await invoke("whisper_download", whisperDownloadArgs());
-        notice.requestError = "";
+        await (id === "tts" ? downloadVoice() : downloadWhisper());
+        Object.assign(memo, { active: true, fetched: true, requestError: "" });
       } catch (error) {
-        notice.requestError = `Could not start the download: ${error}`;
-        $(`${part}-download-text`).textContent = notice.requestError;
+        memo.requestError = `Could not start the download: ${error}`;
+        $(`${id}-download-text`).textContent = memo.requestError;
         button.disabled = false;
       }
       refresh();
     });
-    $(`${part}-download-assets`).addEventListener("click", () => openAssetsFolder((line) => {
-      showTabFeedback($(`${part}-download-assets`), line, OPENED_MS);
+    $(`${id}-download-assets`).addEventListener("click", () => openAssetsFolder((line) => {
+      showTabFeedback($(`${id}-download-assets`), line, OPENED_MS);
     }));
   }
   $("open-whisper-models-folder").addEventListener("click", async () => {
@@ -1773,7 +1803,7 @@
     }
   });
 
-  // ---- "In use now" on the Mode card, and the Status tab's tiles (status, not form).
+  // ---- "In use now" on Settings → Whisper, and the Status tab's tiles (status, not form).
   function whisperStateText(state, name) {
     switch (state.kind) {
       case "needs_download": return `${name}: its files are not on this PC; nothing is downloaded until you press Download`;
@@ -1827,7 +1857,7 @@
       row.hidden = off;
     });
     if (off) {
-      setText("whisper-now-recognition", "Nothing of the Whisper mode: the assistant is in the realtime voice mode.");
+      setText("whisper-now-recognition", "Off: nothing is loaded. The assistant is in the realtime voice mode.");
       return;
     }
     let recognition = whisperStateText(state, whisperModelName(whisper.model));
@@ -2062,13 +2092,9 @@
       : "";
     renderWakeDownload(status.wake || {});
     renderInstall(status);
+    lastStatus = status;
     renderWhisperNow(status);
-    renderWhisperNotice("whisper", status.whisper?.state || {}, status.tts?.state || {});
-    renderWhisperNotice("tts", status.tts?.state || {}, status.whisper?.state || {});
-    if (whisperListsStale) {
-      whisperListsStale = false;
-      reloadWhisperLists();
-    }
+    renderWhisperNotices(status);
     renderWhisperInstall(status);
     renderOwner(status.owner);
     const badge = $("token-badge");

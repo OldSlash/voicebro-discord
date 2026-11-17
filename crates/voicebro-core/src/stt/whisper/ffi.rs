@@ -389,6 +389,37 @@ impl WhisperRuntime {
         Ok(true)
     }
 
+    /// Destroys the process's CUDA context, so its GPU memory and the driver's memory for
+    /// it go back to the system (change `whisper-config-layout`, design D9):
+    /// `cudaSetDevice(0)` and `cudaDeviceReset` of the CUDA runtime ggml-cuda uses. Device 0
+    /// is the one a model is loaded on (`gpu_device` keeps its default). The caller makes
+    /// sure no model is loaded and none is loading; the next load creates a new context.
+    /// `None` when this process never loaded CUDA.
+    pub fn reset_cuda(&self) -> Option<Result<(), String>> {
+        type SetDeviceFn = unsafe extern "C" fn(c_int) -> c_int;
+        type ResetFn = unsafe extern "C" fn() -> c_int;
+        let cuda = self.cuda.lock().expect("cuda lock");
+        // CUDA_LIBRARIES[0]: cudart64_12.dll.
+        let cudart = cuda.as_ref()?.first()?;
+        // SAFETY: entry points of the loaded CUDA runtime with their documented signatures,
+        // called while no model holds the context.
+        let result = unsafe {
+            let set_device = cudart.get::<SetDeviceFn>(b"cudaSetDevice\0");
+            let reset = cudart.get::<ResetFn>(b"cudaDeviceReset\0");
+            match (set_device, reset) {
+                (Ok(set_device), Ok(reset)) => match set_device(0) {
+                    0 => match reset() {
+                        0 => Ok(()),
+                        code => Err(format!("cudaDeviceReset returned {code}")),
+                    },
+                    code => Err(format!("cudaSetDevice(0) returned {code}")),
+                },
+                (Err(error), _) | (_, Err(error)) => Err(format!("{error}")),
+            }
+        };
+        Some(result)
+    }
+
     /// The devices ggml has registered now.
     pub fn devices(&self) -> Vec<BackendDevice> {
         // SAFETY: registry accessors of the loaded ggml; indices below the count.

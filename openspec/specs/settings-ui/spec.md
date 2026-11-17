@@ -31,12 +31,16 @@ Hotkey (mute), in that order.
 
 ### Requirement: Config tab fields
 The Config tab's "Discord and Codex" card SHALL hold the Discord token (write-only, with set
-and clear), the guild id and the Codex executable. The Access, Audio, Assistant, Codex and
-Hotkey cards follow it on the same tab.
+and clear), the guild id and the Codex executable. The Access, Audio, Assistant, Local
+voice, Codex and Hotkey cards follow it on the same tab, in that order.
 
 #### Scenario: Config fields
 - **WHEN** the Config tab is opened
 - **THEN** the token field shows whether a token is stored but never the token, and the guild id and the Codex executable show their stored values
+
+#### Scenario: Card order
+- **WHEN** the user opens the Config tab
+- **THEN** the cards after "Discord and Codex" are Access, Audio, Assistant, Local voice, Codex and Hotkey
 
 ### Requirement: No auto-connect control
 The window SHALL have no control for connecting at start-up: the bot always connects when a
@@ -557,71 +561,99 @@ expired, cancelled or ended after 5 wrong tries.
 - **WHEN** the user presses Cancel
 - **THEN** the code disappears, a later `/link` with it links nothing, and the card shows the previous link state
 
-### Requirement: Whisper tab fields
-The Whisper tab SHALL hold four cards, in this order: Mode, Speech recognition, Phrases and
-Voice. Every field SHALL save on change, with a help line and a validation message line
-like the Config tab's cards, and the tab SHALL have its own feedback line.
+### Requirement: Assistant mode in the Assistant card
+The Config tab's Assistant card SHALL hold the assistant mode as its first field: "Realtime
+voice" or "Whisper", with a help line saying what runs on the PC and what leaves it in each
+mode. Below it a grey Recognition field SHALL show "Vosk" in the realtime mode and
+"Whisper" in the Whisper mode; it follows the mode and cannot be edited.
 
-#### Scenario: Card order
-- **WHEN** the user opens the Whisper tab
-- **THEN** it shows the cards Mode, Speech recognition, Phrases and Voice, in that order
+#### Scenario: Switching to Whisper
+- **WHEN** the user picks Whisper as the assistant mode on the Config tab
+- **THEN** the mode is saved at once, and the Recognition field shows "Whisper"
 
-#### Scenario: Saved on change
-- **WHEN** the user changes the CPU threads on the Whisper tab
-- **THEN** the new value is saved without a further step
+### Requirement: Whisper model in the Assistant card
+In the Whisper mode the Assistant card's model field SHALL list the Whisper models instead
+of the Vosk models: grouped as Multilingual, English only, Russian-tuned and Your models,
+each entry with its size, its note and whether it is downloaded. Its download notice and
+Download button SHALL work as the Vosk model's do. In the realtime mode the field SHALL be
+the Vosk wake model, as before.
 
-### Requirement: Whisper tab Mode card
-The Mode card SHALL hold the assistant mode, with a help line saying what runs where and
-what leaves the PC in each mode, and a status line with what is loaded, on which device,
-and the last answer's timings.
+#### Scenario: Whisper model not downloaded
+- **WHEN** the mode is Whisper and the selected Whisper model is not on disk
+- **THEN** the Assistant card shows the notice with the runtime, the model and the VAD model, their sizes and sites, and a Download button
 
-#### Scenario: GPU fallback shown
-- **WHEN** the device is NVIDIA GPU and the status says the CPU is used
-- **THEN** the Mode card's status line says "GPU requested, CPU used" with the reason
+### Requirement: Phrase fields follow the mode
+The Assistant card's activation and deactivation phrase fields SHALL hold the selected Vosk
+model's phrases in the realtime mode and the Whisper phrases (`whisper.phrases`) in the
+Whisper mode. A save SHALL write the list of the mode shown. The help line SHALL say which
+set the fields hold. The activation control (wake word or always) SHALL stay below them.
 
-### Requirement: Whisper tab Speech recognition card
-The Speech recognition card SHALL hold:
+#### Scenario: Phrases per mode
+- **WHEN** the user sets the activation phrase "hey bro" in the Whisper mode and switches back to the realtime mode
+- **THEN** the fields show the Vosk model's phrases again, and "hey bro" is kept in `whisper.phrases`
 
-- the Whisper model, grouped as Multilingual, English only, Russian-tuned and Your models,
-  each entry with its size, its note and whether it is downloaded;
-- the device (CPU, NVIDIA GPU);
-- the CPU threads;
-- the language;
-- the download notice;
-- "Open Whisper models folder".
-
-#### Scenario: Choosing a model that is not downloaded
-- **WHEN** the user picks a Whisper model that is not on disk
-- **THEN** the install dialog opens with its Whisper subject, listing what that model needs and the total, and nothing is saved or fetched until Download
-
-### Requirement: Whisper tab Phrases card
-The Phrases card SHALL hold the activation and deactivation phrases, separated by commas or
-line breaks as on the Config tab, and a second control for the activation (wake word or
-always) that shares `session.mode` with the Config tab.
-
-#### Scenario: Activation shared with the Config tab
-- **WHEN** the user sets the activation to always on the Phrases card
-- **THEN** the Config tab's activation control shows always too
-
-### Requirement: Whisper tab Voice card
-The Voice card SHALL hold:
+### Requirement: Local voice card
+The Config tab SHALL have a Local voice card after the Assistant card. It SHALL hold:
 
 - the voice, grouped by engine and language, each entry with its size and whether it is
-  downloaded or built into Windows;
+  downloaded or built into Windows, and the voice's data license;
 - the speed;
 - Preview;
-- the download notice.
+- the voice's download notice with a Download button.
 
 #### Scenario: Preview
 - **WHEN** the user presses Preview with a downloaded voice
 - **THEN** a short neutral sample sentence in the voice's language plays in the window, and nothing is sent to Discord
 
-### Requirement: Vosk fields in Whisper mode
-While the assistant mode is Whisper, the Config tab's Assistant card SHALL disable the
-Vosk fields (wake phrases, wake engine and wake model) and show the note "Whisper mode:
-the phrases are on the Whisper tab". The Codex card's Voice and Answer handoff fields SHALL
-say in their help lines that they apply to the realtime mode only.
+### Requirement: The Local voice card says when the voice is used
+The Local voice card SHALL show a note that follows the assistant mode. In the realtime
+voice mode it SHALL say that the local voice is not used, because the Codex call speaks
+with its own voice. In the Whisper mode it SHALL say that this voice reads Codex's answers
+into the channel.
 
-#### Scenario: Switching modes
-- **WHEN** the user switches the mode to Whisper and opens the Config tab
-- **THEN** the Vosk fields are disabled with the note, and switching back enables them with their stored values
+#### Scenario: Realtime mode
+- **WHEN** the assistant mode is realtime voice
+- **THEN** the Local voice card says the local voice is not used in this mode, and its fields and Download still work
+
+### Requirement: Whisper card on the Settings tab
+The Settings tab SHALL have a Whisper card after Appearance and Diagnostics. It SHALL hold:
+
+- a label "On" or "Off" that follows the assistant mode, saying where to switch it;
+- the device (CPU, NVIDIA GPU), the CPU threads and the language;
+- the line with what is loaded, on which device, and the last answer's timings;
+- "Open Whisper models folder".
+
+#### Scenario: Off
+- **WHEN** the assistant mode is realtime voice and the user opens the Settings tab
+- **THEN** the Whisper card's label says it is off and to switch it on in Config → Assistant, and its fields can still be changed
+
+#### Scenario: GPU fallback shown
+- **WHEN** the device is NVIDIA GPU and the status says the CPU is used
+- **THEN** the Whisper card's line says "GPU requested, CPU used" with the reason
+
+### Requirement: Whisper's files can be downloaded before the switch
+While the assistant mode is realtime voice and the Whisper model chosen for the Whisper mode
+(`whisper.model`) misses files, the Settings tab's Whisper card SHALL show a notice naming
+that model and listing every missing file for the chosen device, with a Download button.
+In the Whisper mode that notice SHALL be under the Whisper model on the Config tab instead.
+
+#### Scenario: Realtime mode with nothing of Whisper downloaded
+- **WHEN** the assistant mode is realtime voice and nothing of Whisper is on disk
+- **THEN** the Settings tab's Whisper card names the model "base (q8_0)" and lists the runtime, the model and the VAD model with their sizes and a Download button
+
+### Requirement: The CUDA runtime's notice sits under the device
+When NVIDIA GPU is chosen on the Settings tab's Whisper card and the CUDA runtime is not on
+disk, the card SHALL show the runtime's notice under the device field: its size, site and a
+Download button.
+
+#### Scenario: GPU chosen without the CUDA runtime
+- **WHEN** the user chooses NVIDIA GPU on a PC with only the CPU runtime
+- **THEN** the card shows the CUDA runtime, 685 MB from github.com, with Download, and nothing is fetched until Download is pressed
+
+### Requirement: Realtime-only Codex fields say so
+The Codex card's Voice and Answer handoff fields SHALL say in their help lines that they
+apply to the realtime voice mode only.
+
+#### Scenario: Voice help
+- **WHEN** the user reads the help line of the Codex card's Voice field
+- **THEN** it says the field applies to the realtime voice mode only

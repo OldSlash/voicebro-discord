@@ -1133,7 +1133,7 @@ pub struct Settings {
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
     pub ui: UiSettings,                    // theme: dark | darcula | light | intellij (default dark); font_size: 11..=20 (default 13); collapsed_cards: ids of the collapsed cards of the Settings and Config tabs (default empty; unknown ids kept, ignored by the window)
     pub diagnostics: DiagnosticsSettings,  // performance, memory, verbose_log: all default false, read by the window and the desktop shell; opus_codec: libopus (default) | opus-rs, read by the core at each join and each call
-    pub whisper: WhisperSettings,          // the Whisper mode's recognition: model (catalog id or local:<file>, default whisper-base-q8_0), device: cpu (default) | gpu, threads: 0 (automatic) ..= 64, language: auto (default) | an ISO 639-1 code Whisper knows, phrases: { activation?, deactivation? } (an absent list: the defaults of whisper.language, 4.12)
+    pub whisper: WhisperSettings,          // the Whisper mode's recognition: model (catalog id or local:<file>, default whisper-base-q8_0), device: cpu (default) | gpu, threads: 0 (automatic) ..= 64, language: auto (default) | an ISO 639-1 code Whisper knows, phrases: { activation?, deactivation? } (an absent list: "bro" or "peace out", whatever the language, 4.12)
     pub tts: TtsSettings,                  // the Whisper mode's voice: voice (catalog id or windows:<token>, default supertonic3:F1), speed: 0.5..=2.0, default 1.0
     pub extra: Map<String, Value>,         // flattened: unknown fields from a newer version, kept as they are
 }
@@ -1141,9 +1141,8 @@ pub struct Settings {
 
 Every string in the project (UI, log, notes to the model, code, docs) is English. The wake
 phrases are each catalog model's defaults (4.4) or the user's own in the settings file, in
-whatever language the user's model recognizes; the Whisper mode's phrases take the defaults
-of the wake catalog entry for `whisper.language` (4.12). The code ships no assistant
-instruction.
+whatever language the user's model recognizes; the Whisper mode's phrases default to "bro"
+and "peace out" whatever the language (4.12). The code ships no assistant instruction.
 
 - Stored as JSON at `settings.json` next to the executable. Written to a temp file and
   renamed over the old one. Unknown fields are kept; missing fields take defaults.
@@ -1236,16 +1235,17 @@ the wake worker, unload Whisper and the voice. `Runtime::toggle_mute` is the sin
 `WhisperManager`, whose transcripts go to the registry, and a `TtsManager`, which it also
 hands to the assistant (`use_tts`); both live in the gate host (4.12).
 
-- *At start* Whisper scans `whisper-models\`, and both are configured: they report missing
-  files, download nothing and load nothing.
+- *At start* Whisper scans `whisper-models\`, and both are configured: in either mode they
+  report missing files, download nothing and load nothing.
 - *The feed.* Every gate's feed is a `ModeFeed`, which hands each frame and tick to the wake
   manager and to Whisper. Each takes them only while it runs: Vosk only in the realtime mode
   with the wake word, Whisper only while a model is loaded.
 - *Join.* `GateHost::prepare_join` awaits the assistant's preparation, then in the Whisper
   mode `prepare_whisper`: `WhisperManager::prepare_join` and `TtsManager::prepare_join` on a
   blocking thread. Missing files refuse the join with "The Whisper mode needs downloads:
-  open VoiceBro → Whisper tab and press Download", and the window opens its dialog (4.8); a
-  load error refuses it with the error.
+  open VoiceBro → Config and press Download in the Assistant and Local voice cards"
+  (`JOIN_NEEDS_DOWNLOADS`), and the window opens its dialog (4.8); a load error refuses it
+  with the error.
 - *Leave.* `on_leave` detaches the assistant and drops what Whisper cut or queued for the
   guild. After the last leave it calls `release` on both, which unload 0.5 s later unless
   the bot joined again first.
@@ -1333,7 +1333,9 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
 - UI: static HTML, CSS and JS with `withGlobalTauri: true`, no framework or bundler. The
   window has a tab bar with **Console,
   Codex chat, Status,
-  Performance, System, Settings, Config, Whisper**, cards, and a status bar (Discord state in colour,
+  Performance, System, Settings, Config** (the Whisper mode has no tab of its own since
+  change `whisper-config-layout`: its fields are on Config and Settings), cards, and a
+  status bar (Discord state in colour,
   guild count, voice channel count, uptime, a memory slot while memory measurement is on,
   the build stamp). Switching tabs
   keeps each tab's content and scroll position. Four themes (Dark, Darcula, Light,
@@ -1394,9 +1396,10 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     "Opus codec (experiment)" list, `diagnostics.opus_codec`, with a line under it,
     `#opus-codec-in-use`, that `renderStatus` fills from `VoiceChannelStatus.opus_codec` and
     `CallStatus.opus_codec`: "In use: Discord <label>; call <label>", or none while the bot
-    is in no channel; it is not a form field). The bot's cards (Audio, Assistant, Codex with
-    the "Save chat history" switch, `assistant.save_chat_history`, and Hotkey) are on the
-    Config tab, below "Discord and Codex", and behave as described here: the form code
+    is in no channel; it is not a form field), then Whisper (how Whisper runs on this PC,
+    change `whisper-config-layout`; below). The bot's cards (Access, Audio, Assistant, Local
+    voice, Codex with the "Save chat history" switch, `assistant.save_chat_history`, and
+    Hotkey) are on the Config tab, below "Discord and Codex", and behave as described here: the form code
     finds every control by `data-path`, whatever its tab. There is
     one control per field with its JSON path (`data-path`) and kind (string, number, bool,
     list, percent), and under every control a help line saying what the setting affects,
@@ -1419,9 +1422,10 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     Earcons field (`label.beside-slider`) moves its switch down by a slider's value line so
     it lines up with the Earcon volume slider next to it. Two controls may share a
     `data-path` (the Performance tab's switch and the
-    Diagnostics card): a save from one fills the other at once. Lists: the wake engine
-    and model come from `wake_models` (the catalog with its download state, then the local
-    models), each model labelled "<language> — <name> · downloaded | to download, N MB |
+    Diagnostics card): a save from one fills the other at once. Lists: the wake model comes
+    from `wake_models` (the catalog with its download state, then the local models; the
+    wake engine has no control since change `whisper-config-layout`: Vosk is its only value,
+    and the grey Recognition field shows it), each model labelled "<language> — <name> · downloaded | to download, N MB |
     models folder" and listed again when a download ends. The two phrase fields carry
     `data-phrases` (activation, deactivation) instead of a fixed path: they read and save
     `wake.phrases.<selected model>.<list>`, built as a key array because model ids contain
@@ -1472,17 +1476,19 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     state stays `needs_download`, so only a new trigger opens it again, and the card's
     notice stays.
     `apps/desktop/ui-dev/check-wake-dialog.mjs` runs all of this against the mock.
-    **The Whisper subject** (change `whisper-mode`, design D10): the same dialog, with
-    `data-subject="whisper"` and the title "The Whisper mode is not installed", lists every
-    file the selected Whisper model, device and voice need (`whisper_requirements {model,
-    device, voice}`: Whisper's files, then the voice's, each file once), always with the
-    total, and the download-by-hand part. It opens in the Whisper mode with files missing:
-    after a `/join` refused for them (`join`: the refusal's log line seen within 5 s), after
-    a switch to the Whisper mode (`mode`, within 10 s), and before a model, device or voice
-    choice on the Whisper tab is saved (`choice`: nothing is saved until Download, and Cancel
-    puts the previous value back). Never because the window started. Download calls
-    `whisper_download {model, voice}`, which gives both managers their consent, and the
-    progress follows `status.whisper` and `status.tts`.
+    **The Whisper subject** (changes `whisper-mode` and `whisper-config-layout`): the same
+    dialog, with `data-subject="whisper"` and the title "The Whisper mode is not
+    installed", lists every file the selected Whisper model, device and voice need
+    (`whisper_requirements {model, device, voice}`: Whisper's files, then the voice's, each
+    file once), always with the total, and the download-by-hand part. It opens only while
+    the mode is Whisper and files are missing: after a `/join` refused for them (`join`: the
+    refusal's log line seen within 5 s), after a switch to the Whisper mode (`mode`, within
+    10 s), and before a Whisper model (Config → Assistant), a device (Settings → Whisper)
+    or a voice (Config → Local voice) that adds missing files is saved (`choice`: nothing is
+    saved until Download, and Cancel puts the previous value back). In the realtime mode a
+    choice saves at once, and its card shows the notice. Never because the window started.
+    Download calls both `whisper_download {model}` and `tts_download {voice}`, which give
+    each manager its consent, and the progress follows `status.whisper` and `status.tts`.
   - **Codec failure notice** (`<dialog id="codec-failure">`, change
     `opus-codec-experiment`): opened with `showModal()` by `AppEvent::CodecFailure`
     (`showCodecFailure`), in the install dialog's style with the error colour as its border.
@@ -1507,7 +1513,7 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     an "Auto-start enabled" badge, Save changes (one settings patch for the edited fields
     plus `set_secret` when a token was typed) and Reset (back to the stored values); its
     fields (`data-config-path`) are the only ones that wait for Save changes. Below it come
-    the Access, Audio, Assistant, Codex and Hotkey cards, which save each change at once, then the
+    the Access, Audio, Assistant, Local voice, Codex and Hotkey cards, which save each change at once, then the
     tab's feedback line and one line with the path of `settings.json` (`#config-path`),
     outside every card. The tab never shows the contents of the settings file.
   - **Access** (Config, after "Discord and Codex"; change `owner-only-access`, 4.11): the
@@ -1524,10 +1530,10 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     account read as Check, then a code; its error shows under the buttons),
     `owner_link_cancel` and `owner_unlink`, disable the three buttons meanwhile and refresh
     the status.
-  - **Collapsible cards** (Settings, Config and Whisper): each of the twelve cards has
-    `data-card` (`appearance`, `diagnostics` on Settings; `discord`, `access`, `audio`,
-    `assistant`, `codex`, `hotkey` on Config; `whisper-mode`, `whisper-recognition`,
-    `whisper-phrases`, `whisper-voice` on Whisper), its title inside a `<button class=
+  - **Collapsible cards** (Settings and Config): each of the ten cards has `data-card`
+    (`appearance`, `diagnostics`, `whisper` on Settings; `discord`, `access`, `audio`,
+    `assistant`, `local-voice`, `codex`, `hotkey` on Config; the ids that change
+    `whisper-mode`'s removed cards may have stored are kept and ignored), its title inside a `<button class=
     "card-toggle" aria-expanded aria-controls>` with a CSS chevron, and its body in
     `.card-body`, which `hidden` hides; "Discord and Codex" keeps its badge in the title
     row. A click, Enter or Space toggles the card at once and saves the whole list with one
@@ -1564,35 +1570,55 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     colour. `loadCapabilities` writes the read time on every load (the start read and a
     join publish an `assistant` event, which loads them) and rebuilds the lists only when
     the models or voices changed, keeping the stored choice.
-  - **Whisper** (change `whisper-mode`, design D13), after Config: four foldable cards whose
-    fields save each change, with their help lines, validation messages and the tab's
-    feedback line `#whisper-feedback`.
-    - *Mode*: "Assistant mode" (`assistant.mode`: Realtime voice, or Whisper); its help line
-      says what leaves the PC in each mode, and that `codex.model` and
-      `codex.reasoning_effort` set how fast each answer comes in the Whisper mode. Below it,
-      "In use now" from `status.whisper` and `status.tts`: recognition, device (with the
-      fallback reason), voice, and the last answer's timings.
-    - *Speech recognition*: Model (`whisper.model`, from `whisper_models`, grouped as
-      Multilingual, English only, Russian-tuned and Your models, each with its size, note
-      and download state), Device (CPU or NVIDIA GPU (CUDA)), CPU threads, Language
-      (`whisper_languages`: Automatic, the ten wake catalog languages, then the rest of
-      Whisper's list), the download notice and "Open Whisper models folder"
-      (`open_whisper_models_folder`).
-    - *Phrases*: the two `whisper.phrases` lists (commas or line breaks; a list never set
-      shows the defaults of the chosen language and is filled again when the language
-      changes) and a second "Activation" control on `session.mode`, shared with Config.
-    - *Voice*: Voice (`tts.voice`, from `tts_voices`, grouped by engine and language with
-      the size and "downloaded", "to download" or "built into Windows", then a line with
-      the data license and the phonemizer), Speed (`tts.speed`, a slider of kind `factor`
-      shown as "1.25×", saved on release), Preview (`tts_preview {voice, speed}` returns WAV
-      bytes, played in an `<audio>` element in the window only) and the download notice.
+  - **The Whisper mode's fields** (change `whisper-mode`, laid out by change
+    `whisper-config-layout`, designs D3 to D5). There is no tab of their own: the bot's
+    settings are on Config, how Whisper runs on this PC is on Settings. Every field saves
+    each change through the normal path, with its help line and validation message.
+    - *Config → Assistant* follows the mode and swaps rows, not data: each row writes only
+      its own path, and the other mode's rows are hidden, not disabled.
+      - "Assistant mode" (`assistant.mode`: Realtime voice or Whisper) is the first field;
+        its help line says what runs on the PC and what leaves it in each mode, and that
+        `codex.model` and `codex.reasoning_effort` set how fast each answer comes in the
+        Whisper mode.
+      - "Recognition" is a grey read-only field, "Vosk" or "Whisper", which follows the
+        mode. It replaces the wake engine select.
+      - The realtime mode shows the wake model row (`wake.model`) with its notice and the
+        selected Vosk model's phrase fields, as above.
+      - The Whisper mode shows, in the same place, the Whisper model row (`whisper.model`,
+        from `whisper_models`, grouped as Multilingual, English only, Russian-tuned and
+        Your models, each with its size, note and download state) with its own notice and
+        Download (`whisper_download {model}`), and a second phrase pair bound to
+        `whisper.phrases` (commas or line breaks; a list never set shows "bro" or "peace
+        out"). The help line says which set the fields hold.
+      - Activation (`session.mode`) and the auto-stop stay below.
+    - *Config → Local voice* (`local-voice`, after Assistant) works in both modes. A note on
+      top follows the mode: in the realtime mode the local voice is not used, because the
+      Codex call speaks with its own voice, and it can be downloaded now; in the Whisper mode
+      this voice reads Codex's answers into the channel. Then Voice (`tts.voice`, from
+      `tts_voices`, grouped by engine and language with the size and "downloaded", "to
+      download" or "built into Windows", and a line with the data license and the
+      phonemizer), Speed (`tts.speed`, a slider of kind `factor` shown as "1.25×", saved on
+      release), Preview (`tts_preview {voice, speed}` returns WAV bytes, played in an
+      `<audio>` element in the window only) and the voice's notice with Download
+      (`tts_download {voice}`).
+    - *Settings → Whisper* (`whisper`, after Diagnostics): an "On" or "Off" label that
+      follows `assistant.mode` and says to switch it in Config → Assistant; Device (CPU or
+      NVIDIA GPU (CUDA)), CPU threads and Language (`whisper_languages`: Automatic, the ten
+      wake catalog languages, then the rest of Whisper's list); the in-use line from
+      `status.whisper` and `status.tts` (what is loaded, the device or "GPU requested, CPU
+      used: <reason>", the last answer's four timings); and "Open Whisper models folder"
+      (`open_whisper_models_folder`). In the Whisper mode, while NVIDIA GPU is chosen and
+      the CUDA runtime is missing, the runtime's items of `status.whisper.missing` show
+      under the device with Download. In the realtime mode the card shows instead the full
+      notice for the model chosen for the Whisper mode: every file it still needs on the
+      chosen device (runtime, model, VAD model) with Download, so everything can be fetched
+      before the switch.
 
-    A model, device or voice whose files are missing asks in the install dialog first. The
-    download notices render from `status.whisper.state` and `status.tts.state`, and their
-    Download asks for everything the selection needs. While the mode is Whisper, the Config
-    tab's Vosk fields (wake phrases, wake engine, wake model) are disabled with the note
-    "Whisper mode: the phrases are on the Whisper tab", and the Codex card's Voice and
-    Answer handoff help lines say "realtime mode only".
+    The notices render from `status.whisper.missing` and `status.tts.missing`, which the
+    core fills in both modes, and the progress from their states. Each Download fetches
+    only what its notice lists; a Download in the realtime mode installs the files and
+    loads nothing. The Codex card's Voice and Answer handoff help lines say "realtime mode
+    only".
   - Codex chat shows the chat log entries (pulled at start,
     then one `chat` event per entry, at most 600 rows), one row each with the time, a
     coloured source label and the text. Labels: the speaker's name for a user transcript,
@@ -1606,10 +1632,11 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     `codex_models`, `owner_link_start`, `owner_link_cancel`, `owner_unlink`, `capabilities`,
     `discord_text_channels`, `wake_models`, `wake_download`, `wake_requirements`,
     `whisper_models`, `tts_voices`, `whisper_requirements`, `whisper_download`,
-    `tts_preview`, `whisper_languages`, `open_whisper_models_folder`,
+    `tts_download`, `tts_preview`, `whisper_languages`, `open_whisper_models_folder`,
     `chat_log`, `log_history`, `system_status`, `memory_status`, `open_log_folder`,
-    `open_models_folder`, `open_assets_folder`. `tts_preview` runs on a blocking thread:
-    it loads a voice of its own for the sample.
+    `open_models_folder`, `open_assets_folder`. `whisper_download {model}` fetches
+    Whisper's files and `tts_download {voice}` the voice's, in either mode.
+    `tts_preview` runs on a blocking thread: it loads a voice of its own for the sample.
 - Checking the window without a person: start the app with
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`; the page is then
   reachable through the Chrome DevTools protocol (evaluate expressions, take screenshots).
@@ -1625,11 +1652,12 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
   starts with that answer posting stored, `?owner=linked` with Alex linked and `?owner_only`
   with the Access switch on; `completeLink(name)`, `wrongCode()` and `expireCode()` act as
   Discord and the clock on a waiting code, and `owner()` returns the link state; for the
-  Whisper mode the catalogs as the app lists them, `?whisper` (the Whisper mode with its
-  files on disk), `?whisper_missing` (nothing downloaded) and `?gpu_fallback` (Whisper
-  loaded in a channel, the GPU asked for and the CPU used, one measured answer), a refused
-  `join()` with files missing, and `failNextWhisperDownload`, `completeWhisperDownload`,
-  `placeWhisperFiles`, `setCuda` and `whisperTurn`),
+  Whisper mode the catalogs as the app lists them, the `missing` files in the statuses of
+  both modes, `tts_download`, `?whisper` (the Whisper mode with its files on disk),
+  `?whisper_missing` (nothing downloaded) and `?gpu_fallback` (Whisper loaded in a channel,
+  the GPU asked for and the CPU used, one measured answer), a refused `join()` with files
+  missing, and `failNextWhisperDownload`, `completeWhisperDownload`, `placeWhisperFiles`,
+  `setCuda` and `whisperTurn`),
   `make.mjs`, which writes `ui-dev/index.html` from `ui/index.html` with the mock loaded
   first, and `serve.mjs`, which serves it on `http://127.0.0.1:5174/` for browsers that do
   not run scripts from `file://`. Three headless checks drive the mock in Edge and stop at
@@ -1637,8 +1665,9 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
   `check-config-tab.mjs` (which cards each tab holds, the two ways of saving on Config,
   the collapsible cards of both tabs, the switches' size, label and keyboard, the Codex lists and
   Refresh lists, and Post answers to Discord with its channel list) and
-  `check-whisper-tab.mjs` (the Whisper tab's fields and cards, the disabled Vosk fields, and
-  the install dialog's Whisper subject).
+  `check-whisper-config.mjs` (the Whisper mode's fields on Config and Settings: the rows of
+  each mode, the Local voice and Settings → Whisper cards, the notices and Download in both
+  modes, and when the install dialog's Whisper subject opens).
 - Window lifecycle: destroying the main window exits the app, which stops `codex.exe`.
 
 ### 4.9 Probe binary (`apps/probe`)
@@ -1823,7 +1852,10 @@ pub trait TranscriptSink: Send + Sync {
 - **Once per process.** The runtime is loaded on first use from the GPU folder when it is
   on disk (it holds the CPU set too), else from the CPU folder, and stays loaded: ggml's
   backend registry is global, and CUDA's libraries are not made to be unloaded. Only the
-  model is freed after the last leave. When the CPU runtime was loaded in this run and the
+  model is freed after the last leave; after a model on the GPU the CUDA context is reset
+  too (`WhisperRuntime::reset_cuda`: `cudaSetDevice(0)` and `cudaDeviceReset` of the
+  loaded `cudart64_12.dll`; change `whisper-config-layout`, design D9), so its GPU memory
+  goes back, and the next join creates a new one. When the CPU runtime was loaded in this run and the
   GPU runtime is downloaded later, the GPU needs a restart of the app, and the fallback
   reason says so.
 - **Struct mirrors.** `whisper_context_params`, `whisper_full_params` and
@@ -1882,8 +1914,10 @@ pub trait TranscriptSink: Send + Sync {
   - segments above the no-speech threshold, and segments that are only a note in brackets
     ("[BLANK_AUDIO]", "(music)", "*…*"), are dropped;
   - nothing left is noise;
-  - one word four or more times in a row is a hallucination, counted and logged without
-    the text.
+  - one word four or more times in a row is a hallucination when the run is also faster
+    than five words a second of the utterance's speech (`MAX_REPEATS_PER_SECOND`; change
+    `whisper-config-layout`, design D7), so a person's "bro, bro, bro, bro" is kept. A
+    drop is counted and logged with the repeats and the length, without the text.
 
   The rest goes to the sink as a `Transcript`: the SSRC, the text, the language used or
   detected, the instants, the audio length, the model and the device. What Whisper heard
@@ -1892,36 +1926,46 @@ pub trait TranscriptSink: Send + Sync {
   the matching form of 4.4 (`phrase_occurrences` on the utterance's words, so punctuation,
   case and "ё" do not matter) and returns `Activate {phrase, question}` (the words after
   the phrase as Whisper wrote them, if any), `Deactivate {phrase}`, `Question` or `Ignore`
-  (4.3). `whisper.phrases` is one pair of lists for every language; a list never set takes
-  the default phrases of the wake catalog entry for `whisper.language` (English for `auto`,
-  none for a language the catalog lacks). Whisper writes any word, so there is no
-  vocabulary check.
-- **`WhisperManager`** (`manager.rs`, designs D10, D12 and D15):
-  - *`configure(settings)`*, at start and on the `mode` and `whisper` parts. In the realtime
-    mode it unloads and is `Off`. In the Whisper mode it checks, in the calling thread,
-    which files the model needs on the device: the GPU runtime for `gpu`, for `cpu` the GPU
-    runtime when it is on disk and else the CPU runtime, the model and the VAD model.
-    Without the user's consent for that model and device it publishes `NeedsDownload
-    {items}`, and nothing is requested from the network.
-  - *The consent* (`download(model)`, refused unless the model is the selected one and
-    something waits) is held in memory only. A thread of its own downloads (`Downloading`,
-    `Installing`), then the state is `Idle`, or the model loads when the bot is in a
-    channel.
+  (4.3). `whisper.phrases` is one pair of lists for every language, apart from the wake
+  models' phrases; a list never set means the activation "bro" or the deactivation "peace
+  out", whatever `whisper.language` is (change `whisper-config-layout`, design D2).
+  Whisper writes any word, so there is no vocabulary check.
+- **`WhisperManager`** (`manager.rs`, designs D10, D12 and D15 of change `whisper-mode`, D1
+  of change `whisper-config-layout`):
+  - *`configure(settings)`*, at start and on the `mode` and `whisper` parts. In both modes
+    it checks, in the calling thread and without the network, which files the selected
+    model needs on the selected device: the GPU runtime for `gpu`, for `cpu` the GPU runtime
+    when it is on disk and else the CPU runtime, the model and the VAD model. It publishes
+    them as `missing`. In the realtime mode it unloads and the state is `Off`. In the
+    Whisper mode, without the user's consent for that model and device, the state is
+    `NeedsDownload {items}`, and nothing is requested from the network.
+  - *The consent* (`download(model)`) is accepted in either mode whenever the selected model
+    misses files on the selected device (or after a failed download), and refused for any
+    other model. It is held in memory only. A thread of its own downloads (`Downloading`,
+    `Installing`) and empties `missing`. In the realtime mode the state then returns to
+    `Off` and nothing loads; in the Whisper mode it is `Idle`, or the model loads when the
+    bot is in a channel.
   - *A model or device change* while loaded reloads in the background and swaps the model
     in its slot; the old one serves until then. Language, threads and phrases apply to the
     next utterance through the shared `DecodeOptions`. A newer `configure` makes an older
     background job give way (a generation counter).
   - *`prepare_join`* loads now, or refuses with `JOIN_NEEDS_DOWNLOADS` while files are
     missing. *`release`* unloads 0.5 s later unless a join came first (a presence counter).
+    The unload closes the pipeline first, which stops the utterance being transcribed,
+    then frees the model; after a model on the GPU it resets the CUDA context with the busy
+    lock held, so no load runs meanwhile. A switch to the realtime mode resets it only when
+    the lock is free.
   - *It implements `WakeFeed`*: frames and ticks go to the cutter's channel only while a
     model is loaded, and a full channel counts a dropped frame. `clear_guild` drops what is
-    cut or queued for a guild.
+    cut or queued for a guild and stops its utterance being transcribed.
 - **`Status.whisper`** (`WhisperStatus`, `AppEvent::Whisper`): the state (`off`,
   `needs_download`, `downloading`, `installing`, `idle`, `loading`, `ready`, `error`), the
   model, the device requested and in use, the fallback reason, the backend ("CUDA0: NVIDIA
   GeForce RTX 5090 Laptop GPU", "CPU ggml-cpu-alderlake, 12 threads"), the language, the
-  load time, the phrases in effect and the counters: queued, transcribed, dropped late,
-  dropped as noise, dropped as hallucination, the last transcription time and audio length.
+  load time, the phrases in effect, `missing` (the files the selected model and device
+  still need, in either mode: the window's notices and Download buttons) and the counters:
+  queued, transcribed, dropped late, dropped as noise, dropped as hallucination, the last
+  transcription time and audio length.
 
 **The local voice (`tts/`)**
 
@@ -2001,8 +2045,10 @@ pub trait Loader: Send + Sync {
     The output's own flush and mute call `reset`.
 - **`TtsManager`** (`manager.rs`):
   - *`configure`* works like `WhisperManager`'s, for the voice's files (the engine, the
-    phonemizer, the pack; nothing for a Windows voice), with its own consent per voice.
-    The speed applies at once.
+    phonemizer, the pack; nothing for a Windows voice): `missing` in both modes, its own
+    consent per voice, and `download(voice)` (command `tts_download`) accepted in either
+    mode while the selected voice misses files; in the realtime mode it installs them and
+    loads nothing. The speed applies at once.
   - *`prepare_join`* loads the voice and warms it up with one short synthesis; *`release`*
     unloads it 0.5 s after the last leave.
   - *One thread, `voicebro-tts`,* takes the queued pieces (epoch, text, language, player,
@@ -2014,7 +2060,8 @@ pub trait Loader: Send + Sync {
     reaches Discord.
 - **`Status.tts`** (`TtsStatus`, `AppEvent::Tts`): the state (as Whisper's), the voice, the
   engine, the sample rate, the load time, the last answer's time from queueing its first
-  piece to its audio, and the pieces spoken and skipped.
+  piece to its audio, the pieces spoken and skipped, and `missing` (the selected voice's
+  files not on disk, in either mode).
 
 **Measured on the development PC** (Intel Core Ultra 9 275HX, 24 logical processors; RTX
 5090 Laptop GPU, 24 GB; design.md holds the full numbers). Whisper encodes a 30 s window,
@@ -2199,9 +2246,9 @@ Values that are known to work. Change them only with a measurement or a corpus r
 | Shortest utterance transcribed | 12 voiced frames (240 ms, peak ≥ 700); fewer is noise |
 | Utterance padding | 300 ms of silence after the speech, then at least 1 s in all |
 | Toward the cutter / utterance queue | 256 messages, a full channel drops and counts / 8 utterances, the oldest waiting dropped and counted |
-| Whisper decoding | greedy, temperature 0 with whisper.cpp's fallback, `no_context`, Silero VAD 6.2.0 with whisper.cpp's defaults, no-speech threshold 0.6; one word 4 times in a row is a hallucination |
+| Whisper decoding | greedy, temperature 0 with whisper.cpp's fallback, `no_context`, Silero VAD 6.2.0 with whisper.cpp's defaults, no-speech threshold 0.6; one word 4 or more times in a row and faster than 5 words a second of speech is a hallucination |
 | Whisper CPU threads | `whisper.threads`; 0 is half the logical processors, at most 16 |
-| Whisper and voice unload | 0.5 s after the last leave; the runtime libraries stay loaded |
+| Whisper and voice unload | 0.5 s after the last leave; the transcription in progress stops at the end of its encoder pass or decoder step; after a model on the GPU the CUDA context is reset; the runtime libraries stay loaded |
 | Voice pieces | end at `. ! ? …` before whitespace or at a line break, the first piece of a message also at a comma; at least 20, at most 300 characters |
 | Voice ahead of playback | at most 20 s |
 | Voice threads | Supertonic 3: 2, 5 steps; Piper: 4; Kokoro: 8 |
@@ -2254,8 +2301,11 @@ Values that are known to work. Change them only with a measurement or a corpus r
   Whisper model <id> loaded on <cpu|gpu> in <ms> ms (<backend>)
   Whisper device: gpu requested, cpu used: <reason>
   Whisper model <id> unloaded
+  Whisper: the GPU's memory was given back (CUDA context reset)
+  Whisper: the CUDA context was not reset: <error>   (warning)
+  [whisper:<guild>] stopped the transcription in progress after <ms> ms: the bot left or Whisper unloads
   [whisper:<guild>] the transcriber is 8 utterances behind; dropped the oldest (<s> s, <n> so far)
-  [whisper:<guild>] dropped a repeated-word transcription as a hallucination (<n> so far)
+  [whisper:<guild>] dropped a repeated-word transcription as a hallucination: one word <repeats> times in <s> s (<n> so far)
   [whisper] <ggml's buffer-size and device lines>
   voice engine: sherpa-onnx from <folder>, onnxruntime <path>
   phonemizer: piper-phonemize from <folder>, espeak-ng data <folder>

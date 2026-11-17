@@ -264,7 +264,7 @@ fn open_assets_folder(state: State<'_, AppState>) -> Result<String, String> {
     open_folder(&dir)
 }
 
-/// The Whisper models for the Whisper tab: the catalog with whether each is downloaded,
+/// The Whisper models for Config → Assistant: the catalog with whether each is downloaded,
 /// then the user's own models in `whisper-models` (change `whisper-mode`).
 #[tauri::command]
 fn whisper_models(
@@ -298,19 +298,17 @@ fn whisper_requirements(
     Ok(items)
 }
 
-/// The user agreed to download what the selected Whisper model and voice need.
+/// The user agreed to download what the selected Whisper model and device need, in
+/// either assistant mode (change `whisper-config-layout`).
 #[tauri::command]
-fn whisper_download(
-    state: State<'_, AppState>,
-    model: String,
-    voice: String,
-) -> Result<(), String> {
-    let heard = state.runtime.whisper().download(&model);
-    let spoken = state.runtime.tts().download(&voice);
-    match (heard, spoken) {
-        (Err(heard), Err(spoken)) => Err(format!("{heard}; {spoken}")),
-        _ => Ok(()),
-    }
+fn whisper_download(state: State<'_, AppState>, model: String) -> Result<(), String> {
+    state.runtime.whisper().download(&model)
+}
+
+/// The user agreed to download what the selected voice needs, in either assistant mode.
+#[tauri::command]
+fn tts_download(state: State<'_, AppState>, voice: String) -> Result<(), String> {
+    state.runtime.tts().download(&voice)
 }
 
 /// Preview: the voice reads its sample sentence; the WAV plays in the window only.
@@ -830,6 +828,7 @@ fn main() {
             tts_voices,
             whisper_requirements,
             whisper_download,
+            tts_download,
             tts_preview,
             whisper_languages,
             open_whisper_models_folder,

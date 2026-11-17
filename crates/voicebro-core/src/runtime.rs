@@ -272,7 +272,7 @@ impl GateHost {
 
     /// In the Whisper mode a join also loads Whisper and the voice (design D12), off the
     /// async threads; missing files refuse it with the reply that sends the user to the
-    /// Whisper tab.
+    /// Config tab's Assistant and Local voice cards.
     async fn prepare_whisper(&self) -> Result<(), String> {
         let (whisper, tts) = (self.whisper.clone(), self.tts.clone());
         let result = tokio::task::spawn_blocking(move || {
@@ -2082,7 +2082,7 @@ mod tests {
     }
 
     /// Scenario "Join prepares the assistant" in the Whisper mode with files missing: the
-    /// join is refused with the reply that sends the user to the Whisper tab.
+    /// join is refused with the reply that sends the user to the Config tab.
     #[test]
     fn a_join_in_the_whisper_mode_without_its_files_is_refused() {
         let tokio_rt = tokio::runtime::Runtime::new().unwrap();

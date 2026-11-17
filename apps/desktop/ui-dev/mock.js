@@ -19,7 +19,10 @@
 // files on disk and the bot in no channel (idle; add `&joined` for a bot in a channel),
 // `?whisper_missing` in the Whisper mode with nothing downloaded, `?gpu_fallback` with
 // Whisper loaded in a channel, the GPU asked for and the CPU used ("no CUDA device"), and one
-// measured answer. Without them nothing of Whisper is on disk and the mode is realtime. A
+// measured answer. Without them nothing of Whisper is on disk and the mode is realtime. Both
+// statuses carry `missing` (what the selected model and device, or voice, still need) in both
+// modes, and `whisper_download({model})` and `tts_download({voice})` work in both modes (change
+// `whisper-config-layout`); in the realtime mode a download ends `off` with nothing missing. A
 // `join()` in the Whisper mode with files missing is refused as the app refuses it: the bot
 // stays out, the parts ask for the download, and the refusal is logged as an event.
 // `whisperState()`, `ttsState()`, `whisperRequirements(model, device, voice)`,
@@ -340,7 +343,7 @@
     + "lo:Lao,uz:Uzbek,fo:Faroese,ht:Haitian Creole,ps:Pashto,tk:Turkmen,nn:Nynorsk,mt:Maltese,sa:Sanskrit,"
     + "lb:Luxembourgish,my:Myanmar,bo:Tibetan,tl:Tagalog,mg:Malagasy,as:Assamese,tt:Tatar,haw:Hawaiian,ln:Lingala,"
     + "ha:Hausa,ba:Bashkir,jw:Javanese,su:Sundanese,yue:Cantonese").split(",").map((pair) => pair.split(":"));
-  const JOIN_NEEDS_DOWNLOADS = "The Whisper mode needs downloads: open VoiceBro → Whisper tab and press Download";
+  const JOIN_NEEDS_DOWNLOADS = "The Whisper mode needs downloads: open VoiceBro → Config and press Download in the Assistant and Local voice cards";
   // The files on disk, by file name.
   const haveFiles = new Set();
   const have = (asset) => haveFiles.has(asset.file);
@@ -385,8 +388,9 @@
   const partDownloads = { whisper: null, tts: null };
   let failNextWhisperDownload = false;
   let whisperLoadingUntil = 0; // Whisper and the voice load at a join, a mode switch, a change
+  // The state as the app reports it: a download runs in either mode (change
+  // `whisper-config-layout`), and outside one the realtime mode is `off`.
   function partState(part) {
-    if (settings.assistant.mode !== "whisper") return { kind: "off" };
     const download = partDownloads[part];
     if (download && download.selection === selectionOf(part)) {
       const item = download.items[download.index];
@@ -396,6 +400,7 @@
       if (download.installing) return { kind: "installing", label: item.label };
       return { kind: "downloading", label: item.label, percent: download.percent };
     }
+    if (settings.assistant.mode !== "whisper") return { kind: "off" };
     const items = missingOf(part);
     if (items.length) return { kind: "needs_download", items };
     if (!inVoice) return { kind: "idle" };
@@ -409,16 +414,20 @@
     }
   };
   const whisperDeviceUsed = () => (settings.whisper.device === "gpu" && cuda && have(GPU_RUNTIME) ? "gpu" : "cpu");
-  // The phrases in effect: the stored lists, or the wake catalog's defaults for the language.
+  // The phrases in effect: the stored lists, or "bro" and "peace out" whatever the language
+  // (change `whisper-config-layout`).
   function whisperPhrases(doc) {
-    const code = doc.whisper.language === "auto" ? "en" : doc.whisper.language;
-    const entry = catalog.find((model) => model.language.split("-")[0].toLowerCase() === code);
     const own = doc.whisper.phrases || {};
-    return {
-      activation: own.activation ?? entry?.default_activation ?? [],
-      deactivation: own.deactivation ?? entry?.default_deactivation ?? [],
-    };
+    return { activation: own.activation ?? ["bro"], deactivation: own.deactivation ?? ["peace out"] };
   }
+  // What the selected model and device, or the selected voice, still miss: in both modes.
+  const safeMissing = (part) => {
+    try {
+      return missingOf(part);
+    } catch {
+      return [];
+    }
+  };
   function whisperStatus() {
     const state = safeState("whisper");
     const ready = state.kind === "ready";
@@ -426,7 +435,7 @@
     const phrases = whisperPhrases(settings);
     const measured = turns.filter((turn) => turn.kind === "whisper").length;
     return {
-      state, model: settings.whisper.model, device_requested: settings.whisper.device, device_used: used,
+      state, missing: safeMissing("whisper"), model: settings.whisper.model, device_requested: settings.whisper.device, device_used: used,
       fallback_reason: ready && settings.whisper.device === "gpu" && used === "cpu" ? "no CUDA device" : null,
       backend: !ready ? null : used === "gpu" ? "CUDA0: NVIDIA GeForce RTX 4070 Laptop GPU" : `CPU ggml-cpu-alderlake, ${settings.whisper.threads || 8} threads`,
       language: settings.whisper.language, load_ms: ready ? (used === "gpu" ? 640 : 410) : null,
@@ -442,7 +451,7 @@
     const voice = voiceCatalog.find((candidate) => candidate.id === settings.tts.voice);
     const ready = state.kind === "ready";
     return {
-      state, voice: settings.tts.voice, engine: voice?.engine || "",
+      state, missing: safeMissing("tts"), voice: settings.tts.voice, engine: voice?.engine || "",
       sample_rate: ready ? (voice?.pack?.sample_rate || 16000) : null, load_ms: ready ? 300 : null,
       last_first_audio_ms: ready && turns.some((turn) => turn.kind === "whisper") ? 180 : null,
       spoken: 0, skipped: 0,
@@ -473,8 +482,9 @@
         download.index += 1;
         download.percent = 0;
         if (download.index >= download.items.length) {
+          // The realtime mode loads nothing: the state goes back to `off`.
           partDownloads[part] = null;
-          if (inVoice) loadWhisper();
+          if (inVoice && settings.assistant.mode === "whisper") loadWhisper();
         } else download.installing = placed.has(download.items[download.index].file);
       } else if (failNextWhisperDownload && download.percent >= 40) {
         failNextWhisperDownload = false;
@@ -490,30 +500,25 @@
     };
     setTimeout(step, 150);
   }
-  // As `whisper_download`: each part refuses what is not its selection or not waiting; the
-  // command fails only when both refuse.
-  function whisperDownload({ model, voice }) {
-    const refusals = [];
-    try {
-      if (model !== settings.whisper.model) throw `${model} is not the selected Whisper model (${settings.whisper.model})`;
-      if (!["needs_download", "error"].includes(partState("whisper").kind)) throw "nothing is waiting for a Whisper download";
-      startPartDownload("whisper");
-    } catch (message) {
-      refusals.push(String(message));
+  // As `whisper_download({model})` and `tts_download({voice})` (change
+  // `whisper-config-layout`): in either mode, for the selected item while it misses files or
+  // after a failed download; anything else is refused.
+  function partDownload(part, value) {
+    const selected = part === "whisper" ? settings.whisper.model : settings.tts.voice;
+    if (value !== selected) {
+      throw part === "whisper"
+        ? `${value} is not the selected Whisper model (${selected})`
+        : `${value} is not the selected voice (${selected})`;
     }
-    try {
-      if (voice !== settings.tts.voice) throw `${voice} is not the selected voice (${settings.tts.voice})`;
-      if (!["needs_download", "error"].includes(partState("tts").kind)) throw "nothing is waiting for a voice download";
-      startPartDownload("tts");
-    } catch (message) {
-      refusals.push(String(message));
+    const kind = partState(part).kind;
+    if (fetching(kind)) throw `a ${part === "whisper" ? "Whisper" : "voice"} download is already running`;
+    if (!missingOf(part).length && kind !== "error") {
+      throw part === "whisper" ? "nothing is waiting for a Whisper download" : "nothing is waiting for a voice download";
     }
-    if (refusals.length === 2) throw refusals.join("; ");
-    setTimeout(() => {
-      emitPart("whisper");
-      emitPart("tts");
-    }, 0);
+    startPartDownload(part);
+    setTimeout(() => emitPart(part), 0);
   }
+  const fetching = (kind) => kind === "downloading" || kind === "installing";
   // A short tone as a 16 kHz mono 16-bit WAV, as `tts_preview` returns its bytes.
   function sampleWav(speed = 1) {
     const rate = 16000;
@@ -893,7 +898,8 @@
       }
       return items;
     },
-    whisper_download: (args) => whisperDownload(args),
+    whisper_download: ({ model }) => partDownload("whisper", model),
+    tts_download: ({ voice }) => partDownload("tts", voice),
     tts_preview: ({ voice, speed }) => {
       const missing = ttsMissing(voice);
       if (missing.length) throw `${voice} needs a download first: ${missing.map((item) => item.label).join(", ")}`;

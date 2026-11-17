@@ -29,8 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The reply to a `/join` in Whisper mode while files are missing (design D12).
-pub const JOIN_NEEDS_DOWNLOADS: &str =
-    "The Whisper mode needs downloads: open VoiceBro → Whisper tab and press Download";
+pub const JOIN_NEEDS_DOWNLOADS: &str = "The Whisper mode needs downloads: open VoiceBro → Config and press Download in the Assistant and Local voice cards";
 /// Whisper unloads this long after the bot left its last voice channel.
 pub const UNLOAD_AFTER: Duration = Duration::from_millis(500);
 /// About 5 s of one speaker's frames toward the cutter.
@@ -77,6 +76,9 @@ pub struct WhisperStatus {
     pub activation_phrases: Vec<String>,
     pub deactivation_phrases: Vec<String>,
     pub counters: CountersSnapshot,
+    /// The files of the selected model and device that are not on disk, in either mode
+    /// (change `whisper-config-layout`): the window's notice and its Download button.
+    pub missing: Vec<DownloadItem>,
 }
 
 impl Default for WhisperStatus {
@@ -93,6 +95,7 @@ impl Default for WhisperStatus {
             activation_phrases: Vec::new(),
             deactivation_phrases: Vec::new(),
             counters: CountersSnapshot::default(),
+            missing: Vec::new(),
         }
     }
 }
@@ -127,6 +130,12 @@ pub struct Loaded {
 /// Loads a model: whisper.cpp in the app, a fake in tests.
 pub trait Engine: Send + Sync {
     fn load(&self, request: &LoadRequest) -> Result<Loaded, SttError>;
+
+    /// Gives the GPU's memory back once no model is loaded or loading (change
+    /// `whisper-config-layout`, design D9); `None` when there was nothing to give back.
+    fn release_gpu(&self) -> Option<Result<(), String>> {
+        None
+    }
 }
 
 /// whisper.cpp through the process's runtime (design D8).
@@ -146,6 +155,10 @@ impl Engine for WhisperCpp {
             model: Box::new(model),
             device,
         })
+    }
+
+    fn release_gpu(&self) -> Option<Result<(), String>> {
+        whisper::loaded_runtime()?.reset_cuda()
     }
 }
 
@@ -470,13 +483,36 @@ impl WhisperManager {
         *self.inner.settings.lock().expect("whisper settings lock") = Some(settings.clone());
         let generation = self.inner.generation.fetch_add(1, Ordering::AcqRel) + 1;
         self.apply_options(&settings.whisper);
+        let key = key_of(&settings.whisper);
+        let missing = self.missing(&key.0, key.1);
+        let items: Vec<DownloadItem> = missing
+            .as_ref()
+            .map(|missing| missing.iter().map(DownloadItem::of).collect())
+            .unwrap_or_default();
+        self.update(|status| status.missing = items);
         if settings.assistant.mode != AssistantMode::Whisper {
-            self.unload();
-            self.set_state(WhisperState::Off);
+            // The CUDA context goes only when nothing else loads or downloads now; a busy
+            // manager leaves it for the next unload.
+            if self.unload() {
+                if let Ok(_busy) = self.inner.busy.try_lock() {
+                    self.release_gpu();
+                }
+            }
+            // A download agreed in the realtime mode (change `whisper-config-layout`)
+            // fetches the files and loads nothing.
+            match missing {
+                Ok(missing) if !missing.is_empty() && self.agreed(&key) => {
+                    let manager = self.clone();
+                    std::thread::Builder::new()
+                        .name("voicebro-whisper-load".to_owned())
+                        .spawn(move || manager.background(generation, key, missing))
+                        .expect("spawn the Whisper loader thread");
+                }
+                _ => self.set_state(WhisperState::Off),
+            }
             return;
         }
-        let key = key_of(&settings.whisper);
-        let missing = match self.missing(&key.0, key.1) {
+        let missing = match missing {
             Ok(missing) => missing,
             Err(message) => {
                 self.set_state(WhisperState::Error { message });
@@ -528,6 +564,19 @@ impl WhisperManager {
         }
         if let Err(message) = self.fetch_all(&missing) {
             self.set_state(WhisperState::Error { message });
+            return;
+        }
+        let still = self.missing(&key.0, key.1).unwrap_or_default();
+        self.update(|status| status.missing = still.iter().map(DownloadItem::of).collect());
+        let whisper_mode = self
+            .inner
+            .settings
+            .lock()
+            .expect("whisper settings lock")
+            .as_ref()
+            .is_some_and(|settings| settings.assistant.mode == AssistantMode::Whisper);
+        if !whisper_mode {
+            self.set_state(WhisperState::Off);
             return;
         }
         if !self.inner.wanted.load(Ordering::Acquire) {
@@ -680,7 +729,10 @@ impl WhisperManager {
     }
 
     /// Frees the model and ends both threads.
-    fn unload(&self) {
+    /// Frees the model; true when it was on the GPU. Closing the pipeline first stops the
+    /// utterance being transcribed (design D8 of change `whisper-config-layout`), so the
+    /// model's lock is free soon.
+    fn unload(&self) -> bool {
         let pipeline = self
             .inner
             .pipeline
@@ -690,6 +742,7 @@ impl WhisperManager {
         drop(pipeline);
         let was_loaded = self.inner.loaded.lock().expect("loaded lock").take();
         *self.inner.slot.lock().expect("whisper model lock") = None;
+        let on_gpu = was_loaded.is_some() && self.status().device_used == Some(WhisperDevice::Gpu);
         if let Some((model, _)) = was_loaded {
             self.inner
                 .events
@@ -699,6 +752,20 @@ impl WhisperManager {
                 status.fallback_reason = None;
                 status.backend = None;
             });
+        }
+        on_gpu
+    }
+
+    /// After a model on the GPU was freed, with the busy lock held so nothing loads
+    /// meanwhile: the CUDA context goes too (design D9 of change `whisper-config-layout`).
+    fn release_gpu(&self) {
+        match self.inner.engine.release_gpu() {
+            Some(Ok(())) => self
+                .inner
+                .events
+                .log("Whisper: the GPU's memory was given back (CUDA context reset)"),
+            Some(Err(error)) => log::warn!("Whisper: the CUDA context was not reset: {error}"),
+            None => {}
         }
     }
 
@@ -759,7 +826,9 @@ impl WhisperManager {
                 {
                     return;
                 }
-                manager.unload();
+                if manager.unload() {
+                    manager.release_gpu();
+                }
                 if matches!(manager.status().state, WhisperState::Ready) {
                     manager.set_state(WhisperState::Idle);
                 }
@@ -783,13 +852,13 @@ impl WhisperManager {
                 settings.whisper.model
             ));
         }
-        if !matches!(
-            self.status().state,
-            WhisperState::NeedsDownload { .. } | WhisperState::Error { .. }
-        ) {
+        let key = key_of(&settings.whisper);
+        // In either mode (change `whisper-config-layout`): whatever the selected model and
+        // device miss, or a retry after a failed download.
+        let waiting = !self.missing(&key.0, key.1)?.is_empty();
+        if !waiting && !matches!(self.status().state, WhisperState::Error { .. }) {
             return Err("nothing is waiting for a Whisper download".to_owned());
         }
-        let key = key_of(&settings.whisper);
         self.inner
             .events
             .log(format!("Whisper: download agreed for {}", key.0));
@@ -893,6 +962,8 @@ mod tests {
         delay: Duration,
         loads: Mutex<Vec<LoadRequest>>,
         fallback: bool,
+        /// Calls of `release_gpu`.
+        resets: AtomicU64,
     }
 
     struct FakeModel(String);
@@ -934,6 +1005,11 @@ mod tests {
                 },
             })
         }
+
+        fn release_gpu(&self) -> Option<Result<(), String>> {
+            self.resets.fetch_add(1, Ordering::Relaxed);
+            Some(Ok(()))
+        }
     }
 
     #[derive(Default)]
@@ -965,6 +1041,7 @@ mod tests {
             delay,
             loads: Mutex::new(Vec::new()),
             fallback,
+            resets: AtomicU64::new(0),
         });
         let fetched = Arc::new(Mutex::new(Vec::new()));
         let fetch: Arc<Fetch> = {
@@ -1102,6 +1179,53 @@ mod tests {
         std::thread::sleep(UNLOAD_AFTER + Duration::from_millis(200));
         assert_eq!(rig.manager.status().state, WhisperState::Idle);
         assert!(rig.manager.inner.slot.lock().unwrap().is_none());
+        assert_eq!(
+            rig.engine.resets.load(Ordering::Relaxed),
+            0,
+            "a model on the CPU leaves the GPU alone"
+        );
+        std::fs::remove_dir_all(&rig.dir).unwrap();
+    }
+
+    /// Design D9 of change `whisper-config-layout`: once a model on the GPU is freed, after
+    /// the last leave or at a switch to the realtime mode, the CUDA context goes too.
+    #[test]
+    fn the_gpu_is_given_back_after_a_model_on_it_unloads() {
+        let rig = rig("gpu-reset", Duration::ZERO, false);
+        install_all(&rig, &["whisper-base-q8_0"]);
+        let assets = rig.dir.join("assets").join(GPU_RUNTIME.directory);
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join(GPU_RUNTIME.marker), b"x").unwrap();
+        let mut log = rig.events.subscribe();
+        let mut settings = whisper_settings("whisper-base-q8_0");
+        settings.whisper.device = WhisperDevice::Gpu;
+        rig.manager.configure(&settings);
+        rig.manager.prepare_join().unwrap();
+        assert_eq!(rig.manager.status().device_used, Some(WhisperDevice::Gpu));
+        rig.manager.release();
+        std::thread::sleep(UNLOAD_AFTER + Duration::from_millis(200));
+        assert_eq!(rig.engine.resets.load(Ordering::Relaxed), 1);
+        let mut lines = Vec::new();
+        while let Ok(event) = log.try_recv() {
+            if let AppEvent::Log { line } = event {
+                lines.push(line);
+            }
+        }
+        assert!(
+            lines.contains(
+                &"Whisper: the GPU's memory was given back (CUDA context reset)".to_owned()
+            ),
+            "{lines:?}"
+        );
+
+        rig.manager.prepare_join().unwrap();
+        settings.assistant.mode = AssistantMode::Realtime;
+        rig.manager.configure(&settings);
+        assert_eq!(
+            rig.engine.resets.load(Ordering::Relaxed),
+            2,
+            "at the switch"
+        );
         std::fs::remove_dir_all(&rig.dir).unwrap();
     }
 
@@ -1204,6 +1328,68 @@ mod tests {
         std::fs::remove_dir_all(&rig.dir).unwrap();
     }
 
+    /// Change `whisper-config-layout`, tasks 1.2 and 1.3: in the realtime mode the status
+    /// lists the missing files, and Download fetches them and loads nothing.
+    #[test]
+    fn the_realtime_mode_lists_missing_files_and_downloads_without_loading() {
+        let rig = rig("realtime", Duration::ZERO, false);
+        let mut settings = Settings::default();
+        settings.whisper.model = "whisper-base-q8_0".to_owned();
+        rig.manager.configure(&settings);
+        let status = rig.manager.status();
+        assert_eq!(status.state, WhisperState::Off);
+        let labels: Vec<&str> = status
+            .missing
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Whisper runtime (CPU)",
+                "Whisper base (q8_0) model",
+                "Silero voice activity model"
+            ]
+        );
+        assert!(
+            rig.fetched.lock().unwrap().is_empty(),
+            "nothing fetched yet"
+        );
+        assert!(
+            rig.manager.download("whisper-small-q8_0").is_err(),
+            "only the selected model"
+        );
+        rig.manager.download("whisper-base-q8_0").unwrap();
+        for _ in 0..300 {
+            if rig.fetched.lock().unwrap().len() == 3 && rig.manager.status().missing.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let status = rig.manager.status();
+        assert_eq!(
+            status.state,
+            WhisperState::Off,
+            "the realtime mode stays off"
+        );
+        assert!(status.missing.is_empty());
+        assert!(
+            rig.engine.loads.lock().unwrap().is_empty(),
+            "nothing loaded"
+        );
+        assert!(
+            rig.manager.download("whisper-base-q8_0").is_err(),
+            "nothing waits any more"
+        );
+        // The GPU device adds the CUDA runtime to what is missing.
+        settings.whisper.device = WhisperDevice::Gpu;
+        rig.manager.configure(&settings);
+        let missing = rig.manager.status().missing;
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].label, "Whisper runtime (NVIDIA GPU, CUDA 12.4)");
+        std::fs::remove_dir_all(&rig.dir).unwrap();
+    }
+
     #[test]
     fn the_status_serializes_every_field() {
         let status = WhisperStatus {
@@ -1229,6 +1415,7 @@ mod tests {
             "activation_phrases",
             "deactivation_phrases",
             "counters",
+            "missing",
         ] {
             assert!(json.get(field).is_some(), "{field}: {json}");
         }
@@ -1245,5 +1432,179 @@ mod tests {
         ] {
             assert!(json["counters"].get(field).is_some(), "{field}");
         }
+    }
+
+    /// Records when each transcript came.
+    #[derive(Default)]
+    struct Heard(Mutex<Vec<(Instant, String)>>);
+
+    impl TranscriptSink for Heard {
+        fn on_transcript(&self, transcript: Transcript) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((Instant::now(), transcript.text));
+        }
+    }
+
+    /// Waits up to `limit` for the unload lines of Whisper and the voice, in either order;
+    /// how long after the start each came.
+    fn wait_for_unloads(
+        log: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+        limit: Duration,
+    ) -> (Option<Duration>, Option<Duration>) {
+        let started = Instant::now();
+        let (mut whisper, mut voice) = (None, None);
+        while started.elapsed() < limit && (whisper.is_none() || voice.is_none()) {
+            match log.try_recv() {
+                Ok(AppEvent::Log { line }) if line.ends_with(" unloaded") => {
+                    if line.starts_with("Whisper model ") {
+                        whisper = Some(started.elapsed());
+                    } else if line.starts_with("voice ") {
+                        voice = Some(started.elapsed());
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        (whisper, voice)
+    }
+
+    /// The join and the leave without Discord, as the runtime takes them (change
+    /// `whisper-config-layout`, task 6.4), gated by `VOICEBRO_WHISPER_UNLOAD_DIR` (an assets
+    /// folder with the runtime, the model, the VAD model and the voice) and
+    /// `VOICEBRO_WHISPER_UNLOAD_WAV` (speech). Each of `VOICEBRO_WHISPER_UNLOAD_CYCLES`
+    /// cycles (default 3): idle; `prepare_join` of Whisper and the voice; idle loaded;
+    /// `VOICEBRO_WHISPER_UNLOAD_UTTERANCES` utterances (default 4) through `feed` and `tick`
+    /// in real time, 48 kHz stereo as songbird gives them; then at once `clear_guild` and
+    /// `release`, as `/leave` does; idle again. Every phase prints the wall clock, so the
+    /// CPU, memory and GPU memory measured from outside line up. Fails when a model does not
+    /// unload within 30 s. `VOICEBRO_WHISPER_MODEL` and `VOICEBRO_WHISPER_DEVICE` (`cpu` or
+    /// `gpu`) pick the model.
+    #[test]
+    fn join_and_leave_unload_when_enabled() {
+        let Ok(assets) = std::env::var("VOICEBRO_WHISPER_UNLOAD_DIR") else {
+            return;
+        };
+        let var =
+            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_owned());
+        let wav = var("VOICEBRO_WHISPER_UNLOAD_WAV", "");
+        let cycles: u32 = var("VOICEBRO_WHISPER_UNLOAD_CYCLES", "3").parse().unwrap();
+        let utterances: u32 = var("VOICEBRO_WHISPER_UNLOAD_UTTERANCES", "4")
+            .parse()
+            .unwrap();
+        let mut settings = Settings::default();
+        settings.assistant.mode = AssistantMode::Whisper;
+        settings.whisper.model = var("VOICEBRO_WHISPER_MODEL", "whisper-large-v3-turbo");
+        settings.whisper.device = if var("VOICEBRO_WHISPER_DEVICE", "gpu") == "cpu" {
+            WhisperDevice::Cpu
+        } else {
+            WhisperDevice::Gpu
+        };
+        let stamp = |what: &str| {
+            eprintln!("{} {what}", chrono::Local::now().format("%H:%M:%S%.3f"));
+        };
+        // 16 kHz mono to 48 kHz stereo i16, 20 ms frames.
+        let speech = crate::stt::read_wav_16k(Path::new(&wav)).expect("the WAV");
+        let frames: Vec<Vec<i16>> = speech
+            .chunks(320)
+            .map(|chunk| {
+                let mut frame = Vec::with_capacity(1920);
+                for index in 0..320 {
+                    let sample = chunk.get(index).copied().unwrap_or(0.0);
+                    let value = (sample * 32_767.0).clamp(-32_768.0, 32_767.0) as i16;
+                    frame.extend([value; 6]);
+                }
+                frame
+            })
+            .collect();
+        let events = EventBus::default();
+        let mut log = events.subscribe();
+        let heard = Arc::new(Heard::default());
+        let models = Path::new(&assets).join("..").join("whisper-unload-models");
+        std::fs::create_dir_all(&models).unwrap();
+        let whisper = WhisperManager::new(
+            PathBuf::from(&assets),
+            models,
+            events.clone(),
+            Arc::clone(&heard) as Arc<dyn TranscriptSink>,
+        );
+        let voice = crate::tts::manager::TtsManager::new(PathBuf::from(&assets), events.clone());
+        whisper.configure(&settings);
+        voice.configure(&settings);
+        stamp(&format!(
+            "start: {} on {:?}, voice {}, {cycles} cycles of {utterances} utterances of {:.1} s",
+            settings.whisper.model,
+            settings.whisper.device,
+            settings.tts.voice,
+            speech.len() as f64 / 16_000.0
+        ));
+        let guild = 1;
+        let mut tick = 0_u64;
+        for cycle in 1..=cycles {
+            stamp(&format!("cycle {cycle}: idle, nothing loaded"));
+            std::thread::sleep(Duration::from_secs(8));
+            stamp(&format!("cycle {cycle}: join"));
+            let started = Instant::now();
+            whisper.prepare_join().expect("Whisper loads");
+            let whisper_ms = started.elapsed().as_millis();
+            voice.prepare_join().expect("the voice loads");
+            stamp(&format!(
+                "cycle {cycle}: loaded (Whisper {whisper_ms} ms, voice {} ms), device {:?}; idle",
+                started.elapsed().as_millis() - whisper_ms,
+                whisper.status().device_used
+            ));
+            std::thread::sleep(Duration::from_secs(8));
+            stamp(&format!("cycle {cycle}: speech"));
+            let before = heard.0.lock().unwrap().len();
+            let clock = Instant::now();
+            let mut step = 0_u32;
+            let mut next = |tick: &mut u64| {
+                *tick += 1;
+                step += 1;
+                let due = clock + Duration::from_millis(20 * u64::from(step));
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            };
+            for _ in 0..utterances {
+                for frame in &frames {
+                    whisper.feed(guild, 7, tick, frame);
+                    whisper.tick(guild, tick);
+                    next(&mut tick);
+                }
+                // 1.5 s of silence: the utterance ends after 0.7 s of it.
+                for _ in 0..75 {
+                    whisper.tick(guild, tick);
+                    next(&mut tick);
+                }
+            }
+            let queued = whisper.status().counters.queued;
+            let leave = Instant::now();
+            stamp(&format!(
+                "cycle {cycle}: leave ({} transcripts so far, {queued} waiting)",
+                heard.0.lock().unwrap().len() - before
+            ));
+            while log.try_recv().is_ok() {}
+            whisper.clear_guild(guild);
+            whisper.release();
+            voice.release();
+            let (whisper_gone, voice_gone) = wait_for_unloads(&mut log, Duration::from_secs(30));
+            let after: Vec<String> = heard
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(at, _)| *at > leave)
+                .map(|(at, text)| format!("{:.1} s after: {text}", (*at - leave).as_secs_f64()))
+                .collect();
+            stamp(&format!(
+                "cycle {cycle}: Whisper unloaded {:?} after the leave, the voice {:?} after the leave; transcripts after the leave: {after:?}; idle",
+                whisper_gone, voice_gone
+            ));
+            assert!(whisper_gone.is_some(), "Whisper did not unload in 30 s");
+            assert!(voice_gone.is_some(), "the voice did not unload in 30 s");
+            std::thread::sleep(Duration::from_secs(12));
+        }
+        stamp("end");
     }
 }

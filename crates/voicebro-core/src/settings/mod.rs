@@ -163,27 +163,27 @@ impl Default for WhisperSettings {
     }
 }
 
+/// The Whisper phrases a list never set falls back to, whatever `whisper.language` is (the
+/// user's decision of 2026-11-17, change `whisper-config-layout`).
+pub const WHISPER_DEFAULT_ACTIVATION: &[&str] = &["bro"];
+pub const WHISPER_DEFAULT_DEACTIVATION: &[&str] = &["peace out"];
+
 impl WhisperSettings {
-    /// The phrases in effect: each list as stored, or the defaults of the wake catalog's
-    /// entry for the language (English for `auto`); none for a language the catalog lacks.
+    /// The phrases in effect: each list as stored, or "bro" and "peace out" for a list
+    /// never set.
     pub fn phrases_in_effect(&self) -> PhraseLists {
-        let language = if self.language == "auto" {
-            "en"
-        } else {
-            self.language.as_str()
-        };
-        let defaults = catalog::entry_for_language(language)
-            .map(|entry| (entry.default_activation, entry.default_deactivation));
         let pick = |stored: Option<&Vec<String>>, default: &[&str]| -> Vec<String> {
             match stored {
                 Some(list) => list.clone(),
                 None => default.iter().map(|phrase| (*phrase).to_owned()).collect(),
             }
         };
-        let (activation, deactivation) = defaults.unwrap_or((&[], &[]));
         PhraseLists {
-            activation: pick(self.phrases.activation.as_ref(), activation),
-            deactivation: pick(self.phrases.deactivation.as_ref(), deactivation),
+            activation: pick(self.phrases.activation.as_ref(), WHISPER_DEFAULT_ACTIVATION),
+            deactivation: pick(
+                self.phrases.deactivation.as_ref(),
+                WHISPER_DEFAULT_DEACTIVATION,
+            ),
         }
     }
 }
@@ -1508,16 +1508,31 @@ mod tests {
                 activation: strings(&["bro"]),
                 deactivation: strings(&["peace out"]),
             },
-            "English defaults for auto"
+            "the defaults"
         );
-        let russian = older
-            .with_patch(&json!({ "whisper": { "language": "ru" } }))
+        // Change `whisper-config-layout`: the same defaults whatever the language, and a
+        // stored list keeps its value.
+        for language in ["ru", "ja"] {
+            let other = older
+                .with_patch(&json!({ "whisper": { "language": language } }))
+                .unwrap();
+            assert_eq!(
+                other.whisper.phrases_in_effect(),
+                PhraseLists {
+                    activation: strings(&["bro"]),
+                    deactivation: strings(&["peace out"]),
+                },
+                "{language}"
+            );
+        }
+        let stored = older
+            .with_patch(&json!({ "whisper": { "language": "ru", "phrases": { "activation": ["братан"] } } }))
             .unwrap();
-        assert_eq!(russian.whisper.phrases_in_effect().activation, ["братан"]);
-        let japanese = older
-            .with_patch(&json!({ "whisper": { "language": "ja" } }))
-            .unwrap();
-        assert_eq!(japanese.whisper.phrases_in_effect(), PhraseLists::default());
+        assert_eq!(stored.whisper.phrases_in_effect().activation, ["братан"]);
+        assert_eq!(
+            stored.whisper.phrases_in_effect().deactivation,
+            ["peace out"]
+        );
     }
 
     /// Task 1.2: an unknown mode, a speed of 3 and a path as a local model are refused, each

@@ -130,8 +130,9 @@ function expect(condition, message) {
   if (!condition) throw new Error(message);
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const CARDS = ["discord", "access", "audio", "assistant", "codex", "hotkey"];
-const SETTINGS_CARDS = ["appearance", "diagnostics"];
+// Change `whisper-config-layout`: Local voice after Assistant, Whisper after Diagnostics.
+const CARDS = ["discord", "access", "audio", "assistant", "local-voice", "codex", "hotkey"];
+const SETTINGS_CARDS = ["appearance", "diagnostics", "whisper"];
 const SWITCHES = [
   ["config", "owner-only"], ["config", "earcons"], ["config", "codex-refresh-lists"], ["config", "save-chat-history"],
   ["settings", "diagnostics-performance"], ["settings", "diagnostics-memory"], ["settings", "diagnostics-verbose-log"],
@@ -140,15 +141,15 @@ const SWITCHES = [
 
 const scenarios = [
   // ---- Layout
-  ["the Settings tab holds Appearance and Diagnostics, the Config tab the bot's six cards", async () => {
+  ["the Settings tab holds Appearance, Diagnostics and Whisper, the Config tab the bot's seven cards", async () => {
     await load();
     const r = await page(`
       const path = $("config-path");
       return { settings: titles("settings"), config: titles("config"), preview: Boolean($("config-preview")),
         pathText: path.textContent, pathInCard: Boolean(path.closest(".card")), pathTab: path.closest(".tab-panel").dataset.panel,
         pre: document.querySelectorAll('[data-panel="config"] pre').length };`);
-    expect(same(r.settings, ["Appearance", "Diagnostics"]), `Settings: ${r.settings}`);
-    expect(same(r.config, ["Discord and Codex", "Access", "Audio", "Assistant", "Codex", "Hotkey"]), `Config: ${r.config}`);
+    expect(same(r.settings, ["Appearance", "Diagnostics", "Whisper"]), `Settings: ${r.settings}`);
+    expect(same(r.config, ["Discord and Codex", "Access", "Audio", "Assistant", "Local voice", "Codex", "Hotkey"]), `Config: ${r.config}`);
     expect(!r.preview && r.pre === 0, "the settings file's contents are still on the tab");
     expect(r.pathText === "C:\\VoiceBro\\settings.json", `path ${r.pathText}`);
     expect(!r.pathInCard && r.pathTab === "config", "the path is inside a card or not on the Config tab");
@@ -244,7 +245,7 @@ const scenarios = [
     expect(same(list, ["assistant", "hotkey"]), `stored ${JSON.stringify(list)}`);
     await load(`?collapsed=${list.join(",")}`);
     const r = await page(`return ${JSON.stringify(CARDS)}.map((id) => [id, collapsed(id)]);`);
-    expect(same(r, [["discord", false], ["access", false], ["audio", false], ["assistant", true], ["codex", false], ["hotkey", true]]), JSON.stringify(r));
+    expect(same(r, [["discord", false], ["access", false], ["audio", false], ["assistant", true], ["local-voice", false], ["codex", false], ["hotkey", true]]), JSON.stringify(r));
   }],
   ["an id this window does not know is kept", async () => {
     await load("?collapsed=audio,later-card");
