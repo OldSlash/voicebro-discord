@@ -7,9 +7,9 @@ a Config tab, user-selectable appearance, and window data kept with the portable
 ## Requirements
 
 ### Requirement: Tabs
-The window SHALL have the tabs Console, Codex chat, Status, Performance, System, Settings,
-Config and Whisper, in that order, and SHALL keep each tab's content and scroll position
-when the user switches between them.
+The window SHALL have the tabs Console, Codex chat, Status, Performance, System, Settings and
+Config, in that order, and SHALL keep each tab's content and scroll position when the user
+switches between them.
 
 #### Scenario: Switching tabs
 - **WHEN** the user scrolls the Settings tab, opens Status and returns to Settings
@@ -17,7 +17,7 @@ when the user switches between them.
 
 #### Scenario: Whisper tab
 - **WHEN** the window opens
-- **THEN** the last tab is Whisper
+- **THEN** there is no Whisper tab: the last tab is Config, and the Whisper mode's fields are on the Config and Settings tabs
 
 ### Requirement: Status bar
 A status bar at the bottom of every tab SHALL show the Discord connection state in colour
@@ -50,9 +50,9 @@ settings file.
 The Config tab SHALL hold the "Discord and Codex" card with the Discord token (masked,
 write-only, with help on getting one), the guild id (with help on copying it), the Codex
 executable, an "Auto-start enabled" note, Save changes and Reset; below it the bot's
-Audio, Assistant, Codex and Hotkey cards; and at the bottom one line with the location of
-the settings file. The tab SHALL NOT show the contents of the settings file, and SHALL never
-show the token.
+Access, Audio, Assistant, Local voice, Codex and Hotkey cards; and at the bottom one line
+with the location of the settings file. The tab SHALL NOT show the contents of the settings
+file, and SHALL never show the token.
 
 #### Scenario: Stored settings view
 - **WHEN** the user opens the Config tab
@@ -255,9 +255,11 @@ The install dialog with its Whisper subject SHALL open:
 
 - when a join in Whisper mode was refused for missing files;
 - when the assistant mode is switched to Whisper with files missing;
-- when a Whisper model, device or voice that needs files is chosen on the Whisper tab.
+- when a Whisper model, device or voice that needs files is chosen while the mode is
+  Whisper.
 
-The window's start SHALL NOT open it.
+The window's start SHALL NOT open it. In the realtime mode a choice SHALL save at once
+without the dialog; its notice and Download button stay on the card.
 
 #### Scenario: Refused join
 - **WHEN** a member runs `/join` in Whisper mode on a PC with nothing of Whisper downloaded
@@ -265,4 +267,4 @@ The window's start SHALL NOT open it.
 
 #### Scenario: Start
 - **WHEN** the app starts in Whisper mode with files missing
-- **THEN** no dialog opens, and the Whisper tab's notices list what is missing
+- **THEN** no dialog opens, and the notices of Config → Assistant and Config → Local voice list what is missing

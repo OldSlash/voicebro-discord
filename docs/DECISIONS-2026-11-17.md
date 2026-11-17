@@ -216,3 +216,70 @@ Intel Core Ultra 9 275HX (24 logical processors), RTX 5090 Laptop GPU, 2026-11-1
 - **Not tested by the agent:** a real Discord channel with two or more people and a game
   running, the Whisper mode's wake phrase in the channel, the voices by ear, and the
   comparison of both modes' resource use. Those are the user's steps.
+
+## whisper-config-layout
+
+The user tried build 1.1.0 the same day and rejected the separate Whisper tab: it copied
+the Config tab's cards, and no Download button showed until the mode was switched. The user
+approved mockups of a new layout and chose how open points go:
+
+- **No Whisper tab.** Config → Assistant gets the assistant mode first and a grey
+  Recognition field that follows it; in the Whisper mode the model row becomes the Whisper
+  model with its own notice and Download, and the phrase fields hold the Whisper set. A new
+  Config → Local voice card holds the voice, with a note that says it is not used in the
+  realtime voice mode and needed in the Whisper mode. A new Settings → Whisper card holds
+  the device, CPU threads, language, the in-use line and the models folder, with an On/Off
+  label.
+- **The Whisper phrases stay a separate set**, defaulting to "bro" and "peace out" whatever
+  the language.
+- **Downloads work in both modes** (the user's "variant A"), always only on Download. A
+  download in the realtime mode installs files and loads nothing.
+
+Decided while building:
+
+- **Where the model is downloaded before the switch.** The Whisper model row is hidden in
+  the realtime mode, so the Settings → Whisper card shows the full notice of the files the
+  model chosen for the Whisper mode still needs, with Download; in the Whisper mode that
+  notice moves under the model in Config, and the Settings card keeps only the CUDA
+  runtime's notice under the device.
+- **The managers report missing files in both modes** (`missing` in the Whisper and voice
+  statuses), and each Download fetches only what its notice lists: `whisper_download` for
+  Whisper's files, a new `tts_download` for the voice's; the install dialog calls both.
+- **The refused join's reply** now says to open Config and press Download in the Assistant
+  and Local voice cards.
+
+Checked: the core tests, the three headless window checks (23, 44 and 34 scenarios), and
+the release build: screenshots of both modes in `target\whisper-config-shots\`, and a
+download in the realtime mode into an empty folder (the tiny model, 53 MB, in 4 s, nothing
+loaded). Not tested: a real Discord channel with two or more people and a game running.
+
+### The repetition filter (after the user's Discord test)
+
+The user tested the build in a Discord channel. The tiny model wrote the user's "Bro, bro,
+bro, bro" correctly, and the transcriber dropped it as a hallucination: any word four times
+in a row counted as one. Of the fixes discussed after that test, the user asked only for
+this one, inside this change.
+
+- **A run of one word is a hallucination only when it is faster than five words a second
+  of the utterance's speech** (and at least four words long). "Bro, bro, bro, bro" in 1.5 s
+  is kept; twenty repeats in 2 s are dropped. Five is an estimate; the drop's log line now
+  names the repeats and the length, so the next live test shows it.
+- The other fixes discussed after the test were declined by the user and are not part of
+  any change.
+
+### The leave frees everything (the check before the commit)
+
+The user asked for a check that leaving the channel frees the CPU, the GPU and the memory
+and leaves nothing running, without Discord: a gated live test now takes the join and the
+leave as the runtime does (`join_and_leave_unload_when_enabled`), three cycles each on the
+GPU and the CPU with large-v3-turbo, the process measured every second. It found two gaps,
+and the user chose to fix both in this change:
+
+- **The transcription in progress stops at a leave.** On the CPU it ran 8 to 12 s past the
+  leave at half the machine before the unload. whisper.cpp's abort callbacks now read a
+  flag that a leave of the utterance's guild or an unload raises. whisper.cpp checks them
+  only between encoder passes and decoder steps, so a stop can still wait for the pass
+  running.
+- **The CUDA context is reset after a model on the GPU unloads** (`cudaDeviceReset`). The
+  process kept 251 MB of GPU memory, and about 255 MB more RAM than on the CPU, until the
+  app was closed.

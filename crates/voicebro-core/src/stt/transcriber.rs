@@ -4,7 +4,7 @@
 //! reload; the old one keeps serving until the new one is in.
 
 use super::cutter::Utterance;
-use super::{DecodeOptions, RawTranscript, SpeechToText};
+use super::{AbortFlag, DecodeOptions, RawTranscript, SpeechToText};
 use crate::settings::phrase_words;
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -14,8 +14,13 @@ use std::time::Instant;
 
 /// Utterances waiting for the transcriber; the oldest waiting is dropped beyond it.
 pub const QUEUE_CAPACITY: usize = 8;
-/// A word repeated this many times in a row is a hallucination.
+/// The shortest run of one word in a row that can be a hallucination.
 pub const REPEATED_WORDS: usize = 4;
+/// Such a run is a hallucination only when it is faster than this many words per second of
+/// the utterance's speech: "bro, bro, bro, bro" said in 1.5 s is speech, while the same word
+/// dozens of times over a short clip is Whisper's decoding loop (change
+/// `whisper-config-layout`, design D7).
+pub const MAX_REPEATS_PER_SECOND: f64 = 5.0;
 
 /// The model the transcriber uses, swapped by the manager.
 pub type ModelSlot = Arc<Mutex<Option<Box<dyn SpeechToText>>>>;
@@ -86,11 +91,22 @@ impl Counters {
     }
 }
 
-/// The bounded queue between the cutter and the transcriber.
+#[derive(Default)]
+struct QueueState {
+    waiting: VecDeque<Utterance>,
+    closed: bool,
+    /// The guild of the utterance being transcribed.
+    current: Option<u64>,
+}
+
+/// The bounded queue between the cutter and the transcriber. It also stops the utterance
+/// being transcribed when its guild is cleared or the queue closes (change
+/// `whisper-config-layout`, design D8).
 #[derive(Default)]
 pub struct UtteranceQueue {
-    state: Mutex<(VecDeque<Utterance>, bool)>,
+    state: Mutex<QueueState>,
     ready: Condvar,
+    abort: AbortFlag,
 }
 
 impl UtteranceQueue {
@@ -101,50 +117,70 @@ impl UtteranceQueue {
     /// Adds an utterance; returns the oldest waiting one when the queue was full.
     pub fn push(&self, utterance: Utterance) -> Option<Utterance> {
         let mut state = self.state.lock().expect("utterance queue lock");
-        let dropped = (state.0.len() >= QUEUE_CAPACITY)
-            .then(|| state.0.pop_front())
+        let dropped = (state.waiting.len() >= QUEUE_CAPACITY)
+            .then(|| state.waiting.pop_front())
             .flatten();
-        state.0.push_back(utterance);
+        state.waiting.push_back(utterance);
         self.ready.notify_one();
         dropped
     }
 
-    /// The next utterance; `None` once the queue was closed.
+    /// The next utterance, from here the one being transcribed until [`Self::finish`];
+    /// `None` once the queue was closed.
     pub fn pop(&self) -> Option<Utterance> {
         let mut state = self.state.lock().expect("utterance queue lock");
         loop {
-            if state.1 {
+            if state.closed {
                 return None;
             }
-            if let Some(utterance) = state.0.pop_front() {
+            if let Some(utterance) = state.waiting.pop_front() {
+                state.current = Some(utterance.guild);
+                self.abort.lower();
                 return Some(utterance);
             }
             state = self.ready.wait(state).expect("utterance queue wait");
         }
     }
 
+    /// The utterance from [`Self::pop`] is done; true when it was stopped meanwhile.
+    pub fn finish(&self) -> bool {
+        self.state.lock().expect("utterance queue lock").current = None;
+        self.abort.is_raised()
+    }
+
+    /// Raised while the utterance being transcribed is to stop.
+    pub fn abort_flag(&self) -> &AbortFlag {
+        &self.abort
+    }
+
     pub fn len(&self) -> usize {
-        self.state.lock().expect("utterance queue lock").0.len()
+        self.state
+            .lock()
+            .expect("utterance queue lock")
+            .waiting
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Drops what waits for `guild` (the bot left, or the session was muted).
+    /// Drops what waits for `guild` and stops its utterance being transcribed (the bot
+    /// left, or the session was muted).
     pub fn clear_guild(&self, guild: u64) {
-        self.state
-            .lock()
-            .expect("utterance queue lock")
-            .0
-            .retain(|utterance| utterance.guild != guild);
+        let mut state = self.state.lock().expect("utterance queue lock");
+        state.waiting.retain(|utterance| utterance.guild != guild);
+        if state.current == Some(guild) {
+            self.abort.raise();
+        }
     }
 
-    /// Wakes the thread and makes it end.
+    /// Stops the utterance being transcribed, wakes the thread and makes it end.
     pub fn close(&self) {
         let mut state = self.state.lock().expect("utterance queue lock");
-        state.1 = true;
-        state.0.clear();
+        state.closed = true;
+        state.waiting.clear();
+        self.abort.raise();
         self.ready.notify_all();
     }
 }
@@ -155,14 +191,19 @@ pub enum Cleaned {
     Text(String),
     /// Nothing left once the no-speech segments were dropped.
     NoSpeech,
-    /// One word four or more times in a row.
-    Hallucination(String),
+    /// One word repeated in a row more often than the speech could hold.
+    Hallucination {
+        text: String,
+        repeats: usize,
+    },
 }
 
 /// The guards of design D5 on a raw transcription: segments above the no-speech threshold
-/// and segments that are only a bracketed note ("[BLANK_AUDIO]", "(music)") are dropped,
-/// and text that repeats one word [`REPEATED_WORDS`] times in a row is a hallucination.
-pub fn clean(raw: &RawTranscript, no_speech_threshold: f32) -> Cleaned {
+/// and segments that are only a bracketed note ("[BLANK_AUDIO]", "(music)") are dropped.
+/// Text that repeats one word [`REPEATED_WORDS`] or more times in a row is a hallucination
+/// when the run is also longer than `speech_seconds` could hold at
+/// [`MAX_REPEATS_PER_SECOND`].
+pub fn clean(raw: &RawTranscript, no_speech_threshold: f32, speech_seconds: f64) -> Cleaned {
     let text = raw
         .segments
         .iter()
@@ -180,12 +221,16 @@ pub fn clean(raw: &RawTranscript, no_speech_threshold: f32) -> Cleaned {
     if words.is_empty() {
         return Cleaned::NoSpeech;
     }
-    let mut run = 1;
+    let (mut run, mut longest) = (1, 1);
     for pair in words.windows(2) {
         run = if pair[0] == pair[1] { run + 1 } else { 1 };
-        if run >= REPEATED_WORDS {
-            return Cleaned::Hallucination(text);
-        }
+        longest = longest.max(run);
+    }
+    if longest >= REPEATED_WORDS && longest as f64 > speech_seconds * MAX_REPEATS_PER_SECOND {
+        return Cleaned::Hallucination {
+            text,
+            repeats: longest,
+        };
     }
     Cleaned::Text(text)
 }
@@ -205,12 +250,21 @@ pub fn run(
         let started = Instant::now();
         let result = {
             let mut slot = model.lock().expect("whisper model lock");
-            match slot.as_mut() {
-                Some(model) => model.transcribe(&utterance.audio, &options),
-                None => continue,
-            }
+            slot.as_mut()
+                .map(|model| model.transcribe_until(&utterance.audio, &options, queue.abort_flag()))
         };
+        let stopped = queue.finish();
         let transcribe_ms = started.elapsed().as_millis() as u64;
+        let Some(result) = result else {
+            continue;
+        };
+        if stopped {
+            log::info!(
+                "[whisper:{}] stopped the transcription in progress after {transcribe_ms} ms: the bot left or Whisper unloads",
+                utterance.guild
+            );
+            continue;
+        }
         counters
             .last_transcribe_ms
             .store(transcribe_ms, Ordering::Relaxed);
@@ -230,7 +284,7 @@ pub fn run(
             }
         };
         let language = raw.language.clone();
-        match clean(&raw, no_speech_threshold) {
+        match clean(&raw, no_speech_threshold, utterance.speech_seconds) {
             Cleaned::Text(text) => {
                 crate::detail!(
                     "whisper",
@@ -263,14 +317,15 @@ pub fn run(
                     utterance.speech_seconds
                 );
             }
-            Cleaned::Hallucination(text) => {
+            Cleaned::Hallucination { text, repeats } => {
                 let count = counters
                     .dropped_hallucination
                     .fetch_add(1, Ordering::Relaxed)
                     + 1;
                 log::info!(
-                    "[whisper:{}] dropped a repeated-word transcription as a hallucination ({count} so far)",
-                    utterance.guild
+                    "[whisper:{}] dropped a repeated-word transcription as a hallucination: one word {repeats} times in {:.1} s ({count} so far)",
+                    utterance.guild,
+                    utterance.speech_seconds
                 );
                 crate::detail!("whisper", "[whisper:{}] dropped: {text}", utterance.guild);
             }
@@ -345,23 +400,65 @@ mod tests {
         assert_eq!(
             clean(
                 &raw(&[(" Hello there.", 0.1), (" Thanks for watching!", 0.9)]),
-                0.6
+                0.6,
+                1.5
             ),
             Cleaned::Text("Hello there.".to_owned())
         );
         assert_eq!(
-            clean(&raw(&[(" [BLANK_AUDIO]", 0.1)]), 0.6),
+            clean(&raw(&[(" [BLANK_AUDIO]", 0.1)]), 0.6, 1.5),
             Cleaned::NoSpeech
         );
-        assert_eq!(clean(&raw(&[(" (music)", 0.2)]), 0.6), Cleaned::NoSpeech);
-        assert_eq!(clean(&raw(&[]), 0.6), Cleaned::NoSpeech);
-        assert!(matches!(
-            clean(&raw(&[(" Bro, bro, bro, bro.", 0.1)]), 0.6),
-            Cleaned::Hallucination(_)
-        ));
         assert_eq!(
-            clean(&raw(&[(" Bro, bro, bro, what?", 0.1)]), 0.6),
+            clean(&raw(&[(" (music)", 0.2)]), 0.6, 1.5),
+            Cleaned::NoSpeech
+        );
+        assert_eq!(clean(&raw(&[]), 0.6, 1.5), Cleaned::NoSpeech);
+        assert_eq!(
+            clean(&raw(&[(" Bro, bro, bro, what?", 0.1)]), 0.6, 1.5),
             Cleaned::Text("Bro, bro, bro, what?".to_owned())
+        );
+    }
+
+    /// The user's "Bro, bro, bro, bro" of 2026-11-17 was dropped as a hallucination: a run
+    /// of one word counts only when the speech could not hold it (design D7).
+    #[test]
+    fn a_repeated_word_is_a_hallucination_only_faster_than_speech() {
+        let bro = raw(&[(" Bro, bro, bro, bro.", 0.1)]);
+        assert_eq!(
+            clean(&bro, 0.6, 1.5),
+            Cleaned::Text("Bro, bro, bro, bro.".to_owned()),
+            "four times in 1.5 s is speech"
+        );
+        assert_eq!(
+            clean(&bro, 0.6, 0.8),
+            Cleaned::Text("Bro, bro, bro, bro.".to_owned()),
+            "four times in 0.8 s is five a second: still speech"
+        );
+        assert_eq!(
+            clean(&bro, 0.6, 0.6),
+            Cleaned::Hallucination {
+                text: "Bro, bro, bro, bro.".to_owned(),
+                repeats: 4
+            },
+            "four times in 0.6 s is faster than speech"
+        );
+        let loop_text = vec!["you"; 20].join(" ");
+        assert_eq!(
+            clean(&raw(&[(&loop_text, 0.1)]), 0.6, 2.0),
+            Cleaned::Hallucination {
+                text: loop_text.clone(),
+                repeats: 20
+            },
+            "twenty times in 2 s is a decoding loop"
+        );
+        assert_eq!(
+            clean(&raw(&[(&format!("Wait, {loop_text}"), 0.1)]), 0.6, 2.0),
+            Cleaned::Hallucination {
+                text: format!("Wait, {loop_text}"),
+                repeats: 20
+            },
+            "the longest run counts, wherever it is"
         );
     }
 
@@ -401,7 +498,8 @@ mod tests {
             answers: Mutex::new(VecDeque::from([
                 raw(&[(" What time is it in London?", 0.05)]),
                 raw(&[(" Subtitles by the community.", 0.95)]),
-                raw(&[(" no no no no no", 0.1)]),
+                // Twelve times in 1.5 s: faster than speech.
+                raw(&[(" no no no no no no no no no no no no", 0.1)]),
             ])),
             seen: Arc::clone(&seen),
         }))));
@@ -445,5 +543,84 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen[0].0, 16_000, "a short clip reaches Whisper as 1 s");
         assert_eq!(seen[0].1.prompt.as_deref(), Some("hey bro, goodbye"));
+    }
+
+    /// Transcribes until stopped: says when it started, then waits for the abort.
+    struct Endless {
+        started: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl SpeechToText for Endless {
+        fn transcribe(&mut self, _: &[f32], _: &DecodeOptions) -> Result<RawTranscript, SttError> {
+            unreachable!("the transcriber stops its model through transcribe_until")
+        }
+
+        fn transcribe_until(
+            &mut self,
+            _: &[f32],
+            _: &DecodeOptions,
+            abort: &AbortFlag,
+        ) -> Result<RawTranscript, SttError> {
+            self.started.store(true, Ordering::Release);
+            let since = Instant::now();
+            while !abort.is_raised() {
+                assert!(since.elapsed() < Duration::from_secs(5), "never stopped");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Ok(raw(&[(" Words heard after the leave.", 0.1)]))
+        }
+    }
+
+    /// Design D8 of change `whisper-config-layout`: a leave stops the utterance of its guild
+    /// being transcribed, and an unload (the queue closing) stops any.
+    #[test]
+    fn a_leave_or_an_unload_stops_the_transcription_in_progress() {
+        for unload in [false, true] {
+            let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let model: ModelSlot = Arc::new(Mutex::new(Some(Box::new(Endless {
+                started: Arc::clone(&started),
+            }))));
+            let options = Arc::new(Mutex::new(DecodeOptions {
+                language: "en".to_owned(),
+                threads: 1,
+                prompt: None,
+            }));
+            let queue = UtteranceQueue::new();
+            let counters = Arc::new(Counters::default());
+            let sink = Arc::new(Collect::default());
+            enqueue(&queue, &counters, utterance(1, 2.0));
+            let thread = {
+                let (queue, model, counters, sink) = (
+                    Arc::clone(&queue),
+                    Arc::clone(&model),
+                    Arc::clone(&counters),
+                    Arc::clone(&sink),
+                );
+                std::thread::spawn(move || run(queue, model, options, counters, sink, 0.6))
+            };
+            while !started.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            queue.clear_guild(2);
+            assert!(
+                !queue.abort_flag().is_raised(),
+                "another guild's leave keeps it going"
+            );
+            let stop = Instant::now();
+            if unload {
+                queue.close();
+            } else {
+                queue.clear_guild(1);
+            }
+            drop(model.lock().unwrap());
+            assert!(
+                stop.elapsed() < Duration::from_secs(1),
+                "the model is free at once"
+            );
+            queue.close();
+            thread.join().unwrap();
+            assert!(sink.0.lock().unwrap().is_empty(), "no text after the stop");
+            assert_eq!(counters.snapshot().transcribed, 0);
+        }
     }
 }

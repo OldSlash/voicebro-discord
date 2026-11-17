@@ -2,16 +2,18 @@
 //!
 //! The runtime's libraries are loaded once per process and stay loaded: ggml keeps a global
 //! backend registry, and CUDA's libraries are not made to be unloaded. A model is loaded at
-//! a join and freed after the last leave; between joins no model is in memory.
+//! a join and freed after the last leave; between joins no model is in memory, and after a
+//! model on the GPU the CUDA context is reset too (change `whisper-config-layout`, D9).
 
 pub mod ffi;
 
 use super::catalog::{CPU_RUNTIME, GPU_RUNTIME};
-use super::{DecodeOptions, RawSegment, RawTranscript, SpeechToText, SttError};
+use super::{AbortFlag, DecodeOptions, RawSegment, RawTranscript, SpeechToText, SttError};
 use crate::settings::WhisperDevice;
 use ffi::{Context, WhisperRuntime};
-use std::ffi::CString;
+use std::ffi::{c_void, CString};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 static RUNTIME: Mutex<Option<Arc<WhisperRuntime>>> = Mutex::new(None);
@@ -135,13 +137,30 @@ impl WhisperModel {
     }
 }
 
-/// The decoding parameters of design D5 on top of the library's greedy defaults.
+/// whisper.cpp's abort callback, checked after each encoder pass and decoder step: true once
+/// the transcription's [`AbortFlag`] is raised.
+unsafe extern "C" fn abort_raised(data: *mut c_void) -> bool {
+    // SAFETY: `data` is the `AtomicBool` of the `AbortFlag` given to `transcribe_until`,
+    // which outlives the `whisper_full` call that calls this.
+    unsafe { &*(data as *const AtomicBool) }.load(Ordering::Acquire)
+}
+
+/// whisper.cpp's encoder-begin callback, checked before each encoder pass after the language
+/// detection's: false (stop) once the flag is raised.
+unsafe extern "C" fn encoder_may_begin(_: *mut c_void, _: *mut c_void, data: *mut c_void) -> bool {
+    // SAFETY: as for `abort_raised`.
+    !unsafe { abort_raised(data) }
+}
+
+/// The decoding parameters of design D5 on top of the library's greedy defaults, with the
+/// abort of change `whisper-config-layout` (design D8) reading `abort`.
 pub fn decode_params(
     defaults: ffi::WhisperFullParams,
     options: &DecodeOptions,
     language: &CString,
     prompt: Option<&CString>,
     vad_model: &CString,
+    abort: &AtomicBool,
 ) -> ffi::WhisperFullParams {
     let mut params = defaults;
     params.n_threads = if options.threads == 0 {
@@ -164,6 +183,11 @@ pub fn decode_params(
     params.initial_prompt = prompt.map_or(std::ptr::null(), |prompt| prompt.as_ptr());
     params.vad = true;
     params.vad_model_path = vad_model.as_ptr();
+    let abort = abort as *const AtomicBool as *mut c_void;
+    params.abort_callback = abort_raised as *const c_void;
+    params.abort_callback_user_data = abort;
+    params.encoder_begin_callback = encoder_may_begin as *const c_void;
+    params.encoder_begin_callback_user_data = abort;
     params
 }
 
@@ -172,6 +196,15 @@ impl SpeechToText for WhisperModel {
         &mut self,
         audio: &[f32],
         options: &DecodeOptions,
+    ) -> Result<RawTranscript, SttError> {
+        self.transcribe_until(audio, options, &AbortFlag::default())
+    }
+
+    fn transcribe_until(
+        &mut self,
+        audio: &[f32],
+        options: &DecodeOptions,
+        abort: &AbortFlag,
     ) -> Result<RawTranscript, SttError> {
         let language = CString::new(options.language.as_bytes())
             .map_err(|_| SttError::Transcribe("the language has a NUL".to_owned()))?;
@@ -185,6 +218,7 @@ impl SpeechToText for WhisperModel {
             &language,
             prompt.as_ref(),
             &self.vad_model,
+            abort.as_atomic(),
         );
         self.context.full(params, audio)?;
         Ok(RawTranscript {

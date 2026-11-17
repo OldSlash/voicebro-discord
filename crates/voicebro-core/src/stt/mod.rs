@@ -49,6 +49,30 @@ pub struct DecodeOptions {
     pub prompt: Option<String>,
 }
 
+/// Raised to stop a transcription early: the bot left the utterance's channel, or the model
+/// unloads (change `whisper-config-layout`, design D8).
+#[derive(Debug, Clone, Default)]
+pub struct AbortFlag(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl AbortFlag {
+    pub fn raise(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn lower(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn is_raised(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The flag itself, for a C callback that reads it during the call.
+    pub fn as_atomic(&self) -> &std::sync::atomic::AtomicBool {
+        &self.0
+    }
+}
+
 /// A loaded speech-to-text model. One thread owns it.
 pub trait SpeechToText: Send {
     /// Transcribes 16 kHz mono samples in -1..1 with the VAD.
@@ -57,6 +81,18 @@ pub trait SpeechToText: Send {
         audio: &[f32],
         options: &DecodeOptions,
     ) -> Result<RawTranscript, SttError>;
+
+    /// As [`Self::transcribe`], stopping early once `abort` is raised; what an aborted
+    /// transcription returns is not used. A model that cannot stop early runs to the end.
+    fn transcribe_until(
+        &mut self,
+        audio: &[f32],
+        options: &DecodeOptions,
+        abort: &AbortFlag,
+    ) -> Result<RawTranscript, SttError> {
+        let _ = abort;
+        self.transcribe(audio, options)
+    }
 }
 
 /// The thread count of `whisper.threads = 0`, set from the measurement of task 5.6 of

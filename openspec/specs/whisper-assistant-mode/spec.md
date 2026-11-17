@@ -143,4 +143,4 @@ The line SHALL be added to the status's recent turns.
 
 #### Scenario: One answer
 - **WHEN** a question is answered in Whisper mode
-- **THEN** the log has one `[latency:<guild>] whisper turn <n>: …` line with the four times, and the Whisper tab shows them
+- **THEN** the log has one `[latency:<guild>] whisper turn <n>: …` line with the four times, and the Settings tab's Whisper card shows them

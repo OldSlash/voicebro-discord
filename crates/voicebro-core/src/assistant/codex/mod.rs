@@ -2386,9 +2386,11 @@ mod tests {
             )
             .expect("transcribed");
             let text_at = Instant::now();
-            let crate::stt::transcriber::Cleaned::Text(text) =
-                crate::stt::transcriber::clean(&raw, crate::stt::whisper::NO_SPEECH_THRESHOLD)
-            else {
+            let crate::stt::transcriber::Cleaned::Text(text) = crate::stt::transcriber::clean(
+                &raw,
+                crate::stt::whisper::NO_SPEECH_THRESHOLD,
+                audio.len() as f64 / 16_000.0,
+            ) else {
                 panic!("Whisper heard nothing in {wav}");
             };
             eprintln!("Whisper ({model_id}, {}): «{text}»", choice.backend);

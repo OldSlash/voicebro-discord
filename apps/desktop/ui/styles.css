@@ -301,11 +301,17 @@ textarea.prompt-input { min-height: 80px; line-height: 1.45; }
 /* A field that is not a label (the Codex lists): the same column as the labels. */
 .form-grid > .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .form-grid > .wide { grid-column: 1 / -1; }
-.form-grid > p.wide { margin: 0; }
-.form-note.warning-note { color: var(--warn); }
-/* A field that does not apply in the current mode (the Vosk fields in the Whisper mode). */
-.form-grid label.is-off { color: var(--ink-dim); }
+/* The rows of the other assistant mode (Config → Assistant) are hidden, whatever their own
+   display. */
+.form-grid > [hidden] { display: none !important; }
+/* A value that follows another setting and cannot be edited (Recognition). */
+input.read-only { background: var(--hover); color: var(--ink-dim); cursor: default; }
+input.read-only:focus { border-color: var(--line); }
 input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-allowed; }
+/* A card's note on how the assistant mode concerns it (Local voice, Settings → Whisper). */
+.mode-note { margin: 0 0 12px; }
+.mode-flag { color: var(--ink-dim); }
+.whisper-onoff.is-on .mode-flag { color: var(--accent); }
 .lists-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 26px; }
 .lists-read { color: var(--ink-dim); }
 .lists-read.is-error { color: var(--bad); }
@@ -426,7 +432,8 @@ input.switch:checked + .switch-state { color: var(--accent); }
 }
 
 /* Wake model: the selected model's name next to the phrase fields, the download notice. The
-   Whisper tab's notices (change `whisper-mode`) look the same. */
+   Whisper mode's notices (Config → Assistant and Local voice, Settings → Whisper) look the
+   same. */
 .model-name { color: var(--ink-dim); font-weight: normal; }
 .wake-model-tools, .download-tools { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .download-tools:not(:has(> :not([hidden]))) { display: none; }
@@ -436,8 +443,10 @@ input.switch:checked + .switch-state { color: var(--accent); }
 .wake-download ul, .download-notice ul, .codex-setup ul { margin: 0 0 10px; padding-left: 18px; }
 .wake-download li, .download-notice li, .codex-setup li { line-height: 1.5; }
 .codex-setup ul:empty { display: none; }
+.download-notice .notice-total { color: var(--ink-dim); }
+.download-notice .notice-total:empty { display: none; }
 
-/* The Whisper tab: what is in use now (status), and the voice's Preview. */
+/* Settings → Whisper: what is in use now (status); Config → Local voice: Preview. */
 .whisper-now { margin: 0; padding: 2px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--field); }
 .whisper-now div { grid-template-columns: 110px minmax(0, 1fr); padding: 5px 0; }
 .whisper-now div[hidden] { display: none; }

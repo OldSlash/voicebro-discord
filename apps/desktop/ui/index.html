@@ -17,7 +17,6 @@
         <button type="button" role="tab" class="tab-button" data-tab="system">System</button>
         <button type="button" role="tab" class="tab-button" data-tab="settings">Settings</button>
         <button type="button" role="tab" class="tab-button" data-tab="config">Config</button>
-        <button type="button" role="tab" class="tab-button" data-tab="whisper">Whisper</button>
       </nav>
 
       <main class="tab-panels">
@@ -189,8 +188,9 @@
         <section class="tab-panel" data-panel="settings" role="tabpanel">
           <!-- The window's own settings. Every control has its help line (what it affects,
                when a change applies, the default); the message line under it holds a
-               validation error only. The bot's settings are on the Config tab. Each card
-               folds to its title, as on the Config tab (ui.collapsed_cards). -->
+               validation error only. The bot's settings are on the Config tab; the Whisper
+               card holds how Whisper runs on this PC (change `whisper-config-layout`). Each
+               card folds to its title, as on the Config tab (ui.collapsed_cards). -->
           <div class="settings-column">
             <div class="card settings-section collapsible" data-card="appearance">
               <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-appearance-body"><span class="chevron" aria-hidden="true"></span>Appearance</button></h2>
@@ -211,6 +211,52 @@
                 <label>Memory measurement <span class="switch-row"><input id="diagnostics-memory" type="checkbox" role="switch" class="switch" data-path="diagnostics.memory" data-kind="bool"><span class="switch-state" id="diagnostics-memory-label">Off</span></span><small class="field-help">Reads the private working set of the app, its WebView2 processes and Codex every 3 seconds for the status bar and the System tab. While on it costs a scan of the process list every 3 seconds. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-memory"></small></label>
                 <label>Verbose log <span class="switch-row"><input id="diagnostics-verbose-log" type="checkbox" role="switch" class="switch" data-path="diagnostics.verbose_log" data-kind="bool"><span class="switch-state" id="diagnostics-verbose-log-label">Off</span></span><small class="field-help">Also writes to the log file what the recognizer heard, the latency and call counters, the chat text and warnings of the libraries, for diagnosing a problem. The Console shows all of it either way. The log folder stays within about 2 MB. Applies at once. Default: off.</small><small class="field-message" data-for="diagnostics-verbose-log"></small></label>
                 <label class="wide">Opus codec (experiment)<select id="diagnostics-opus-codec" data-path="diagnostics.opus_codec" data-kind="string"><option value="libopus">libopus (C library)</option><option value="opus-rs">opus-rs (Rust)</option></select><small class="field-help">Which Opus implementation encodes and decodes the voice: the assistant's voice toward Discord, your speech toward Codex and its answer, and the people in the channel. libopus is the C library VoiceBro has always used; opus-rs is written in Rust and is being tried as its replacement. Applies at the next /join and the next call; one already running keeps its codec. Default: libopus.</small><small class="field-help" id="opus-codec-in-use">In use: none.</small><small class="field-message" data-for="diagnostics-opus-codec"></small></label>
+              </div>
+              </div>
+            </div>
+
+            <!-- Change `whisper-config-layout` (design D4): how Whisper runs on this PC. The
+                 fields save in either mode; the On/Off label follows the stored mode, and the
+                 CUDA runtime's notice and the "In use now" lines follow the status. -->
+            <div class="card settings-section collapsible" data-card="whisper">
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-whisper-body"><span class="chevron" aria-hidden="true"></span>Whisper</button></h2>
+              <div class="card-body" id="card-whisper-body">
+              <p class="card-lead mode-note whisper-onoff" id="whisper-onoff"><strong class="mode-flag" id="whisper-onoff-flag">Off</strong><span id="whisper-onoff-text">: turn it on in Config → Assistant → Assistant mode.</span></p>
+              <div class="form-grid">
+                <label>Device<select id="whisper-device" data-path="whisper.device" data-kind="string"><option value="cpu">CPU</option><option value="gpu">NVIDIA GPU (CUDA)</option></select><small class="field-help">Where Whisper runs. NVIDIA GPU needs an NVIDIA graphics card and its own runtime download; without a CUDA device Whisper runs on the CPU, and the line below says so. The local voice always runs on the CPU. Applies at once. Default: CPU.</small><small class="field-message" data-for="whisper-device"></small></label>
+                <label>CPU threads<input id="whisper-threads" type="number" min="0" max="64" step="1" data-path="whisper.threads" data-kind="number"><small class="field-help">0 = automatic; otherwise 1 to 64. Used only while Whisper runs on the CPU, also when the GPU was asked for and the CPU is used. Applies at once. Default: 0.</small><small class="field-message" data-for="whisper-threads"></small></label>
+                <!-- In the realtime mode: every file the Whisper model chosen for the Whisper
+                     mode misses, so it can be downloaded before the switch. In the Whisper mode,
+                     while NVIDIA GPU is chosen: the CUDA runtime only (the model's notice is in
+                     Config → Assistant then). -->
+                <div class="wide download-tools">
+                  <div class="download-notice" id="settings-whisper-download" hidden>
+                    <p id="settings-whisper-download-text"></p>
+                    <ul id="settings-whisper-download-items"></ul>
+                    <p class="notice-total" id="settings-whisper-download-total"></p>
+                    <div class="manual-download" id="settings-whisper-download-manual" hidden>
+                      <p class="manual-lead">Rather download them yourself?</p>
+                      <ul class="manual-items"></ul>
+                      <p class="manual-note">Put the files into the assets folder as they are, without unpacking them, then press Download: VoiceBro checks each against its pinned SHA-256, unpacks the archives without going online, and downloads only what is not there.</p>
+                      <button type="button" class="button" id="settings-whisper-download-assets">Open assets folder</button>
+                    </div>
+                    <button type="button" class="button primary" id="settings-whisper-download-button">Download</button>
+                  </div>
+                </div>
+                <label>Language<select id="whisper-language" data-path="whisper.language" data-kind="string"></select><small class="field-help">The language people speak in the channel. Automatic lets Whisper detect it for every utterance; a fixed language is quicker and more exact on short phrases. Applies at once. Default: Automatic.</small><small class="field-message" data-for="whisper-language"></small></label>
+                <div class="field wide">
+                  <span class="field-name">In use now</span>
+                  <dl class="info-list whisper-now" id="whisper-now">
+                    <div><dt>Recognition</dt><dd id="whisper-now-recognition">—</dd></div>
+                    <div data-whisper-row><dt>Device</dt><dd id="whisper-now-device">—</dd></div>
+                    <div data-whisper-row><dt>Voice</dt><dd id="whisper-now-voice">—</dd></div>
+                    <div data-whisper-row><dt>Last answer</dt><dd id="whisper-now-last">—</dd></div>
+                  </dl>
+                  <small class="field-help">What is loaded and where, and the last answer's four times: from the end of speech to its text, from the text to Codex's first words, from those words to the voice, and in all. Whisper and the voice load at /join in the Whisper mode and unload after the bot leaves its last channel.</small>
+                </div>
+                <div class="wide download-tools">
+                  <button type="button" class="button" id="open-whisper-models-folder">Open Whisper models folder</button>
+                </div>
               </div>
               </div>
             </div>
@@ -300,18 +346,15 @@
             <div class="card settings-section collapsible" data-card="assistant">
               <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-assistant-body"><span class="chevron" aria-hidden="true"></span>Assistant</button></h2>
               <div class="card-body" id="card-assistant-body">
+              <!-- Change `whisper-config-layout` (design D3): the assistant mode comes first, and
+                   the mode decides which rows show (`data-mode`). The rows of the other mode are
+                   hidden, not disabled; each row writes only its own setting path. -->
               <div class="form-grid">
+                <label class="wide">Assistant mode<select id="assistant-mode" data-path="assistant.mode" data-kind="string"><option value="realtime">Realtime voice (Codex voice call, Vosk wake word)</option><option value="whisper">Whisper (local recognition, Codex text answers, local voice)</option></select><small class="field-help">Realtime voice: Vosk spots the phrases on this PC; during a session what is said in the channel goes to OpenAI's realtime voice call as audio, and the call answers aloud. Whisper: Whisper writes down what is said on this PC and spots the phrases in it, Codex answers that text, and the Local voice card's voice reads the answer on this PC; only text goes to OpenAI. In the Whisper mode, Model and Reasoning in the Codex card set how fast each answer comes: a low reasoning level is the quick choice; Whisper's device and language are in Settings → Whisper. Applies at once, also in a voice channel the bot is in (a running session ends). Default: realtime voice.</small><small class="field-message" data-for="assistant-mode"></small></label>
+                <label>Recognition<input id="recognition-engine" class="read-only" type="text" readonly aria-readonly="true" value="Vosk"><small class="field-help">What spots the phrases on this PC. It follows the assistant mode and cannot be changed here: Vosk in the realtime voice mode, Whisper in the Whisper mode.</small></label>
                 <label>Engine<select id="assistant-engine" data-path="assistant.engine" data-kind="string"><option value="codex">Codex CLI (official app-server)</option></select><small class="field-help">Codex CLI through its app-server with your ChatGPT sign-in; no API key. The only engine today. Applies at once.</small><small class="field-message" data-for="assistant-engine"></small></label>
-                <label>Activation<select id="session-mode" data-path="session.mode" data-kind="string"><option value="wake_word">Wake word (offline, Vosk)</option><option value="always">Always listening</option></select><small class="field-help">Wake word: a session starts when someone says an activation phrase and ends at a deactivation phrase or the auto-stop; nothing is sent to the assistant between sessions. Always listening: the assistant hears the channel and the call runs the whole time the bot is in it. Applies at once. Default: wake word.</small><small class="field-message" data-for="session-mode"></small></label>
-                <!-- Change `whisper-mode`: in the Whisper mode Whisper spots the phrases, so the
-                     Vosk fields below are disabled (they keep their stored values). -->
-                <p class="wide form-note warning-note" id="assistant-whisper-note" hidden>Whisper mode: the phrases are on the Whisper tab.</p>
-                <label class="wide"><span class="field-name">Activation phrases<span class="model-name" data-model-name></span></span><textarea id="activation-phrases" rows="2" spellcheck="false" data-path="wake.phrases" data-phrases="activation" data-kind="list"></textarea><small class="field-help">The phrases of the wake model chosen below; each model keeps its own. Separate phrases with commas; a phrase may have several words, for example "hey bro". Every word must be in the model's vocabulary. Each model comes with default phrases ("bro" for English, "братан" for Russian): change them or remove them, and an emptied field stays empty. Repeating an activation phrase during a session does nothing. Applies at once.</small><small class="field-help warning-text" id="unknown-words"></small><small class="field-message" data-for="activation-phrases"></small></label>
-                <label class="wide"><span class="field-name">Deactivation phrases<span class="model-name" data-model-name></span></span><textarea id="deactivation-phrases" rows="2" spellcheck="false" data-path="wake.phrases" data-phrases="deactivation" data-kind="list"></textarea><small class="field-help">Of the wake model chosen below. Separate phrases with commas; a phrase may have several words, for example "Отбой братан, Заканчивай, Братан всё". Every word must be in the model's vocabulary. Each model comes with a default phrase ("peace out" for English, "отбой" for Russian): change it or remove it, and an emptied field stays empty. Ends the session at once and cuts off the current answer; the call's own transcript of what people say ends it too. Avoid words that come up in normal game talk. Applies at once.</small><small class="field-message" data-for="deactivation-phrases"></small></label>
-                <label>Auto-stop after no input, seconds<input id="idle-timeout" type="number" min="0" max="3600" step="1" data-path="session.idle_timeout_seconds" data-kind="number"><small class="field-help">0 = only the deactivation phrase ends a session; otherwise 5 to 3600. The assistant's own answer does not count as silence. Applies at once, to the running session too. Default: 60.</small><small class="field-message" data-for="idle-timeout"></small></label>
-                <label>Wake engine<select id="wake-engine" data-path="wake.engine" data-kind="string"></select><small class="field-help">The offline recognizer that listens for the phrases on this PC; Vosk is the only one today. Applies at once (the engine reloads).</small><small class="field-message" data-for="wake-engine"></small></label>
-                <label class="wide">Wake model<select id="wake-model" data-path="wake.model" data-kind="string"></select><small class="field-help">The recognizer's language; the phrases above belong to the model chosen here, and each model keeps its own. A model that is not on this PC yet is downloaded only after you agree: choosing one asks first, and nothing is fetched until you press Download. Other languages: extract a small Vosk model from alphacephei.com/vosk/models into the models folder and restart VoiceBro; use the small models, the large ones load slowly and take gigabytes of memory. Applies at once. Default: English (US).</small><small class="field-message" data-for="wake-model"></small></label>
-                <div class="wide wake-model-tools">
+                <label class="wide" data-mode="realtime">Wake model<select id="wake-model" data-path="wake.model" data-kind="string"></select><small class="field-help">The Vosk model's language; the phrases below belong to the model chosen here, and each model keeps its own. A model that is not on this PC yet is downloaded only after you agree: choosing one asks first, and nothing is fetched until you press Download. Other languages: extract a small Vosk model from alphacephei.com/vosk/models into the models folder and restart VoiceBro; use the small models, the large ones load slowly and take gigabytes of memory. Applies at once. Default: English (US).</small><small class="field-message" data-for="wake-model"></small></label>
+                <div class="wide wake-model-tools" data-mode="realtime">
                   <div class="wake-download" id="wake-download" hidden>
                     <p id="wake-download-text"></p>
                     <ul id="wake-download-items"></ul>
@@ -325,77 +368,8 @@
                   </div>
                   <button type="button" class="button" id="open-models-folder">Open models folder</button>
                 </div>
-              </div>
-              </div>
-            </div>
-
-            <div class="card settings-section collapsible" data-card="codex">
-              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-codex-body"><span class="chevron" aria-hidden="true"></span>Codex</button></h2>
-              <div class="card-body" id="card-codex-body">
-              <div class="form-grid">
-                <label>Refresh the lists at start <span class="switch-row"><input id="codex-refresh-lists" type="checkbox" role="switch" class="switch" data-path="codex.refresh_lists_at_start" data-kind="bool"><span class="switch-state" id="codex-refresh-lists-label">Off</span></span><small class="field-help">While on, every start of VoiceBro runs Codex for a moment to read the models, reasoning levels and voices of your account, and Codex stops again a minute later. While off, the lists saved from the last read are shown and Codex does not start with the app; the first /join of each run reads them again. Applies from the next start. Default: off.</small><small class="field-message" data-for="codex-refresh-lists"></small></label>
-                <div class="field"><span class="field-name">Lists</span><span class="lists-row"><button type="button" class="button" id="codex-lists-refresh">Refresh lists</button><span class="lists-read" id="codex-lists-read" role="status">Never read</span></span><small class="field-help">The Model, Reasoning and Voice lists below come from the last read, saved next to the app in codex-lists.json. Refresh lists reads them now: Codex starts and stops again a minute later unless the bot is in a voice channel. Check Codex and /join read them too.</small></div>
-                <label>Model<select id="codex-model-select" class="listed" data-for="codex-model"></select><input id="codex-model" type="text" spellcheck="false" list="codex-model-list" placeholder="account default" data-path="codex.model" data-kind="string"><datalist id="codex-model-list"></datalist><small class="field-help">For the work the voice assistant hands to Codex (searching, longer reasoning). The voice itself stays the realtime voice model. Applies from the next call, which opens a new thread. Default: the account's default model.</small><small class="field-message" data-for="codex-model"></small></label>
-                <label>Reasoning<select id="codex-effort-select" class="listed" data-for="codex-effort"></select><input id="codex-effort" type="text" spellcheck="false" list="codex-effort-list" placeholder="model default" data-path="codex.reasoning_effort" data-kind="string"><datalist id="codex-effort-list"></datalist><small class="field-help">How long Codex thinks about a handed-off task. Higher levels answer better but take longer. Applies from the next call, which opens a new thread. Default: the model's default.</small><small class="field-message" data-for="codex-effort"></small></label>
-                <label>Voice<select id="codex-voice-select" class="listed" data-for="codex-voice"></select><input id="codex-voice" type="text" spellcheck="false" list="codex-voice-list" placeholder="server default" data-path="codex.voice" data-kind="string"><datalist id="codex-voice-list"></datalist><small class="field-help">The voice the realtime call speaks with; realtime mode only (the Whisper mode's voice is on the Whisper tab). Empty is the server's default voice. Applies from the next call.</small><small class="field-message" data-for="codex-voice"></small></label>
-                <label>Answer handoff<select id="codex-handoff" data-path="codex.handoff_mode" data-kind="string"><option value="items">Conversation items (recommended)</option><option value="commentary">Commentary</option><option value="bem_tags">Tagged channels</option><option value="thinking">Built-in (thinking)</option></select><small class="field-help" id="codex-handoff-hint"></small><small class="field-message" data-for="codex-handoff"></small></label>
-                <label>Speaker names<select id="speaker-labels" data-path="assistant.speaker_labels" data-kind="string"><option value="start">At call start (recommended)</option><option value="changes">At call start and when the speaker changes</option><option value="off">Off</option></select><small class="field-help">At call start the assistant gets the people in the voice channel and who said the activation phrase. Discord nicknames go to OpenAI. Applies from the next session. Default: at call start.</small><small class="field-message" data-for="speaker-labels"></small></label>
-                <label>Save chat history <span class="switch-row"><input id="save-chat-history" type="checkbox" role="switch" class="switch" data-path="assistant.save_chat_history" data-kind="bool"><span class="switch-state" id="save-chat-history-label">Off</span></span><small class="field-help">While on, every chat entry is appended to logs\codex-chat-&lt;date&gt;.log next to the app. While off, nothing of the chat is saved and the Codex chat tab still shows it. Files saved earlier stay. Applies at once. Default: off.</small><small class="field-message" data-for="save-chat-history"></small></label>
-                <label>Post answers to Discord<select id="post-answers" data-path="assistant.post_answers" data-kind="string"><option value="off">Off</option><option value="voice_channel">The voice channel's chat</option><option value="command_channel">The channel of /join</option><option value="channel">A chosen channel</option></select><small class="field-help">When the voice hands a question to the Codex agent, the agent's final answer is posted there as text, with its links and their previews, while the voice retells it. Its interim lines, what the voice says and what people say are not posted. The bot needs View Channel, Send Messages and Embed Links in that channel. A posted answer is public there and stays in the channel. Applies from the next answer. Default: off.</small><small class="field-message" data-for="post-answers"></small></label>
-                <label id="answers-channel-field" hidden>Answers channel<select id="answers-channel"></select><small class="field-help warning-text" id="answers-channel-pick" hidden>Pick a channel: nothing is saved until you do.</small><small class="field-help" id="answers-channel-note"></small><small class="field-message" data-for="answers-channel"></small></label>
-                <label class="wide">Instructions<textarea id="codex-instructions" class="prompt-input" rows="5" data-path="codex.instructions" data-kind="string"></textarea><small class="field-help">Your instructions for the assistant: sent to the voice at every call start and to the Codex agent as its developer instructions. There is no built-in default. The voice follows a change from the next call, the agent from the next /join.</small><small class="field-message" data-for="codex-instructions"></small></label>
-              </div>
-              <p class="form-note">Threads are read-only and ephemeral, the shell tool is disabled, and VoiceBro declines every request to run commands or change files. The agent may search the web. Codex starts at /join and stops when the bot leaves its last voice channel.</p>
-              </div>
-            </div>
-
-            <div class="card settings-section collapsible" data-card="hotkey">
-              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-hotkey-body"><span class="chevron" aria-hidden="true"></span>Hotkey</button></h2>
-              <div class="card-body" id="card-hotkey-body">
-              <div class="form-grid">
-                <label>Mute hotkey<input id="hotkey-mute" type="text" spellcheck="false" placeholder="Ctrl+Alt+M" data-path="hotkey.mute" data-kind="string"><small class="field-help">Works system-wide, also in games. Empty disables it. Mutes both what the assistant hears and what it says, and ends the session. Applies at once. Default: Ctrl+Alt+M.</small><small class="field-message" data-for="hotkey-mute"></small></label>
-              </div>
-              </div>
-            </div>
-            <div class="settings-actions"><span class="form-feedback" id="config-autosave-feedback" data-autosave="Audio, Assistant, Codex and Hotkey save each change automatically.">Audio, Assistant, Codex and Hotkey save each change automatically.</span></div>
-            <p class="muted settings-file">Settings file: <span class="path-value" id="config-path">—</span></p>
-          </div>
-        </section>
-
-        <section class="tab-panel" data-panel="whisper" role="tabpanel">
-          <!-- Change `whisper-mode` (design D13): local recognition, Codex text answers and a
-               local voice. Every field saves on change, like the Config cards. The "In use
-               now" lines and the download notices are status, redrawn from it; the fields are
-               written from the stored settings only. Each card folds to its title
-               (ui.collapsed_cards). -->
-          <div class="settings-column">
-            <div class="card settings-section collapsible" data-card="whisper-mode">
-              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-whisper-mode-body"><span class="chevron" aria-hidden="true"></span>Mode</button></h2>
-              <div class="card-body" id="card-whisper-mode-body">
-              <div class="form-grid">
-                <label class="wide">Assistant mode<select id="assistant-mode" data-path="assistant.mode" data-kind="string"><option value="realtime">Realtime voice (Codex voice call, Vosk wake word)</option><option value="whisper">Whisper (local recognition, Codex text answers, local voice)</option></select><small class="field-help">Realtime voice: Vosk spots the phrases on this PC; during a session what is said in the channel goes to OpenAI's realtime voice call as audio, and the call answers aloud. Whisper: Whisper writes down what is said on this PC, Codex answers that text, and a voice on this PC reads the answer; only text goes to OpenAI. In the Whisper mode, Model and Reasoning in Config → Codex set how fast each answer comes: a low reasoning level is the quick choice. Applies at once, also in a voice channel the bot is in (a running session ends). Default: realtime voice.</small><small class="field-message" data-for="assistant-mode"></small></label>
-                <div class="field wide">
-                  <span class="field-name">In use now</span>
-                  <dl class="info-list whisper-now" id="whisper-now">
-                    <div><dt>Recognition</dt><dd id="whisper-now-recognition">—</dd></div>
-                    <div data-whisper-row><dt>Device</dt><dd id="whisper-now-device">—</dd></div>
-                    <div data-whisper-row><dt>Voice</dt><dd id="whisper-now-voice">—</dd></div>
-                    <div data-whisper-row><dt>Last answer</dt><dd id="whisper-now-last">—</dd></div>
-                  </dl>
-                </div>
-              </div>
-              </div>
-            </div>
-
-            <div class="card settings-section collapsible" data-card="whisper-recognition">
-              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-whisper-recognition-body"><span class="chevron" aria-hidden="true"></span>Speech recognition</button></h2>
-              <div class="card-body" id="card-whisper-recognition-body">
-              <div class="form-grid">
-                <label class="wide">Model<select id="whisper-model" data-path="whisper.model" data-kind="string"></select><small class="field-help">The Whisper model that writes down what is said. A larger model hears better and takes longer; the note after each one says where it fits. In the Whisper mode, a model that is not on this PC asks first: nothing is saved or downloaded until you press Download. Your models are ggml .bin files you put into the Whisper models folder; they are listed after a restart of VoiceBro. Applies at once; a model loaded in a voice channel reloads in the background and the old one answers until then. Default: base (q8_0).</small><small class="field-message" data-for="whisper-model"></small></label>
-                <label>Device<select id="whisper-device" data-path="whisper.device" data-kind="string"><option value="cpu">CPU</option><option value="gpu">NVIDIA GPU (CUDA)</option></select><small class="field-help">NVIDIA GPU needs an NVIDIA graphics card and its own runtime download. Without a CUDA device Whisper runs on the CPU, and the Mode card says so. The voice always runs on the CPU. Applies at once. Default: CPU.</small><small class="field-message" data-for="whisper-device"></small></label>
-                <label>CPU threads<input id="whisper-threads" type="number" min="0" max="64" step="1" data-path="whisper.threads" data-kind="number"><small class="field-help">0 = automatic; otherwise 1 to 64. Used only while Whisper runs on the CPU, also when the GPU was asked for and the CPU is used. Applies at once. Default: 0.</small><small class="field-message" data-for="whisper-threads"></small></label>
-                <label>Language<select id="whisper-language" data-path="whisper.language" data-kind="string"></select><small class="field-help">The language people speak in the channel. Automatic lets Whisper detect it for every utterance; a fixed language is quicker and more exact on short phrases. It also picks the default phrases (English for Automatic). Applies at once. Default: Automatic.</small><small class="field-message" data-for="whisper-language"></small></label>
-                <div class="wide download-tools">
+                <label class="wide" data-mode="whisper" hidden>Whisper model<select id="whisper-model" data-path="whisper.model" data-kind="string"></select><small class="field-help">The Whisper model that writes down what is said. A larger model hears better and takes longer; the note after each one says where it fits. A model that is not on this PC asks first: nothing is saved or downloaded until you press Download. Your own ggml .bin files go into the Whisper models folder (Settings → Whisper) and are listed after a restart of VoiceBro. Applies at once; a model loaded in a voice channel reloads in the background and the old one answers until then. Default: base (q8_0).</small><small class="field-message" data-for="whisper-model"></small></label>
+                <div class="wide download-tools" data-mode="whisper" hidden>
                   <div class="download-notice" id="whisper-download" hidden>
                     <p id="whisper-download-text"></p>
                     <ul id="whisper-download-items"></ul>
@@ -407,28 +381,25 @@
                     </div>
                     <button type="button" class="button primary" id="whisper-download-button">Download</button>
                   </div>
-                  <button type="button" class="button" id="open-whisper-models-folder">Open Whisper models folder</button>
                 </div>
+                <label class="wide" data-mode="realtime"><span class="field-name">Activation phrases<span class="model-name" data-model-name></span></span><textarea id="activation-phrases" rows="2" spellcheck="false" data-path="wake.phrases" data-phrases="activation" data-kind="list"></textarea><small class="field-help">The phrases of the wake model chosen above, for the realtime voice mode; each model keeps its own. Separate phrases with commas; a phrase may have several words, for example "hey bro". Every word must be in the model's vocabulary. Each model comes with default phrases ("bro" for English, "братан" for Russian): change them or remove them, and an emptied field stays empty. Repeating an activation phrase during a session does nothing. Applies at once.</small><small class="field-help warning-text" id="unknown-words"></small><small class="field-message" data-for="activation-phrases"></small></label>
+                <label class="wide" data-mode="realtime"><span class="field-name">Deactivation phrases<span class="model-name" data-model-name></span></span><textarea id="deactivation-phrases" rows="2" spellcheck="false" data-path="wake.phrases" data-phrases="deactivation" data-kind="list"></textarea><small class="field-help">Of the wake model chosen above, for the realtime voice mode. Separate phrases with commas; a phrase may have several words, for example "Отбой братан, Заканчивай, Братан всё". Every word must be in the model's vocabulary. Each model comes with a default phrase ("peace out" for English, "отбой" for Russian): change it or remove it, and an emptied field stays empty. Ends the session at once and cuts off the current answer; the call's own transcript of what people say ends it too. Avoid words that come up in normal game talk. Applies at once.</small><small class="field-message" data-for="deactivation-phrases"></small></label>
+                <label class="wide" data-mode="whisper" hidden><span class="field-name">Activation phrases<span class="model-name"> — Whisper</span></span><textarea id="whisper-activation" rows="2" spellcheck="false" data-path="whisper.phrases.activation" data-whisper-phrases="activation" data-kind="list"></textarea><small class="field-help">The Whisper mode's own phrases, one set for every language; the Vosk models keep theirs. Whisper writes any word, so a phrase may be any word or several words in a row; separate phrases with commas or line breaks. Matching ignores case and punctuation. Default: "bro"; change it or remove it, and an emptied field stays empty. Repeating an activation phrase during a session does nothing. Applies at once.</small><small class="field-message" data-for="whisper-activation"></small></label>
+                <label class="wide" data-mode="whisper" hidden><span class="field-name">Deactivation phrases<span class="model-name"> — Whisper</span></span><textarea id="whisper-deactivation" rows="2" spellcheck="false" data-path="whisper.phrases.deactivation" data-whisper-phrases="deactivation" data-kind="list"></textarea><small class="field-help">The Whisper mode's own phrases, separated and matched as above; a phrase may not be in both lists. Default: "peace out". Ends the session at once and cuts off the current answer. Avoid words that come up in normal game talk. Applies at once.</small><small class="field-message" data-for="whisper-deactivation"></small></label>
+                <label>Activation<select id="session-mode" data-path="session.mode" data-kind="string"><option value="wake_word">Wake word (offline)</option><option value="always">Always listening</option></select><small class="field-help">Wake word: a session starts when someone says an activation phrase and ends at a deactivation phrase or the auto-stop; nothing is sent to the assistant between sessions. Always listening: the assistant hears the channel the whole time the bot is in it (in the Whisper mode everything said there goes to Codex as text). Applies at once, in both modes. Default: wake word.</small><small class="field-message" data-for="session-mode"></small></label>
+                <label>Auto-stop after no input, seconds<input id="idle-timeout" type="number" min="0" max="3600" step="1" data-path="session.idle_timeout_seconds" data-kind="number"><small class="field-help">0 = only the deactivation phrase ends a session; otherwise 5 to 3600. The assistant's own answer does not count as silence. Applies at once, to the running session too. Default: 60.</small><small class="field-message" data-for="idle-timeout"></small></label>
               </div>
               </div>
             </div>
 
-            <div class="card settings-section collapsible" data-card="whisper-phrases">
-              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-whisper-phrases-body"><span class="chevron" aria-hidden="true"></span>Phrases</button></h2>
-              <div class="card-body" id="card-whisper-phrases-body">
+            <!-- Change `whisper-config-layout` (design D4): the voice of the Whisper mode. Its
+                 fields and Download work in both modes; the note on top follows the mode. -->
+            <div class="card settings-section collapsible" data-card="local-voice">
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-local-voice-body"><span class="chevron" aria-hidden="true"></span>Local voice</button></h2>
+              <div class="card-body" id="card-local-voice-body">
+              <p class="muted card-lead mode-note" id="local-voice-note"></p>
               <div class="form-grid">
-                <label class="wide">Activation phrases<textarea id="whisper-activation" rows="2" spellcheck="false" data-path="whisper.phrases.activation" data-whisper-phrases="activation" data-kind="list"></textarea><small class="field-help">Whisper writes any word, so a phrase may be any word or several words in a row; separate phrases with commas or line breaks. Matching ignores case and punctuation. Until you change a list, the default phrases of the chosen language are used (English for Automatic): change them or remove them, and an emptied field stays empty. Repeating an activation phrase during a session does nothing. Applies at once.</small><small class="field-message" data-for="whisper-activation"></small></label>
-                <label class="wide">Deactivation phrases<textarea id="whisper-deactivation" rows="2" spellcheck="false" data-path="whisper.phrases.deactivation" data-whisper-phrases="deactivation" data-kind="list"></textarea><small class="field-help">End the session and cut off the current answer. Separated and matched as above; a phrase may not be in both lists. Avoid words that come up in normal game talk. Applies at once.</small><small class="field-message" data-for="whisper-deactivation"></small></label>
-                <label>Activation<select id="whisper-session-mode" data-path="session.mode" data-kind="string"><option value="wake_word">Wake word (Whisper spots the phrases)</option><option value="always">Always listening</option></select><small class="field-help">The same setting as Activation in Config → Assistant. Wake word: a session starts at an activation phrase and ends at a deactivation phrase or the auto-stop; between sessions nothing goes to Codex. Always listening: everything said in the channel goes to Codex as text, the whole time the bot is in it. Applies at once. Default: wake word.</small><small class="field-message" data-for="whisper-session-mode"></small></label>
-              </div>
-              </div>
-            </div>
-
-            <div class="card settings-section collapsible" data-card="whisper-voice">
-              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-whisper-voice-body"><span class="chevron" aria-hidden="true"></span>Voice</button></h2>
-              <div class="card-body" id="card-whisper-voice-body">
-              <div class="form-grid">
-                <label class="wide">Voice<select id="tts-voice" data-path="tts.voice" data-kind="string"></select><small class="field-help">The voice that reads Codex's answers into the voice channel, made on this PC. Supertonic 3 speaks 31 languages. Piper and Kokoro voices speak one language each and need the phonemizer piper-phonemize (GPL-3.0), a separate download. Windows voices are built into Windows and need no download. In the Whisper mode, a voice that is not on this PC asks first: nothing is saved or downloaded until you press Download. Applies at once. Default: Supertonic 3 F1.</small><small class="field-help" id="tts-voice-info"></small><small class="field-message" data-for="tts-voice"></small></label>
+                <label class="wide">Voice<select id="tts-voice" data-path="tts.voice" data-kind="string"></select><small class="field-help">The voice that reads Codex's answers into the voice channel in the Whisper mode, made on this PC. Supertonic 3 speaks 31 languages. Piper and Kokoro voices speak one language each and need the phonemizer piper-phonemize (GPL-3.0), a separate download. Windows voices are built into Windows and need no download. Nothing is downloaded until you press Download; in the Whisper mode a voice that is not on this PC asks first. Applies at once. Default: Supertonic 3 F1.</small><small class="field-help" id="tts-voice-info"></small><small class="field-message" data-for="tts-voice"></small></label>
                 <label>Speed <output id="tts-speed-label" for="tts-speed">1.00×</output><input id="tts-speed" type="range" min="0.5" max="2" step="0.05" data-path="tts.speed" data-kind="factor"><small class="field-help">How fast the voice speaks, 0.5 to 2 times its own pace. Saves when you release the slider. Applies from the next answer and to Preview. Default: 1.00×.</small><small class="field-message" data-for="tts-speed"></small></label>
                 <div class="field">
                   <span class="field-name">Preview</span>
@@ -452,7 +423,37 @@
               </div>
               </div>
             </div>
-            <div class="settings-actions"><span class="form-feedback" id="whisper-feedback" data-autosave="Every field on this tab saves each change automatically.">Every field on this tab saves each change automatically.</span></div>
+
+            <div class="card settings-section collapsible" data-card="codex">
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-codex-body"><span class="chevron" aria-hidden="true"></span>Codex</button></h2>
+              <div class="card-body" id="card-codex-body">
+              <div class="form-grid">
+                <label>Refresh the lists at start <span class="switch-row"><input id="codex-refresh-lists" type="checkbox" role="switch" class="switch" data-path="codex.refresh_lists_at_start" data-kind="bool"><span class="switch-state" id="codex-refresh-lists-label">Off</span></span><small class="field-help">While on, every start of VoiceBro runs Codex for a moment to read the models, reasoning levels and voices of your account, and Codex stops again a minute later. While off, the lists saved from the last read are shown and Codex does not start with the app; the first /join of each run reads them again. Applies from the next start. Default: off.</small><small class="field-message" data-for="codex-refresh-lists"></small></label>
+                <div class="field"><span class="field-name">Lists</span><span class="lists-row"><button type="button" class="button" id="codex-lists-refresh">Refresh lists</button><span class="lists-read" id="codex-lists-read" role="status">Never read</span></span><small class="field-help">The Model, Reasoning and Voice lists below come from the last read, saved next to the app in codex-lists.json. Refresh lists reads them now: Codex starts and stops again a minute later unless the bot is in a voice channel. Check Codex and /join read them too.</small></div>
+                <label>Model<select id="codex-model-select" class="listed" data-for="codex-model"></select><input id="codex-model" type="text" spellcheck="false" list="codex-model-list" placeholder="account default" data-path="codex.model" data-kind="string"><datalist id="codex-model-list"></datalist><small class="field-help">For the work the voice assistant hands to Codex (searching, longer reasoning). The voice itself stays the realtime voice model. Applies from the next call, which opens a new thread. Default: the account's default model.</small><small class="field-message" data-for="codex-model"></small></label>
+                <label>Reasoning<select id="codex-effort-select" class="listed" data-for="codex-effort"></select><input id="codex-effort" type="text" spellcheck="false" list="codex-effort-list" placeholder="model default" data-path="codex.reasoning_effort" data-kind="string"><datalist id="codex-effort-list"></datalist><small class="field-help">How long Codex thinks about a handed-off task. Higher levels answer better but take longer. Applies from the next call, which opens a new thread. Default: the model's default.</small><small class="field-message" data-for="codex-effort"></small></label>
+                <label>Voice<select id="codex-voice-select" class="listed" data-for="codex-voice"></select><input id="codex-voice" type="text" spellcheck="false" list="codex-voice-list" placeholder="server default" data-path="codex.voice" data-kind="string"><datalist id="codex-voice-list"></datalist><small class="field-help">The voice the realtime call speaks with; realtime voice mode only (the Whisper mode's voice is in the Local voice card). Empty is the server's default voice. Applies from the next call.</small><small class="field-message" data-for="codex-voice"></small></label>
+                <label>Answer handoff<select id="codex-handoff" data-path="codex.handoff_mode" data-kind="string"><option value="items">Conversation items (recommended)</option><option value="commentary">Commentary</option><option value="bem_tags">Tagged channels</option><option value="thinking">Built-in (thinking)</option></select><small class="field-help" id="codex-handoff-hint"></small><small class="field-message" data-for="codex-handoff"></small></label>
+                <label>Speaker names<select id="speaker-labels" data-path="assistant.speaker_labels" data-kind="string"><option value="start">At call start (recommended)</option><option value="changes">At call start and when the speaker changes</option><option value="off">Off</option></select><small class="field-help">At call start the assistant gets the people in the voice channel and who said the activation phrase. Discord nicknames go to OpenAI. Applies from the next session. Default: at call start.</small><small class="field-message" data-for="speaker-labels"></small></label>
+                <label>Save chat history <span class="switch-row"><input id="save-chat-history" type="checkbox" role="switch" class="switch" data-path="assistant.save_chat_history" data-kind="bool"><span class="switch-state" id="save-chat-history-label">Off</span></span><small class="field-help">While on, every chat entry is appended to logs\codex-chat-&lt;date&gt;.log next to the app. While off, nothing of the chat is saved and the Codex chat tab still shows it. Files saved earlier stay. Applies at once. Default: off.</small><small class="field-message" data-for="save-chat-history"></small></label>
+                <label>Post answers to Discord<select id="post-answers" data-path="assistant.post_answers" data-kind="string"><option value="off">Off</option><option value="voice_channel">The voice channel's chat</option><option value="command_channel">The channel of /join</option><option value="channel">A chosen channel</option></select><small class="field-help">When the voice hands a question to the Codex agent, the agent's final answer is posted there as text, with its links and their previews, while the voice retells it. Its interim lines, what the voice says and what people say are not posted. The bot needs View Channel, Send Messages and Embed Links in that channel. A posted answer is public there and stays in the channel. Applies from the next answer. Default: off.</small><small class="field-message" data-for="post-answers"></small></label>
+                <label id="answers-channel-field" hidden>Answers channel<select id="answers-channel"></select><small class="field-help warning-text" id="answers-channel-pick" hidden>Pick a channel: nothing is saved until you do.</small><small class="field-help" id="answers-channel-note"></small><small class="field-message" data-for="answers-channel"></small></label>
+                <label class="wide">Instructions<textarea id="codex-instructions" class="prompt-input" rows="5" data-path="codex.instructions" data-kind="string"></textarea><small class="field-help">Your instructions for the assistant: sent to the voice at every call start and to the Codex agent as its developer instructions. There is no built-in default. The voice follows a change from the next call, the agent from the next /join.</small><small class="field-message" data-for="codex-instructions"></small></label>
+              </div>
+              <p class="form-note">Threads are read-only and ephemeral, the shell tool is disabled, and VoiceBro declines every request to run commands or change files. The agent may search the web. Codex starts at /join and stops when the bot leaves its last voice channel.</p>
+              </div>
+            </div>
+
+            <div class="card settings-section collapsible" data-card="hotkey">
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-hotkey-body"><span class="chevron" aria-hidden="true"></span>Hotkey</button></h2>
+              <div class="card-body" id="card-hotkey-body">
+              <div class="form-grid">
+                <label>Mute hotkey<input id="hotkey-mute" type="text" spellcheck="false" placeholder="Ctrl+Alt+M" data-path="hotkey.mute" data-kind="string"><small class="field-help">Works system-wide, also in games. Empty disables it. Mutes both what the assistant hears and what it says, and ends the session. Applies at once. Default: Ctrl+Alt+M.</small><small class="field-message" data-for="hotkey-mute"></small></label>
+              </div>
+              </div>
+            </div>
+            <div class="settings-actions"><span class="form-feedback" id="config-autosave-feedback" data-autosave="Access, Audio, Assistant, Local voice, Codex and Hotkey save each change automatically.">Access, Audio, Assistant, Local voice, Codex and Hotkey save each change automatically.</span></div>
+            <p class="muted settings-file">Settings file: <span class="path-value" id="config-path">—</span></p>
           </div>
         </section>
 
