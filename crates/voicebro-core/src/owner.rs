@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Characters in a code.
@@ -191,6 +191,10 @@ impl LinkStore for MemoryLinkStore {
     }
 }
 
+/// The DPAPI entropy of `owner-link.bin` ([`crate::protect`]); unchanged since build 1.0.2,
+/// so older links read as before.
+const LINK_ENTROPY: &[u8] = b"VoiceBro owner link v1";
+
 /// `owner-link.bin`: the link's JSON encrypted with DPAPI for the current Windows user,
 /// written through `owner-link.bin.tmp` and a rename.
 pub struct FileLinkStore {
@@ -201,23 +205,13 @@ impl FileLinkStore {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
-
-    fn tmp_path(&self) -> PathBuf {
-        let mut name = self.path.as_os_str().to_owned();
-        name.push(".tmp");
-        PathBuf::from(name)
-    }
 }
 
 impl LinkStore for FileLinkStore {
     fn load(&self) -> Result<Option<OwnerLink>, String> {
-        let sealed = match std::fs::read(&self.path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(format!("cannot read it: {error}")),
+        let Some(plain) = crate::protect::read_sealed(&self.path, LINK_ENTROPY)? else {
+            return Ok(None);
         };
-        let plain =
-            dpapi::unprotect(&sealed).map_err(|error| format!("cannot decrypt it: {error}"))?;
         let link: OwnerLink =
             serde_json::from_slice(&plain).map_err(|error| format!("not a link: {error}"))?;
         if link.version != FILE_VERSION {
@@ -228,22 +222,11 @@ impl LinkStore for FileLinkStore {
 
     fn save(&self, link: &OwnerLink) -> Result<(), String> {
         let plain = serde_json::to_vec(link).map_err(|error| error.to_string())?;
-        let sealed =
-            dpapi::protect(&plain).map_err(|error| format!("cannot encrypt it: {error}"))?;
-        let tmp = self.tmp_path();
-        std::fs::write(&tmp, sealed)
-            .map_err(|error| format!("cannot write {}: {error}", tmp.display()))?;
-        std::fs::rename(&tmp, &self.path)
-            .map_err(|error| format!("cannot replace {}: {error}", self.path.display()))
+        crate::protect::write_sealed(&self.path, &plain, LINK_ENTROPY)
     }
 
     fn delete(&self) -> Result<(), String> {
-        let _ = std::fs::remove_file(self.tmp_path());
-        match std::fs::remove_file(&self.path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("cannot delete {}: {error}", self.path.display())),
-        }
+        crate::protect::delete_sealed(&self.path)
     }
 
     fn describe(&self) -> String {
@@ -257,105 +240,6 @@ pub fn platform_store(data_dir: &Path) -> Arc<dyn LinkStore> {
         Arc::new(FileLinkStore::new(link_path(data_dir)))
     } else {
         Arc::new(MemoryLinkStore::default())
-    }
-}
-
-#[cfg(windows)]
-mod dpapi {
-    //! `CryptProtectData` for the current user, with an app constant as the optional
-    //! entropy. The entropy is no secret (the source is public); it keeps a program that
-    //! calls DPAPI without it from opening the blob by chance.
-
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Cryptography::{
-        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
-    };
-
-    const ENTROPY: &[u8] = b"VoiceBro owner link v1";
-
-    fn blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
-        CRYPT_INTEGER_BLOB {
-            cbData: data.len() as u32,
-            pbData: data.as_ptr() as *mut u8,
-        }
-    }
-
-    /// Copies the system-allocated output and frees it.
-    fn take(output: CRYPT_INTEGER_BLOB) -> Vec<u8> {
-        if output.pbData.is_null() {
-            return Vec::new();
-        }
-        // SAFETY: on success DPAPI hands over `cbData` bytes at `pbData`, allocated with
-        // LocalAlloc; they are copied before the block is freed once.
-        unsafe {
-            let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
-            LocalFree(output.pbData as _);
-            bytes
-        }
-    }
-
-    pub fn protect(plain: &[u8]) -> std::io::Result<Vec<u8>> {
-        let input = blob(plain);
-        let entropy = blob(ENTROPY);
-        let mut output = CRYPT_INTEGER_BLOB {
-            cbData: 0,
-            pbData: std::ptr::null_mut(),
-        };
-        // SAFETY: the input and entropy blobs point into live slices that DPAPI only reads;
-        // `output` receives a block freed by `take`.
-        let ok = unsafe {
-            CryptProtectData(
-                &input,
-                std::ptr::null(),
-                &entropy,
-                std::ptr::null(),
-                std::ptr::null(),
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut output,
-            )
-        };
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(take(output))
-    }
-
-    pub fn unprotect(sealed: &[u8]) -> std::io::Result<Vec<u8>> {
-        let input = blob(sealed);
-        let entropy = blob(ENTROPY);
-        let mut output = CRYPT_INTEGER_BLOB {
-            cbData: 0,
-            pbData: std::ptr::null_mut(),
-        };
-        // SAFETY: as in `protect`; no description is asked for.
-        let ok = unsafe {
-            CryptUnprotectData(
-                &input,
-                std::ptr::null_mut(),
-                &entropy,
-                std::ptr::null(),
-                std::ptr::null(),
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut output,
-            )
-        };
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(take(output))
-    }
-}
-
-#[cfg(not(windows))]
-mod dpapi {
-    fn unsupported() -> std::io::Error {
-        std::io::Error::new(std::io::ErrorKind::Unsupported, "DPAPI is Windows only")
-    }
-    pub fn protect(_: &[u8]) -> std::io::Result<Vec<u8>> {
-        Err(unsupported())
-    }
-    pub fn unprotect(_: &[u8]) -> std::io::Result<Vec<u8>> {
-        Err(unsupported())
     }
 }
 
@@ -424,9 +308,12 @@ type Clock = Box<dyn Fn() -> Instant + Send + Sync>;
 pub struct OwnerState {
     inner: Mutex<Inner>,
     filter: AtomicU64,
+    /// The linked owner's id, `0` without a link, whatever the mode.
+    linked: AtomicU64,
     store: Arc<dyn LinkStore>,
     events: EventBus,
     clock: Clock,
+    listener: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl OwnerState {
@@ -450,9 +337,11 @@ impl OwnerState {
         let state = Self {
             inner: Mutex::new(inner),
             filter: AtomicU64::new(FILTER_EVERYONE),
+            linked: AtomicU64::new(0),
             store,
             events,
             clock,
+            listener: OnceLock::new(),
         };
         state.refresh_filter(&state.lock());
         state
@@ -469,13 +358,36 @@ impl OwnerState {
             (Some(link), true) => link.discord_user_id,
         };
         self.filter.store(value, Ordering::Release);
+        self.linked.store(
+            inner.link.as_ref().map_or(0, |link| link.discord_user_id),
+            Ordering::Release,
+        );
     }
 
-    /// Publishes the status and recomputes the filter after a change.
+    /// Publishes the status, recomputes the filter and calls the listener after a change.
+    /// The listener runs under the state's lock, so it may read only [`Self::filter`] and
+    /// [`Self::linked_id`], which are atomics.
     fn changed(&self, inner: &Inner) {
         self.refresh_filter(inner);
         self.events
             .publish(AppEvent::Owner(Box::new(self.status_of(inner))));
+        if let Some(listener) = self.listener.get() {
+            listener();
+        }
+    }
+
+    /// Sets the function called after every change (change `voice-consent`: the access
+    /// filter's refresh); only the first call counts.
+    pub fn set_listener(&self, listener: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.listener.set(listener);
+    }
+
+    /// The linked owner's Discord user id, whatever the mode; lock-free.
+    pub fn linked_id(&self) -> Option<u64> {
+        match self.linked.load(Ordering::Acquire) {
+            0 => None,
+            id => Some(id),
+        }
     }
 
     /// `0` everyone, [`FILTER_NOBODY`] nobody, else the only Discord user id whose voice
@@ -1007,7 +919,8 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut link = sample();
             link.version = 2;
-            let sealed = dpapi::protect(&serde_json::to_vec(&link).unwrap()).unwrap();
+            let sealed =
+                crate::protect::protect(&serde_json::to_vec(&link).unwrap(), LINK_ENTROPY).unwrap();
             std::fs::write(link_path(dir.path()), sealed).unwrap();
             let error = FileLinkStore::new(link_path(dir.path()))
                 .load()

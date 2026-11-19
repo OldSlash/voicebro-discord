@@ -80,6 +80,21 @@ Get the latest version from [Releases](https://github.com/OldSlash/voicebro-disc
 The [user guide](docs/user-guide.md) covers each step in detail, as well as other
 languages, the Whisper mode, settings, privacy, updating, uninstalling and troubleshooting.
 
+## Your bot, your rules
+
+VoiceBro runs a Discord bot that you create, so Discord's developer terms apply to you as
+its owner. VoiceBro gives you optional tools for them; using them is your choice:
+
+- **Who the assistant hears** (Config → Access): everyone in the channel (the default),
+  only people who agreed with `/optin`, or only your own linked Discord account.
+- **`/optin`, `/optout` and `/privacy`**: people agree, withdraw and read your privacy
+  policy in Discord; the Access card lists who agreed and can remove them.
+- **A privacy policy template**: [docs/PRIVACY-POLICY-TEMPLATE.md](docs/PRIVACY-POLICY-TEMPLATE.md).
+  Fill it in, publish it, and put its address into the Access card and into your
+  application in the Discord Developer Portal.
+
+The [user guide](docs/user-guide.md#who-the-assistant-hears) explains each of them.
+
 ## Limitations
 
 - **The assistant is only OpenAI's Codex.** In the default mode the assistant listens and

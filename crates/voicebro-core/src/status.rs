@@ -85,6 +85,8 @@ pub struct Status {
     pub assistant: crate::assistant::AssistantStatus,
     /// The owner link and its waiting code (change `owner-only-access`).
     pub owner: crate::owner::OwnerStatus,
+    /// The consent records (change `voice-consent`).
+    pub consent: crate::consent::ConsentStatus,
     pub settings: Settings,
 }
 

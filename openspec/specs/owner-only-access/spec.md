@@ -9,13 +9,19 @@ everyone.
 ## Requirements
 
 ### Requirement: The owner-only mode is optional
-While `discord.owner_only` is off, the app SHALL let every member in the bot's voice channel
-reach the wake word and the assistant, as without this mode. A stored link SHALL change
-nothing while the mode is off.
+The owner-only mode SHALL be on while `discord.access` is `owner` and off for its other
+values. While `discord.access` is `everyone`, the app SHALL let every member in the bot's
+voice channel reach the wake word and the assistant, as without this mode. While it is
+`agreed`, the `speaker-consent` capability decides which voices pass. A stored link SHALL
+change nothing while the access mode is `everyone`.
 
 #### Scenario: Mode off with a link
-- **WHEN** the mode is off, an owner is linked, and another member says the activation phrase
+- **WHEN** the access mode is `everyone`, an owner is linked, and another member says the activation phrase
 - **THEN** a session starts as it would without a link
+
+#### Scenario: The agreed mode with a link
+- **WHEN** the access mode is `agreed`, an owner is linked, and the owner says the activation phrase
+- **THEN** a session starts
 
 ### Requirement: Linking with a one-time code
 Link in the window SHALL read the assistant's signed-in account and then show a code of 8
@@ -154,17 +160,21 @@ non-bot member in the bot's voice channel.
 - **THEN** the audio is dropped
 
 ### Requirement: Mode and link changes apply at once
-Turning the mode on or off, linking and unlinking SHALL take effect from the next 20 ms
-frame in a channel the bot is already in, without a rejoin. While the mode is on and no
-owner is linked, no member's audio SHALL reach the assistant.
+Changing the access mode, linking and unlinking SHALL take effect from the next 20 ms
+frame in a channel the bot is already in, without a rejoin. While the owner-only mode is
+on and no owner is linked, no member's audio SHALL reach the assistant.
 
 #### Scenario: Unlink during a session
 - **WHEN** the mode is on and the user presses Unlink while a session is active
 - **THEN** no audio reaches the assistant from the next frame on
 
 #### Scenario: Mode turned off in a channel
-- **WHEN** the user turns the mode off while the bot is in a voice channel
+- **WHEN** the user changes the access mode from `owner` to `everyone` while the bot is in a voice channel
 - **THEN** every member's audio reaches the wake word from the next frame on
+
+#### Scenario: Owner mode to the agreed mode
+- **WHEN** the user changes the access mode from `owner` to `agreed` while the bot is in a voice channel and one other member has a consent record
+- **THEN** from the next frame on the audio of the owner and of that member reaches the wake word, and no one else's does
 
 #### Scenario: Mode on, nothing linked
 - **WHEN** the mode is on, no owner is linked, and a member runs `/join` and says the activation phrase

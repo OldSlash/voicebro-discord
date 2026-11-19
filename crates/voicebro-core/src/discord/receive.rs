@@ -6,9 +6,9 @@
 use super::speaker_decode::{opus_payload, SpeakerDecoders};
 use super::speakers::SpeakerEntry;
 use super::{Shared, SpeakerDirectory};
+use crate::access::VoiceFilter;
 use crate::audio::codec::{CodecFailures, OpusCodec};
 use crate::audio::{frame::mix_into, Frame, FRAME_SAMPLES};
-use crate::owner::{FILTER_EVERYONE, FILTER_NOBODY};
 use serenity::all::GuildId;
 use serenity::async_trait;
 use songbird::events::{Event, EventContext, EventHandler as VoiceEventHandler};
@@ -21,26 +21,17 @@ struct Scratch {
     mixed: Frame,
 }
 
-/// Whether a source's voice passes the owner filter (change `owner-only-access`):
-/// everyone while the mode is off, nobody while it is on with no owner linked, else only
-/// the owner's account. A source with no known account never passes the owner.
-pub(crate) fn passes(filter: u64, user: Option<u64>) -> bool {
-    match filter {
-        FILTER_EVERYONE => true,
-        FILTER_NOBODY => false,
-        owner => user == Some(owner),
-    }
-}
-
-/// The sources of one tick whose voice passes, in the tick's order.
+/// The sources of one tick whose voice passes the access filter (change `voice-consent`,
+/// design D4), in the tick's order. A source with no known account passes only the
+/// `everyone` mode.
 pub(crate) fn passing_sources(
-    filter: u64,
+    filter: &VoiceFilter,
     directory: &SpeakerDirectory,
     sources: impl IntoIterator<Item = u32>,
 ) -> Vec<u32> {
     sources
         .into_iter()
-        .filter(|ssrc| filter == FILTER_EVERYONE || passes(filter, directory.user(*ssrc)))
+        .filter(|ssrc| filter.is_everyone() || filter.passes(directory.user(*ssrc)))
         .collect()
 }
 
@@ -122,7 +113,8 @@ impl ReceiveHandler {
         }
     }
 
-    /// Counts a dropped frame and logs its source once per join.
+    /// Counts a dropped frame and logs its source once per join, with the reason of the
+    /// access mode.
     fn ignore(&self, ssrc: u32) {
         self.shared.ignored_frames.fetch_add(1, Ordering::Relaxed);
         if self
@@ -135,8 +127,12 @@ impl ReceiveHandler {
                 .directory
                 .name(ssrc)
                 .unwrap_or_else(|| "an unknown source".to_owned());
+            let reason = match self.shared.host.access_mode() {
+                crate::settings::AccessMode::Agreed => "has not run /optin",
+                _ => "not the owner",
+            };
             log::info!(
-                "receive: ignored {who} (ssrc {ssrc}) in guild {}: not the owner",
+                "receive: ignored {who} (ssrc {ssrc}) in guild {}: {reason}",
                 self.guild.get()
             );
         }
@@ -149,16 +145,16 @@ impl VoiceEventHandler for ReceiveHandler {
         match ctx {
             EventContext::VoiceTick(tick) => {
                 self.shared.ticks.fetch_add(1, Ordering::Relaxed);
-                // The owner filter (change `owner-only-access`) is read once per tick; the
-                // "only person" rule runs first, so the owner alone is known as the owner.
-                let filter = self.shared.host.owner_filter();
-                if filter != FILTER_EVERYONE {
+                // The access filter (change `voice-consent`) is read once per tick; the "only
+                // person" rule runs first, so the only person is known by their account.
+                let filter = self.shared.host.voice_filter();
+                if !filter.is_everyone() {
                     for ssrc in tick.speaking.keys() {
                         self.try_sole_person(*ssrc);
                     }
                 }
                 let passing =
-                    passing_sources(filter, &self.directory, tick.speaking.keys().copied());
+                    passing_sources(&filter, &self.directory, tick.speaking.keys().copied());
                 for ssrc in tick.speaking.keys() {
                     if !passing.contains(ssrc) {
                         self.ignore(*ssrc);
@@ -288,28 +284,50 @@ mod tests {
         directory
     }
 
-    /// Change `owner-only-access`: everyone while off, nobody while on with no owner, the
-    /// owner's account only while linked; an unknown source never passes the owner.
+    fn only(ids: &[u64]) -> VoiceFilter {
+        VoiceFilter::Only(ids.iter().copied().collect())
+    }
+
+    /// Changes `owner-only-access` and `voice-consent`: everyone in the `everyone` mode,
+    /// nobody with an empty set, the owner alone in `owner`, the owner and the recorded in
+    /// `agreed`; an unknown source and a bot pass only `everyone`.
     #[test]
     fn the_filter_passes_by_account() {
         let directory = directory();
         let all = [11, 22, 33, 44];
-        assert_eq!(passing_sources(FILTER_EVERYONE, &directory, all), all);
-        assert!(passing_sources(FILTER_NOBODY, &directory, all).is_empty());
-        assert_eq!(passing_sources(OWNER, &directory, all), [11]);
-        assert!(!passes(OWNER, None), "an unknown source is dropped");
-        assert!(passes(FILTER_EVERYONE, None));
+        assert_eq!(
+            passing_sources(&VoiceFilter::Everyone, &directory, all),
+            all
+        );
+        assert!(passing_sources(&only(&[]), &directory, all).is_empty());
+        assert_eq!(passing_sources(&only(&[OWNER]), &directory, all), [11]);
+        assert_eq!(
+            passing_sources(&only(&[OWNER, 2]), &directory, all),
+            [11, 22],
+            "agreed: the owner and Sam, who has a record"
+        );
+        assert_eq!(
+            passing_sources(&only(&[2]), &directory, all),
+            [22],
+            "agreed without an owner: Sam only"
+        );
     }
 
     /// Scenario "Two people at once": the mix of the owner and another member is the
-    /// owner's frame alone.
+    /// owner's frame alone; in `agreed`, the agreeing member's frame alone.
     #[test]
     fn the_mix_holds_only_the_owner() {
         let directory = directory();
         let owner: Vec<i16> = (0..FRAME_SAMPLES).map(|i| (i % 2000) as i16).collect();
         let other = vec![-12_000i16; FRAME_SAMPLES];
         let tick = [(11u32, owner.as_slice()), (22u32, other.as_slice())];
-        let passing = passing_sources(OWNER, &directory, tick.iter().map(|(ssrc, _)| *ssrc));
+        let agreed = passing_sources(&only(&[2]), &directory, tick.iter().map(|(ssrc, _)| *ssrc));
+        assert_eq!(agreed, [22], "only the member with a record");
+        let passing = passing_sources(
+            &only(&[OWNER]),
+            &directory,
+            tick.iter().map(|(ssrc, _)| *ssrc),
+        );
         let blocks: Vec<&[i16]> = tick
             .iter()
             .filter(|(ssrc, _)| passing.contains(ssrc))

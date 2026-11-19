@@ -11,9 +11,15 @@
 // Codex lists ever read. `?disconnected` starts with the bot not connected
 // (`setConnected(on)` changes it); `?post_answers=<value>&answers_channel=<id>` starts with
 // that answer posting stored. The owner link (change `owner-only-access`): `?owner=linked`
-// starts with Alex linked, `?owner_only` with the switch on; `completeLink(name)` sends the
-// waiting code from Discord, `wrongCode()` a wrong one, `expireCode()` lets it expire, and
-// `owner()` is the link state the status carries.
+// starts with Alex linked; `completeLink(name)` sends the waiting code from Discord,
+// `wrongCode()` a wrong one, `expireCode()` lets it expire, and `owner()` is the link state
+// the status carries. The access mode and the consent records (change `voice-consent`):
+// `?access=agreed|owner` (and the older `?owner_only`, which means `owner`) is the stored
+// mode, `?privacy=<url>` the stored policy URL, `?consents=Alex,Sam` the people recorded;
+// `optin(name)` records a person as their "I agree" would and returns their id,
+// `optout(id)` deletes a record as their `/optout` would, `consentUnreadable()` starts over
+// as with a records file that could not be read, and `consent()` is what the status
+// carries.
 //
 // The Whisper mode (change `whisper-mode`): `?whisper` starts in the Whisper mode with its
 // files on disk and the bot in no channel (idle; add `&joined` for a bot in a channel),
@@ -35,7 +41,7 @@
   const clone = (value) => JSON.parse(JSON.stringify(value));
   let settings = {
     version: 2,
-    discord: { guild_id: "1091401169441656933", owner_only: false },
+    discord: { guild_id: "1091401169441656933", access: "everyone", privacy_url: "" },
     session: { mode: "wake_word", idle_timeout_seconds: 60, earcons: true, earcon_volume: 0.18 },
     audio: { input_gain: 1, output_gain: 1 },
     // Version 2: the phrases of each model under its id.
@@ -128,7 +134,24 @@
   const LINKED = { id: "1091401169441656999", name: "Alex", linked_at: "2026-11-16T12:00:00+00:00" };
   let owner = { linked: null, pending: null, code_ended: null, link_ended: null };
   if (new URLSearchParams(location.search).get("owner") === "linked") owner.linked = { ...LINKED };
-  if (new URLSearchParams(location.search).has("owner_only")) settings.discord.owner_only = true;
+  if (new URLSearchParams(location.search).has("owner_only")) settings.discord.access = "owner";
+  const accessParam = new URLSearchParams(location.search).get("access");
+  if (accessParam) settings.discord.access = accessParam;
+  const privacyParam = new URLSearchParams(location.search).get("privacy");
+  if (privacyParam) settings.discord.privacy_url = privacyParam;
+  // The consent records as `status().consent` carries them (change `voice-consent`).
+  const ACCESS_MODES = ["everyone", "agreed", "owner"];
+  let consent = { records: [], unreadable: null };
+  let nextConsentId = 1300000000000000001n;
+  function addConsent(name) {
+    const id = String(nextConsentId++);
+    consent.records.push({ id, name, agreed_at: new Date().toISOString() });
+    return id;
+  }
+  for (const name of (new URLSearchParams(location.search).get("consents") || "").split(",").filter(Boolean)) {
+    addConsent(name);
+  }
+  const consentChanged = () => setTimeout(() => emit("app-event", { event: "consent", ...clone(consent) }), 0);
   // As the app's status: a code past its time is no longer waiting.
   function ownerNow() {
     const now = clone(owner);
@@ -693,9 +716,15 @@
     if (doc.assistant.post_answers === "channel" && !channel) {
       throw "assistant.answers_channel: pick the channel the answers go to";
     }
-    if (typeof doc.discord.owner_only !== "boolean") {
-      throw `the patch is not a settings document: discord.owner_only must be true or false, not ${JSON.stringify(doc.discord.owner_only)}`;
+    if (!ACCESS_MODES.includes(doc.discord.access)) {
+      throw `the patch is not a settings document: discord.access: «${doc.discord.access}» is not an access mode; use one of everyone, agreed, owner`;
     }
+    doc.discord.privacy_url = String(doc.discord.privacy_url ?? "").trim();
+    const url = doc.discord.privacy_url;
+    if (url && url.length > 512) throw "discord.privacy_url: the URL is longer than 512 characters";
+    if (url && !url.startsWith("https://")) throw "discord.privacy_url: the URL must start with https://";
+    if (url && /\s/.test(url)) throw "discord.privacy_url: the URL must not contain spaces";
+    if (url && !url.slice(8).split(/[/?#]/)[0]) throw "discord.privacy_url: the URL has no host after https://";
     if (typeof doc.codex.refresh_lists_at_start !== "boolean") {
       throw "invalid type: expected a boolean at codex.refresh_lists_at_start";
     }
@@ -829,6 +858,7 @@
       },
       latency: { "1091401169441656933": clone(turns) },
       owner: ownerNow(),
+      consent: clone(consent),
       settings: clone(settings),
     };
   }
@@ -988,6 +1018,14 @@
       owner.link_ended = null;
       ownerChanged();
       return true;
+    },
+    // Remove in the Access card: as the person's /optout, nothing sent to them.
+    consent_remove: ({ id }) => {
+      if (!/^\d+$/.test(String(id).trim())) throw `«${id}» is not a Discord user id`;
+      consent.records = consent.records.filter((record) => record.id !== String(id).trim());
+      consent.unreadable = null;
+      consentChanged();
+      return clone(consent);
     },
     codex_sign_in: () => "https://chatgpt.com/mock",
     codex_models: () => clone(capabilities.models),
@@ -1169,6 +1207,26 @@
     // The owner link (change `owner-only-access`): the waiting code sent from Discord by
     // `name`, a wrong code (the fifth ends it), and the code's time running out.
     owner: () => ownerNow(),
+    consent: () => clone(consent),
+    // A person presses "I agree" under their /optin text; returns their id.
+    optin(name = "Sam") {
+      const id = addConsent(name);
+      consent.unreadable = null;
+      consentChanged();
+      return id;
+    },
+    // A person runs /optout; `false` when they had no record.
+    optout(id) {
+      const before = consent.records.length;
+      consent.records = consent.records.filter((record) => record.id !== String(id));
+      consentChanged();
+      return consent.records.length < before;
+    },
+    // As a start with a records file that could not be read.
+    consentUnreadable() {
+      consent = { records: [], unreadable: "the consent records could not be read (cannot decrypt it)" };
+      consentChanged();
+    },
     completeLink(name = "Alex") {
       if (!ownerNow().pending) return false;
       owner.linked = { ...LINKED, name };

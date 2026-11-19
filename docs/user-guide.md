@@ -231,7 +231,7 @@ Assistant mode**:
 | What it downloads | Vosk and a wake model, about 50 to 70 MB. | Whisper and a model, and a voice: about 230 MB on the CPU with the defaults, more with an NVIDIA GPU or a larger model. |
 
 Both modes use Codex with your ChatGPT sign-in. Your instructions, **Speaker names**,
-**Post answers to Discord**, **Only my Discord account**, the mute, the tones and the
+**Post answers to Discord**, **Who the assistant hears**, the mute, the tones and the
 auto-stop work in both.
 
 > [!NOTE]
@@ -528,15 +528,52 @@ the channel and the reason; the next answer that gets through clears it. A chang
 setting applies from the next answer. An answer Codex is still looking up when someone
 types `/leave` is not posted.
 
-### Only my Discord account
+### Who the assistant hears
 
-The assistant runs on your own ChatGPT subscription. A subscription is meant for one
-person, so VoiceBro can make sure only you talk to it: while **Only my Discord account**
-is on, only the voice of the Discord account you linked reaches the wake word and the
-assistant. Nobody else's voice starts a session or gets into a question, and neither does a
-music bot's. Everything else stays open: anyone can use `/join`, `/leave`, `/status` and the
-**Mute GPT** button, everyone in the channel hears the answers, and posted answers are
-posted as before. The switch is off by default.
+**Config → Access → Who the assistant hears** decides whose voice reaches the wake word and
+the assistant. All three choices are optional tools for you as the person who runs the bot;
+which one you use is up to you.
+
+- **Everyone** (the default): every member in the bot's voice channel.
+- **People who agreed (/optin)**: your linked Discord account and everyone who ran `/optin`
+  in Discord and pressed **I agree**. Nobody else's voice starts a session or gets into a
+  question, and neither does a music bot's.
+- **Only my Discord account**: the account you linked, nobody else. The assistant runs on
+  your own ChatGPT subscription, and a subscription is meant for one person.
+
+Everything else stays open in every mode: anyone can use `/join`, `/leave`, `/status` and
+the **Mute GPT** button, everyone in the channel hears the answers, and posted answers are
+posted as before. A change applies at once, also while the bot is in a channel.
+
+The bot is yours, so Discord's rules for bots are yours to keep: Discord's developer terms
+ask every bot for a privacy policy that people can reach, and for a person's own consent
+before their speech is shared with someone else (here, OpenAI). VoiceBro gives you the
+tools for both:
+
+1. Write your bot's privacy policy from the template `docs/PRIVACY-POLICY-TEMPLATE.md` in
+   VoiceBro's repository, publish it at a public `https://` address (a GitHub Gist works),
+   and put that address into **Privacy policy URL** in the Access card and into **Privacy
+   Policy URL** of your application in the Discord Developer Portal.
+2. Choose **People who agreed**.
+3. Ask your friends to run `/optin` in a server with the bot or in a direct message to it.
+   Only they see the bot's reply: what is sent after the activation phrase, to whom, what
+   is kept, and a link to your policy, with **I agree** and **Cancel**. **I agree** adds
+   them to the list in the Access card, with the time.
+4. `/optout` takes a person off the list at once and deletes their record; so does
+   **Remove** next to them in the card (the bot sends them nothing). `/privacy` shows your
+   policy to anyone.
+
+Without a privacy policy URL, `/optin` is refused and the card warns you. The records are
+kept in `consents.bin`, encrypted for your Windows user. If VoiceBro changes the consent
+text in an update, the old records are removed and people run `/optin` again, since they
+agreed to the old text. The filter works on each person's own Discord stream: a voice that
+someone else's microphone picks up (a friend sitting next to them, or speakers without
+headphones) passes with theirs.
+
+New slash commands can take up to an hour to appear in other servers and in direct
+messages; in the server set as **Discord guild ID** they appear at once.
+
+### Only my Discord account
 
 To link your account:
 
@@ -546,7 +583,8 @@ To link your account:
 3. In Discord, from your own account, send `/link` with that code, in any server the bot is
    in or in a direct message to the bot. Only you see the bot's reply. Upper or lower case
    and the dash do not matter.
-4. The card shows your Discord name. Turn on **Only my Discord account**.
+4. The card shows your Discord name. Choose **Only my Discord account** (or **People who
+   agreed**, where your linked account needs no `/optin`).
 
 The code works once. Five wrong codes, from anyone, end it; press **Link** for a new one.
 After a first install, `/link` can take up to an hour to appear in direct messages; in the
@@ -554,8 +592,8 @@ server set as **Discord guild ID** it appears at once.
 
 The link stays until you press **Unlink**, link another Discord account, sign Codex into
 another ChatGPT account, or delete VoiceBro with its data. When Codex is signed into another
-account, the card shows "Not linked: the Codex account changed"; link again. While the
-switch is on and no account is linked, the assistant hears nobody.
+account, the card shows "Not linked: the Codex account changed"; link again. While **Only my
+Discord account** is chosen and no account is linked, the assistant hears nobody.
 
 ## 9. Settings
 
@@ -572,7 +610,7 @@ remembers which cards are folded.
 | Settings → Diagnostics | **Performance monitoring**, **Memory measurement**, **Verbose log**. All are off by default and cost nothing while off. **Opus codec (experiment)**: which Opus implementation encodes and decodes the voice (the assistant toward Discord, your speech toward Codex and its answer, the people in the channel): libopus, the C library VoiceBro has always used and the default, or opus-rs, written in Rust and being tried as its replacement. A change applies at the next `/join` and the next call; the line under the list shows the codec in use. |
 | Settings → Whisper | Whether the Whisper mode is on (it is switched in Config → Assistant), CPU or NVIDIA GPU, the CPU threads, the language, what is in use and the last answer's timings, the Whisper models folder, and, in the realtime mode, the download of the Whisper files ahead of the switch ([section 7](#7-the-whisper-mode)). |
 | Config → Discord and Codex | The Discord bot token, the server ID, the path of `codex.exe` when it is not found on its own. Press **Save changes**. |
-| Config → Access | **Only my Discord account** (off by default) and the link to your Discord account ([section 8](#only-my-discord-account)). |
+| Config → Access | **Who the assistant hears** (Everyone by default, People who agreed, Only my Discord account), **Privacy policy URL**, the link to your Discord account and the people who agreed with `/optin` ([section 8](#who-the-assistant-hears)). |
 | Config → Audio | How loud the assistant hears the channel and how loud it speaks; the short tones at session start and end. |
 | Config → Assistant | **Assistant mode** (realtime voice, the default, or Whisper) and the grey **Recognition** field; wake word or always listening, the phrases, the auto-stop time, and the model with its download: the wake model in the realtime mode, the Whisper model in the Whisper mode, each with its own phrases. |
 | Config → Local voice | The voice that reads the answers in the Whisper mode, its speed, **Preview**, and its download. Not used in the realtime mode. |
@@ -605,6 +643,7 @@ Everything VoiceBro stores is in its own folder, next to `voicebro.exe`:
 |---|---|
 | `settings.json` | Your settings. |
 | `owner-link.bin` | The Discord account you linked, encrypted so that only your Windows user on this PC can read it. Only if you linked one. |
+| `consents.bin` | The people who agreed with `/optin`: their Discord account, name and the time they agreed, encrypted so that only your Windows user on this PC can read it. Only while someone has agreed. |
 | `codex-lists.json` | The Codex models, reasoning levels and voices of your account, from the last time VoiceBro read them. |
 | `logs\` | The app log, at most about 2 MB, without what people said. The chat history too, if you turned on **Save chat history**. |
 | `assets\` | What VoiceBro downloaded: the Vosk recognizer and its models, and for the Whisper mode the Whisper runtime and models and the voices. |

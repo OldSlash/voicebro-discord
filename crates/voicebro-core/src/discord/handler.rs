@@ -3,10 +3,12 @@
 use super::panel::{self, PanelRef};
 use super::session::{self, JoinOutcome};
 use super::{ConnectionState, Shared};
+use crate::settings::AccessMode;
 use serenity::all::{
-    Command, CommandInteraction, CommandOptionType, ComponentInteraction, Context, CreateCommand,
-    CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage,
-    EditInteractionResponse, EventHandler, Interaction, InteractionContext, Ready, VoiceState,
+    ButtonStyle, Command, CommandInteraction, CommandOptionType, ComponentInteraction, Context,
+    CreateActionRow, CreateButton, CreateCommand, CreateCommandOption, CreateInteractionResponse,
+    CreateInteractionResponseMessage, EditInteractionResponse, EventHandler, Interaction,
+    InteractionContext, Ready, VoiceState,
 };
 use serenity::async_trait;
 use std::sync::atomic::Ordering;
@@ -32,28 +34,167 @@ fn command_definitions(global: bool) -> Vec<CreateCommand> {
             .min_length(8)
             .max_length(12),
         );
-    let link = if global {
-        link.contexts(vec![InteractionContext::Guild, InteractionContext::BotDm])
-    } else {
-        link
+    // Change `voice-consent`: the three consent commands work in servers and in a direct
+    // message to the bot, like `/link`.
+    let optin = CreateCommand::new("optin").description(
+        "Let VoiceBro's assistant hear you (your speech goes to OpenAI after the wake phrase)",
+    );
+    let optout = CreateCommand::new("optout")
+        .description("Stop VoiceBro's assistant hearing you and delete your consent");
+    let privacy = CreateCommand::new("privacy").description("Show this bot's privacy policy");
+    let anywhere = |command: CreateCommand| {
+        if global {
+            command.contexts(vec![InteractionContext::Guild, InteractionContext::BotDm])
+        } else {
+            command
+        }
     };
     vec![
         CreateCommand::new("join").description("Join your current voice channel"),
         CreateCommand::new("leave").description("Leave the voice channel"),
         CreateCommand::new("status").description("Show what VoiceBro is doing"),
-        link,
+        anywhere(link),
+        anywhere(optin),
+        anywhere(optout),
+        anywhere(privacy),
     ]
 }
 
-/// The `/status` reply. While the owner-only mode is on (change `owner-only-access`) it
-/// says so; the command itself stays open to everyone.
+/// The custom id prefix of the "I agree" button; the consent text's version follows.
+const AGREE_PREFIX: &str = "vb:optin:agree:";
+/// The custom id of the "Cancel" button under the consent text.
+const CANCEL_ID: &str = "vb:optin:cancel";
+
+/// A press of one of the two buttons under the consent text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConsentButton {
+    Agree(u32),
+    Cancel,
+}
+
+fn parse_consent_button(custom_id: &str) -> Option<ConsentButton> {
+    if custom_id == CANCEL_ID {
+        return Some(ConsentButton::Cancel);
+    }
+    custom_id
+        .strip_prefix(AGREE_PREFIX)
+        .and_then(|version| version.parse().ok())
+        .map(ConsentButton::Agree)
+}
+
+const NO_POLICY: &str = "The operator of this bot has not published a privacy policy yet, so it cannot take your consent. Ask them to add one.";
+
+/// What `/optin` replies (design D5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OptinReply {
+    /// No buttons: no policy, or a record for the current text already.
+    Note(String),
+    /// The consent text with "I agree" (for this version) and "Cancel".
+    Offer { text: String, version: u32 },
+}
+
+fn optin_reply(
+    url: &str,
+    existing: Option<&crate::consent::ConsentRecord>,
+    provider: &str,
+) -> OptinReply {
+    if url.is_empty() {
+        return OptinReply::Note(NO_POLICY.to_owned());
+    }
+    let version = crate::consent::CONSENT_TEXT_VERSION;
+    if let Some(record) = existing.filter(|record| record.text_version == version) {
+        return OptinReply::Note(format!(
+            "You already agreed on {} (UTC). Run /optout to withdraw.",
+            utc_minutes(&record.agreed_at)
+        ));
+    }
+    OptinReply::Offer {
+        text: crate::consent::consent_text(version, provider, url).unwrap_or_default(),
+        version,
+    }
+}
+
+/// `2026-11-18T10:00:00.123+00:00` as `2026-11-18 10:00`.
+fn utc_minutes(rfc3339: &str) -> String {
+    let text = rfc3339.replace('T', " ");
+    text.get(..16).map(str::to_owned).unwrap_or(text)
+}
+
+/// The reply to "I agree" or "Cancel" in place of the consent text.
+fn button_reply(outcome: Option<crate::consent::AgreeOutcome>, access: AccessMode) -> String {
+    use crate::consent::AgreeOutcome;
+    match outcome {
+        None => "Nothing changed.".to_owned(),
+        Some(AgreeOutcome::OldText) => {
+            "The consent text has changed since this message. Run /optin again to see the new one."
+                .to_owned()
+        }
+        Some(AgreeOutcome::AlreadyAgreed { agreed_at }) => format!(
+            "You already agreed on {} (UTC). Run /optout to withdraw.",
+            utc_minutes(&agreed_at)
+        ),
+        Some(AgreeOutcome::Recorded) => {
+            let base = "Done. Your voice reaches the assistant after the activation phrase";
+            match access {
+                AccessMode::Agreed => format!("{base}. Run /optout to stop."),
+                AccessMode::Everyone => format!(
+                    "{base} once the operator limits the bot to people who agreed; right now this bot hears everyone in the channel. Run /optout to withdraw."
+                ),
+                AccessMode::Owner => format!(
+                    "{base} once the operator limits the bot to people who agreed; right now it hears only its owner. Run /optout to withdraw."
+                ),
+            }
+        }
+    }
+}
+
+fn optout_reply(outcome: &crate::consent::WithdrawOutcome) -> String {
+    match outcome {
+        crate::consent::WithdrawOutcome::Removed { .. } => "Done. Your consent is deleted and your voice no longer reaches the assistant while this bot hears only people who agreed. What you said before was already sent and cannot be called back.".to_owned(),
+        crate::consent::WithdrawOutcome::NothingToRemove => {
+            "You had not agreed, so there was nothing to remove.".to_owned()
+        }
+    }
+}
+
+fn privacy_reply(url: &str) -> String {
+    if url.is_empty() {
+        "The operator of this bot has not published a privacy policy.".to_owned()
+    } else {
+        format!("This bot's privacy policy: {url}")
+    }
+}
+
+/// A user's name as `/link` and the consent record take it.
+fn display_name(user: &serenity::all::User) -> String {
+    user.global_name
+        .as_deref()
+        .and_then(super::speakers::clean_display_name)
+        .or_else(|| super::speakers::clean_display_name(&user.name))
+        .unwrap_or_else(|| user.id.get().to_string())
+}
+
+/// The line `/join` and `/status` add for a limited access mode (changes `owner-only-access`
+/// and `voice-consent`); none in the `everyone` mode.
+fn access_line(access: AccessMode) -> Option<&'static str> {
+    match access {
+        AccessMode::Everyone => None,
+        AccessMode::Agreed => {
+            Some("Only the owner and people who ran /optin are heard here. See /privacy.")
+        }
+        AccessMode::Owner => Some("Only the owner's voice reaches the assistant here."),
+    }
+}
+
+/// The `/status` reply. A limited access mode adds its line; the command itself stays open
+/// to everyone.
 fn status_text(
     connected: bool,
     channel: Option<String>,
     assistant: &str,
     mode: &str,
     muted: bool,
-    owner_only: bool,
+    access: AccessMode,
 ) -> String {
     let mut text = format!(
         "Discord: {}. Voice channel: {}. Assistant: {assistant}. Mode: {mode}. {}.",
@@ -65,8 +206,9 @@ fn status_text(
         channel.unwrap_or_else(|| "none".to_owned()),
         if muted { "muted" } else { "not muted" },
     );
-    if owner_only {
-        text.push_str("\nOnly the owner's voice reaches the assistant here.");
+    if let Some(line) = access_line(access) {
+        text.push('\n');
+        text.push_str(line);
     }
     text
 }
@@ -102,7 +244,14 @@ impl Handler {
         // answers can go there even when the panel cannot.
         let outcome =
             session::prepare_and_join(&self.shared, guild, channel, command.channel_id).await;
-        let text = outcome.reply_text();
+        let mut text = outcome.reply_text();
+        // A limited access mode is named under a successful join (change `voice-consent`).
+        if matches!(outcome, JoinOutcome::Joined { .. }) {
+            if let Some(line) = access_line(self.shared.host.access_mode()) {
+                text.push('\n');
+                text.push_str(line);
+            }
+        }
         let response = match outcome {
             JoinOutcome::Joined { .. } => match session::panel_message(&self.shared, guild) {
                 Some((embed, components)) => EditInteractionResponse::new()
@@ -172,7 +321,7 @@ impl Handler {
             assistant,
             self.shared.host.assistant_mode(),
             self.shared.host.is_muted(),
-            self.shared.host.owner_filter() != crate::owner::FILTER_EVERYONE,
+            self.shared.host.access_mode(),
         );
         let _ = command.create_response(&ctx.http, ephemeral(&text)).await;
     }
@@ -189,19 +338,89 @@ impl Handler {
             .and_then(|option| option.value.as_str())
             .unwrap_or("");
         let user = &command.user;
-        let name = user
-            .global_name
-            .as_deref()
-            .and_then(super::speakers::clean_display_name)
-            .or_else(|| super::speakers::clean_display_name(&user.name))
-            .unwrap_or_else(|| user.id.get().to_string());
+        let name = display_name(user);
         let outcome = self.shared.host.complete_link(user.id.get(), &name, code);
         let _ = command
             .create_response(&ctx.http, ephemeral(&outcome.reply()))
             .await;
     }
 
+    /// `/optin` (change `voice-consent`): the consent text with two buttons, only for the
+    /// sender; nothing is recorded until "I agree".
+    async fn handle_optin(&self, ctx: &Context, command: &CommandInteraction) {
+        let host = &self.shared.host;
+        let reply = optin_reply(
+            &host.privacy_url(),
+            host.consent_record(command.user.id.get()).as_ref(),
+            host.consent_provider(),
+        );
+        let response = match reply {
+            OptinReply::Note(text) => ephemeral(&text),
+            OptinReply::Offer { text, version } => CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(text)
+                    .ephemeral(true)
+                    .components(vec![CreateActionRow::Buttons(vec![
+                        CreateButton::new(format!("{AGREE_PREFIX}{version}"))
+                            .label("I agree")
+                            .style(ButtonStyle::Success),
+                        CreateButton::new(CANCEL_ID)
+                            .label("Cancel")
+                            .style(ButtonStyle::Secondary),
+                    ])]),
+            ),
+        };
+        let _ = command.create_response(&ctx.http, response).await;
+    }
+
+    /// `/optout`: the sender's record is deleted; applies from the next frame.
+    async fn handle_optout(&self, ctx: &Context, command: &CommandInteraction) {
+        let outcome = self.shared.host.withdraw(command.user.id.get());
+        let _ = command
+            .create_response(&ctx.http, ephemeral(&optout_reply(&outcome)))
+            .await;
+    }
+
+    async fn handle_privacy(&self, ctx: &Context, command: &CommandInteraction) {
+        let text = privacy_reply(&self.shared.host.privacy_url());
+        let _ = command.create_response(&ctx.http, ephemeral(&text)).await;
+    }
+
+    /// "I agree" or "Cancel" under the consent text. The message is ephemeral, so only the
+    /// person who ran `/optin` sees and presses it: the presser is the one who agrees.
+    async fn handle_consent_button(
+        &self,
+        ctx: &Context,
+        component: &ComponentInteraction,
+        button: ConsentButton,
+    ) {
+        let host = &self.shared.host;
+        let outcome = match button {
+            ConsentButton::Cancel => None,
+            ConsentButton::Agree(version) => Some(host.agree(
+                component.user.id.get(),
+                &display_name(&component.user),
+                version,
+            )),
+        };
+        let text = button_reply(outcome, host.access_mode());
+        let _ = component
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::UpdateMessage(
+                    CreateInteractionResponseMessage::new()
+                        .content(text)
+                        .components(Vec::new()),
+                ),
+            )
+            .await;
+    }
+
     async fn handle_component(&self, ctx: &Context, component: &ComponentInteraction) {
+        if let Some(button) = parse_consent_button(&component.data.custom_id) {
+            self.handle_consent_button(ctx, component, button).await;
+            return;
+        }
         let Some(button_guild) = panel::parse_mute_button_id(&component.data.custom_id) else {
             return;
         };
@@ -293,6 +512,9 @@ impl EventHandler for Handler {
                 "leave" => self.handle_leave(&ctx, &command).await,
                 "status" => self.handle_status(&ctx, &command).await,
                 "link" => self.handle_link(&ctx, &command).await,
+                "optin" => self.handle_optin(&ctx, &command).await,
+                "optout" => self.handle_optout(&ctx, &command).await,
+                "privacy" => self.handle_privacy(&ctx, &command).await,
                 _ => {}
             },
             Interaction::Component(component) => self.handle_component(&ctx, &component).await,
@@ -314,9 +536,9 @@ impl EventHandler for Handler {
 mod tests {
     use super::*;
 
-    /// Change `owner-only-access`, task 5.1: four commands; `/link` takes a code of 8 to
-    /// 12 characters and, globally, works in servers and the bot's DMs; the other three
-    /// are registered as before.
+    /// Changes `owner-only-access` and `voice-consent`: seven commands; `/link` takes a code
+    /// of 8 to 12 characters; globally `/link`, `/optin`, `/optout` and `/privacy` work in
+    /// servers and the bot's DMs; the first three are registered as before.
     #[test]
     fn link_is_registered_next_to_the_three_commands() {
         let global = serde_json::to_value(command_definitions(true)).unwrap();
@@ -326,7 +548,29 @@ mod tests {
             .iter()
             .map(|command| command["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["join", "leave", "status", "link"]);
+        assert_eq!(
+            names,
+            ["join", "leave", "status", "link", "optin", "optout", "privacy"]
+        );
+        for command in &global.as_array().unwrap()[3..] {
+            assert_eq!(command["contexts"], serde_json::json!([0, 1]), "{command}");
+        }
+        for command in &global.as_array().unwrap()[4..] {
+            assert!(
+                command
+                    .get("options")
+                    .is_none_or(|o| o.as_array().is_some_and(Vec::is_empty)),
+                "{command}"
+            );
+        }
+        assert!(global[4]["description"]
+            .as_str()
+            .unwrap()
+            .contains("hear you"));
+        assert!(global[5]["description"]
+            .as_str()
+            .unwrap()
+            .contains("delete your consent"));
         let link = &global[3];
         assert_eq!(link["contexts"], serde_json::json!([0, 1]));
         let option = &link["options"][0];
@@ -347,23 +591,123 @@ mod tests {
             );
         }
         let guild = serde_json::to_value(command_definitions(false)).unwrap();
-        assert!(
-            guild[3].get("contexts").is_none(),
-            "no contexts on a guild command"
-        );
+        for command in guild.as_array().unwrap() {
+            assert!(
+                command.get("contexts").is_none(),
+                "no contexts on a guild command: {command}"
+            );
+        }
         assert_eq!(guild[3]["options"], link["options"]);
     }
 
-    /// Scenario "Status from another member": the line is there only while the mode is on.
+    fn record(version: u32) -> crate::consent::ConsentRecord {
+        crate::consent::ConsentRecord {
+            discord_user_id: 7,
+            discord_name: "Alex".to_owned(),
+            agreed_at: "2026-11-18T10:05:00.123+00:00".to_owned(),
+            text_version: version,
+            assistant: "codex".to_owned(),
+        }
+    }
+
+    /// Requirements "`/optin` needs a privacy policy", "`/optin` shows the consent text" and
+    /// "Agreeing again changes nothing".
     #[test]
-    fn status_names_the_owner_only_mode() {
+    fn optin_replies_with_the_text_a_note_or_the_time() {
+        let provider = crate::consent::provider_name("codex");
+        let OptinReply::Note(note) = optin_reply("", None, provider) else {
+            panic!("no policy: a note");
+        };
+        assert!(note.contains("not published a privacy policy"), "{note}");
+
+        let version = crate::consent::CONSENT_TEXT_VERSION;
+        let OptinReply::Offer {
+            text,
+            version: offered,
+        } = optin_reply("https://example.org/p", None, provider)
+        else {
+            panic!("an offer");
+        };
+        assert_eq!(offered, version);
+        assert!(
+            text.contains("OpenAI") && text.contains("https://example.org/p"),
+            "{text}"
+        );
+        assert_eq!(
+            parse_consent_button(&format!("{AGREE_PREFIX}{offered}")),
+            Some(ConsentButton::Agree(version))
+        );
+        assert_eq!(parse_consent_button(CANCEL_ID), Some(ConsentButton::Cancel));
+        assert_eq!(parse_consent_button("vb:mute:1"), None);
+        assert_eq!(format!("{AGREE_PREFIX}1"), "vb:optin:agree:1");
+
+        let current = record(version);
+        let OptinReply::Note(again) =
+            optin_reply("https://example.org/p", Some(&current), provider)
+        else {
+            panic!("already agreed: a note");
+        };
+        assert!(
+            again.contains("2026-11-18 10:05") && again.contains("/optout"),
+            "{again}"
+        );
+        let old = record(version - 1);
+        assert!(matches!(
+            optin_reply("https://example.org/p", Some(&old), provider),
+            OptinReply::Offer { .. }
+        ));
+    }
+
+    /// Requirement "\"I agree\" records the person": the confirmation names the mode unless
+    /// it is `agreed`; an older text and Cancel record nothing.
+    #[test]
+    fn the_buttons_reply_by_outcome_and_mode() {
+        use crate::consent::AgreeOutcome;
+        let agreed = button_reply(Some(AgreeOutcome::Recorded), AccessMode::Agreed);
+        assert!(
+            agreed.starts_with("Done.") && !agreed.contains("right now"),
+            "{agreed}"
+        );
+        let everyone = button_reply(Some(AgreeOutcome::Recorded), AccessMode::Everyone);
+        assert!(
+            everyone.contains("hears everyone in the channel"),
+            "{everyone}"
+        );
+        let owner = button_reply(Some(AgreeOutcome::Recorded), AccessMode::Owner);
+        assert!(owner.contains("only its owner"), "{owner}");
+        assert!(
+            button_reply(Some(AgreeOutcome::OldText), AccessMode::Agreed).contains("/optin again")
+        );
+        assert_eq!(button_reply(None, AccessMode::Agreed), "Nothing changed.");
+    }
+
+    /// Requirements "`/optout` deletes the record" and "`/privacy` shows the policy".
+    #[test]
+    fn optout_and_privacy_reply() {
+        use crate::consent::WithdrawOutcome;
+        let removed = optout_reply(&WithdrawOutcome::Removed {
+            name: "Alex".to_owned(),
+        });
+        assert!(removed.contains("already sent"), "{removed}");
+        assert!(optout_reply(&WithdrawOutcome::NothingToRemove).contains("nothing to remove"));
+        assert_eq!(
+            privacy_reply("https://example.org/p"),
+            "This bot's privacy policy: https://example.org/p"
+        );
+        assert!(privacy_reply("").contains("has not published"));
+    }
+
+    /// Scenarios "Status from another member" and "Status in the everyone mode": a line for
+    /// `owner` and for `agreed`, none for `everyone`.
+    #[test]
+    fn status_names_the_access_mode() {
         let off = status_text(
             true,
             Some("General".to_owned()),
             "listening",
             "Realtime voice",
             false,
-            false,
+            AccessMode::Everyone,
         );
         assert_eq!(
             off,
@@ -375,7 +719,7 @@ mod tests {
             "waiting for the wake word",
             "Whisper mode",
             true,
-            true,
+            AccessMode::Owner,
         );
         assert!(on.contains("Mode: Whisper mode."), "{on}");
         assert!(
@@ -386,5 +730,20 @@ mod tests {
             on.ends_with("Only the owner's voice reaches the assistant here."),
             "{on}"
         );
+        let agreed = status_text(
+            true,
+            None,
+            "listening",
+            "Realtime voice",
+            false,
+            AccessMode::Agreed,
+        );
+        assert!(
+            agreed.ends_with(
+                "Only the owner and people who ran /optin are heard here. See /privacy."
+            ),
+            "{agreed}"
+        );
+        assert!(!off.contains("/optin"));
     }
 }
