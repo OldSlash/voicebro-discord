@@ -81,6 +81,10 @@ pub struct CodexConfig {
     /// `assistant.mode`: a realtime call or text turns (change `whisper-mode`), read at
     /// each attach.
     pub mode: AssistantMode,
+    /// `assistant.one_speaker_at_a_time` (change `speaker-turns`, D6'): in the Whisper mode
+    /// a question joins the running turn or waits for the next one instead of interrupting;
+    /// read at each question.
+    pub one_speaker_at_a_time: bool,
 }
 
 impl CodexConfig {
@@ -95,6 +99,7 @@ impl CodexConfig {
             handoff_mode: settings.codex.handoff_mode.clone(),
             opus_codec: settings.diagnostics.codec(),
             mode: settings.assistant.mode,
+            one_speaker_at_a_time: settings.assistant.one_speaker_at_a_time,
         }
     }
 }
@@ -1606,6 +1611,414 @@ mod tests {
             .any(|option| lowered.contains(&option.trim().to_lowercase()))
     }
 
+    /// Probe 2.1 of change `speaker-turns`, when `VOICEBRO_CODEX_TURNS_A` and `_B` name two
+    /// 48 kHz mono questions: per run a fresh call gets A, then N ms of silence, then (with
+    /// the note) "now speaking: Sam" through `thread/realtime/appendText`, then B, then
+    /// silence until the answer has ended. N runs over `VOICEBRO_CODEX_TURNS_GAPS` (default
+    /// `100,200,300,500,700,1000`), the note over `VOICEBRO_CODEX_TURNS_NOTE` (`0`, `1` or
+    /// `both`, the default), `VOICEBRO_CODEX_TURNS_RUNS` times each (default 3). Per run it
+    /// prints whether answer audio came before B started, the people's transcript pieces,
+    /// the chat items (the note among them) and the time from B's end to the answer.
+    #[test]
+    fn two_speakers_when_enabled() {
+        let (Ok(wav_a), Ok(wav_b)) = (
+            std::env::var("VOICEBRO_CODEX_TURNS_A"),
+            std::env::var("VOICEBRO_CODEX_TURNS_B"),
+        ) else {
+            return;
+        };
+        let gaps: Vec<u64> = std::env::var("VOICEBRO_CODEX_TURNS_GAPS")
+            .unwrap_or_else(|_| "100,200,300,500,700,1000".to_owned())
+            .split(',')
+            .filter_map(|gap| gap.trim().parse().ok())
+            .collect();
+        let notes: Vec<bool> = match std::env::var("VOICEBRO_CODEX_TURNS_NOTE").as_deref() {
+            Ok("0") => vec![false],
+            Ok("1") => vec![true],
+            _ => vec![false, true],
+        };
+        let runs: usize = std::env::var("VOICEBRO_CODEX_TURNS_RUNS")
+            .ok()
+            .and_then(|runs| runs.parse().ok())
+            .unwrap_or(3);
+        let (a, b) = (wav_48k_mono(&wav_a), wav_48k_mono(&wav_b));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut summary = Vec::new();
+        for gap in &gaps {
+            for note in &notes {
+                for run in 1..=runs {
+                    let dir = tempfile::tempdir().unwrap();
+                    let events = EventBus::new(4096);
+                    let mut window = events.subscribe();
+                    let errors = Arc::new(ConnectionErrors::new(events.clone()));
+                    let mut settings = Settings::default();
+                    settings.codex.instructions = "You are a voice assistant in a Discord voice channel with several people. Answer briefly; when more than one person asked something, answer each of them by name.".to_owned();
+                    // The note goes out only with labels at `changes`.
+                    settings.assistant.speaker_labels = crate::settings::SpeakerLabels::Changes;
+                    let assistant = CodexAssistant::new(
+                        runtime.handle().clone(),
+                        events,
+                        errors,
+                        dir.path(),
+                        &settings,
+                    );
+                    runtime
+                        .block_on(assistant.prepare_guild(1))
+                        .expect("codex runs and is signed in");
+                    let (sender, input) = frame_channel(INPUT_CAPACITY);
+                    let (output, source) = output_pair();
+                    let latency = crate::latency::SharedLatency::default();
+                    output.use_latency(Arc::clone(&latency), 1);
+                    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let voiced = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                    let voiced_at = Arc::new(Mutex::new(Vec::new()));
+                    let reader = spawn_reader(
+                        source,
+                        Arc::clone(&stop),
+                        Arc::clone(&voiced),
+                        Arc::clone(&voiced_at),
+                    );
+                    let heard = Arc::new(HeardLog::default());
+                    let (answers, mut answer_queue) = crate::assistant::AnswerSink::channel();
+                    let session = assistant
+                        .attach(
+                            1,
+                            AudioPorts {
+                                input,
+                                output: output.clone(),
+                                failures: CodecFailures::none(),
+                                answers,
+                                heard: heard.clone(),
+                            },
+                        )
+                        .expect("attach");
+                    session.call_context(
+                        Some("Alex".to_owned()),
+                        &["Alex".to_owned(), "Sam".to_owned()],
+                    );
+                    let started = Instant::now();
+                    session.session_wanted(true);
+                    while !session.ready() {
+                        assert!(
+                            started.elapsed() < Duration::from_secs(40),
+                            "the call did not become ready"
+                        );
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    let a_end = feed_speech(&sender, &latency, &a);
+                    while a_end.elapsed() < Duration::from_millis(*gap) {
+                        sender.send(Frame::silence());
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    let note_at = note.then(|| {
+                        session.speakers_changed(&["Sam".to_owned()]);
+                        Instant::now()
+                    });
+                    let b_start = Instant::now();
+                    let b_end = feed_speech(&sender, &latency, &b);
+                    // The voice may answer with a filler and hand the questions to the agent;
+                    // the run ends once every task the voice gave the agent has its final
+                    // answer (the answers handed over for posting) and the voice has been
+                    // quiet for 4 s after it, or after 70 s.
+                    let deadline = Instant::now() + Duration::from_secs(70);
+                    let mut finals: Vec<String> = Vec::new();
+                    let mut final_at = None;
+                    loop {
+                        sender.send(Frame::silence());
+                        std::thread::sleep(Duration::from_millis(20));
+                        while let Ok(answer) = answer_queue.try_recv() {
+                            finals.push(answer.text);
+                            final_at = Some(Instant::now());
+                        }
+                        let entries = assistant.chat_log().entries();
+                        let tasks = entries.iter().filter(|entry| entry.kind == "task").count();
+                        let last = voiced_at.lock().unwrap().last().copied();
+                        let quiet =
+                            last.is_some_and(|last| last.elapsed() > Duration::from_secs(4));
+                        let done = if tasks == 0 {
+                            entries.iter().any(|entry| entry.kind == "assistant")
+                        } else {
+                            finals.len() >= tasks
+                                && final_at.is_some_and(|at| last.is_some_and(|last| last > at))
+                        };
+                        if (done && quiet) || Instant::now() > deadline {
+                            break;
+                        }
+                    }
+                    let ms = |at: Instant| -> i64 {
+                        if at >= a_end {
+                            (at - a_end).as_millis() as i64
+                        } else {
+                            -((a_end - at).as_millis() as i64)
+                        }
+                    };
+                    let frames = voiced_at.lock().unwrap().clone();
+                    let before_b = frames.iter().any(|at| *at > a_end && *at < b_start);
+                    let first_audio = frames.iter().find(|at| **at > a_end).copied();
+                    let after_b = frames.iter().find(|at| **at > b_end).copied();
+                    let mut items = Vec::new();
+                    while let Ok(event) = window.try_recv() {
+                        if let crate::events::AppEvent::Chat(entry) = event {
+                            items.push(format!("{} {:?}", entry.kind, entry.text));
+                        }
+                    }
+                    let pieces: Vec<String> = heard
+                        .0
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|(_, _, _, done)| *done)
+                        .map(|(at, turn, text, _)| format!("{} ms turn {turn}: {text:?}", ms(*at)))
+                        .collect();
+                    // What the people heard: the voice's own lines, which retell the agent's
+                    // final answers; the finals are printed apart.
+                    let answer = assistant
+                        .chat_log()
+                        .entries()
+                        .iter()
+                        .filter(|entry| entry.kind == "assistant")
+                        .map(|entry| entry.text.clone())
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    // Covered means answered: by the agent's finals when the voice handed the
+                    // questions over, else by the voice's lines (a filler that only names
+                    // the cities does not count when there are finals).
+                    let lower = if finals.is_empty() {
+                        answer.to_lowercase()
+                    } else {
+                        finals.join(" ").to_lowercase()
+                    };
+                    let answer = format!("{answer} || finals: {}", finals.join(" | "));
+                    let line = format!(
+                        "turns: gap {gap} ms, note {}, run {run}: answered before B {before_b}; B started {} ms after A, note at {}; first answer audio at {}; first answer audio {} ms after B ended; covers (Bangkok, London) ({}, {}); pieces {pieces:?}; items {items:?}; answer {answer:?}",
+                        if *note { "yes" } else { "no" },
+                        ms(b_start),
+                        note_at.map_or("-".to_owned(), |at| format!("{} ms", ms(at))),
+                        first_audio.map_or("-".to_owned(), |at| format!("{} ms", ms(at))),
+                        after_b.map_or("-".to_owned(), |at| (at - b_end).as_millis().to_string()),
+                        lower.contains("bangkok"),
+                        lower.contains("london"),
+                    );
+                    eprintln!("{line}");
+                    summary.push(format!(
+                        "gap {gap} note {} run {run}: before B {before_b}, audio after B {}, both {}",
+                        if *note { "yes" } else { "no" },
+                        after_b.map_or("-".to_owned(), |at| format!("{} ms", (at - b_end).as_millis())),
+                        lower.contains("bangkok") && lower.contains("london"),
+                    ));
+                    session.session_wanted(false);
+                    std::thread::sleep(Duration::from_millis(500));
+                    stop.store(true, std::sync::atomic::Ordering::Release);
+                    let _ = reader.join();
+                    assistant.stop_blocking();
+                }
+            }
+        }
+        for line in summary {
+            eprintln!("summary: {line}");
+        }
+    }
+
+    /// Check 6.1 of change `speaker-turns`, when `VOICEBRO_CODEX_FLOOR_A` and `_B` name two
+    /// 48 kHz mono questions: per run a gate in always mode feeds a real call, with Alex
+    /// (source 1) saying A and Sam (source 2) starting B 2 s before A ends, as two Discord
+    /// streams on a 20 ms tick. `VOICEBRO_CODEX_FLOOR_MODES` (`floor,mix` by default) runs
+    /// it with one speaker at a time on and off, `VOICEBRO_CODEX_FLOOR_RUNS` times each
+    /// (default 10). Prints per run whether the agent's answers (or the voice's lines) cover
+    /// both cities and name both people, and the time from the last speech to the first
+    /// answer audio.
+    #[test]
+    fn two_speakers_through_the_floor_when_enabled() {
+        let (Ok(wav_a), Ok(wav_b)) = (
+            std::env::var("VOICEBRO_CODEX_FLOOR_A"),
+            std::env::var("VOICEBRO_CODEX_FLOOR_B"),
+        ) else {
+            return;
+        };
+        let modes: Vec<bool> = std::env::var("VOICEBRO_CODEX_FLOOR_MODES")
+            .unwrap_or_else(|_| "floor,mix".to_owned())
+            .split(',')
+            .map(|mode| mode.trim() == "floor")
+            .collect();
+        let runs: usize = std::env::var("VOICEBRO_CODEX_FLOOR_RUNS")
+            .ok()
+            .and_then(|runs| runs.parse().ok())
+            .unwrap_or(10);
+        let stereo = |samples: &[i16]| -> Vec<Vec<i16>> {
+            samples
+                .chunks(FRAME_SAMPLES / 2)
+                .map(|chunk| {
+                    let mut frame: Vec<i16> = chunk.iter().flat_map(|s| [*s, *s]).collect();
+                    frame.resize(FRAME_SAMPLES, 0);
+                    frame
+                })
+                .collect()
+        };
+        let (a, b) = (stereo(&wav_48k_mono(&wav_a)), stereo(&wav_48k_mono(&wav_b)));
+        let b_start = a.len().saturating_sub(100); // 2 s before A ends
+        let last_speech = (b_start + b.len()).max(a.len());
+        let quiet = vec![0i16; FRAME_SAMPLES];
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut summary = Vec::new();
+        for floor in &modes {
+            for run in 1..=runs {
+                let dir = tempfile::tempdir().unwrap();
+                let events = EventBus::new(4096);
+                let errors = Arc::new(ConnectionErrors::new(events.clone()));
+                let mut settings = Settings::default();
+                settings.codex.instructions = "You are a voice assistant in a Discord voice channel with several people. Answer briefly; when more than one person asked something, answer each of them by name.".to_owned();
+                settings.session.mode = crate::settings::SessionMode::Always;
+                settings.assistant.one_speaker_at_a_time = *floor;
+                // `VOICEBRO_CODEX_FLOOR_LABELS=changes` sends the note at every floor change.
+                if std::env::var("VOICEBRO_CODEX_FLOOR_LABELS").as_deref() == Ok("changes") {
+                    settings.assistant.speaker_labels = crate::settings::SpeakerLabels::Changes;
+                }
+                let assistant = CodexAssistant::new(
+                    runtime.handle().clone(),
+                    events.clone(),
+                    errors,
+                    dir.path(),
+                    &settings,
+                );
+                runtime
+                    .block_on(assistant.prepare_guild(1))
+                    .expect("codex runs and is signed in");
+                let (sender, input) = frame_channel(INPUT_CAPACITY);
+                let (output, source) = output_pair();
+                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let voiced = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let voiced_at = Arc::new(Mutex::new(Vec::new()));
+                let reader = spawn_reader(
+                    source,
+                    Arc::clone(&stop),
+                    Arc::clone(&voiced),
+                    Arc::clone(&voiced_at),
+                );
+                let (answers, mut answer_queue) = crate::assistant::AnswerSink::channel();
+                let session = assistant
+                    .attach(
+                        1,
+                        AudioPorts {
+                            input,
+                            output: output.clone(),
+                            failures: CodecFailures::none(),
+                            answers,
+                            heard: crate::assistant::no_heard(),
+                        },
+                    )
+                    .expect("attach");
+                let gate = crate::gate::RelayGate::new(
+                    1,
+                    sender,
+                    Arc::new(crate::audio::GainStage::new()),
+                    output.clone(),
+                    crate::gate::GateSettings::from_settings(&settings),
+                    false,
+                    events,
+                    None,
+                    None,
+                );
+                gate.set_speaker_name(1, "Alex");
+                gate.set_speaker_name(2, "Sam");
+                gate.set_participants(&["Alex".to_owned(), "Sam".to_owned()]);
+                gate.set_session(session.clone());
+                let started = Instant::now();
+                while !session.ready() {
+                    assert!(started.elapsed() < Duration::from_secs(40), "not ready");
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                let begin = Instant::now();
+                let mut speech_end = begin;
+                let mut finals: Vec<String> = Vec::new();
+                let mut final_at = None;
+                let deadline = begin + Duration::from_secs(90);
+                let mut sums = Vec::new();
+                for tick in 0usize.. {
+                    let due = begin + Duration::from_millis(20 * tick as u64);
+                    if let Some(rest) = due.checked_duration_since(Instant::now()) {
+                        std::thread::sleep(rest);
+                    }
+                    let alex: &[i16] = a.get(tick).map_or(&quiet, Vec::as_slice);
+                    let sam: &[i16] = tick
+                        .checked_sub(b_start)
+                        .and_then(|index| b.get(index))
+                        .map_or(&quiet, Vec::as_slice);
+                    let mut mixed = Frame::silence();
+                    crate::audio::frame::mix_into(&[alex, sam], &mut sums, &mut mixed);
+                    gate.process_tick(&mixed, &[(1, alex), (2, sam)]);
+                    if tick == last_speech {
+                        speech_end = Instant::now();
+                    }
+                    while let Ok(answer) = answer_queue.try_recv() {
+                        finals.push(answer.text);
+                        final_at = Some(Instant::now());
+                    }
+                    if tick > last_speech + 50 {
+                        let entries = assistant.chat_log().entries();
+                        let tasks = entries.iter().filter(|entry| entry.kind == "task").count();
+                        let last = voiced_at.lock().unwrap().last().copied();
+                        let quiet_now =
+                            last.is_some_and(|last| last.elapsed() > Duration::from_secs(4));
+                        let done = if tasks == 0 {
+                            entries.iter().any(|entry| entry.kind == "assistant")
+                        } else {
+                            finals.len() >= tasks
+                                && final_at.is_some_and(|at| last.is_some_and(|last| last > at))
+                        };
+                        if (done && quiet_now) || Instant::now() > deadline {
+                            break;
+                        }
+                    }
+                }
+                let first_answer = voiced_at
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|at| **at > speech_end)
+                    .copied();
+                let lines = assistant
+                    .chat_log()
+                    .entries()
+                    .iter()
+                    .filter(|entry| matches!(entry.kind, "assistant" | "user" | "context"))
+                    .map(|entry| format!("{}: {}", entry.kind, entry.text))
+                    .collect::<Vec<_>>();
+                let judged = if finals.is_empty() {
+                    lines
+                        .iter()
+                        .filter(|line| line.starts_with("assistant"))
+                        .cloned()
+                        .collect::<String>()
+                } else {
+                    finals.join(" ")
+                }
+                .to_lowercase();
+                let both = judged.contains("bangkok") && judged.contains("london");
+                let named = judged.contains("alex") && judged.contains("sam");
+                let latency = first_answer.map(|at| (at - speech_end).as_millis());
+                eprintln!(
+                    "floor check: {} run {run}: both answered {both}, both named {named}, first answer audio {} ms after the last speech; floor passes {}; lines {lines:?}; finals {finals:?}",
+                    if *floor { "floor" } else { "mix" },
+                    latency.map_or("-".to_owned(), |ms| ms.to_string()),
+                    gate.status().counters.floor_passes,
+                );
+                summary.push(format!(
+                    "{} run {run}: both {both}, named {named}, latency {}",
+                    if *floor { "floor" } else { "mix" },
+                    latency.map_or("-".to_owned(), |ms| format!("{ms} ms")),
+                ));
+                session.session_wanted(false);
+                std::thread::sleep(Duration::from_millis(500));
+                stop.store(true, std::sync::atomic::Ordering::Release);
+                let _ = reader.join();
+                assistant.stop_blocking();
+            }
+        }
+        for line in summary {
+            eprintln!("summary: {line}");
+        }
+    }
+
     /// A real call through the engine when `VOICEBRO_CODEX_CALL_WAV` names a 48 kHz mono
     /// question, fed with songbird-like jitter: the canary word in the instructions must
     /// start the answer, answer audio must play, and no frame toward the call may be dropped;
@@ -2138,11 +2551,25 @@ mod tests {
         }
 
         fn rig() -> Option<Rig> {
+            rig_with(false)
+        }
+
+        /// A Whisper-mode rig with one speaker at a time on or off (change `speaker-turns`).
+        fn rig_with(one_at_a_time: bool) -> Option<Rig> {
+            rig_on(None, one_at_a_time)
+        }
+
+        /// As [`rig_with`], on `executable` (the real Codex) instead of the logging fake.
+        fn rig_on(executable: Option<String>, one_at_a_time: bool) -> Option<Rig> {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             let dir = tempfile::tempdir().unwrap();
-            let fake = logging_fake(dir.path())?;
+            let fake = match executable {
+                Some(executable) => executable,
+                None => logging_fake(dir.path())?,
+            };
             let assistant = assistant_with(&runtime, dir.path(), &fake);
-            let settings = whisper_settings(&fake);
+            let mut settings = whisper_settings(&fake);
+            settings.assistant.one_speaker_at_a_time = one_at_a_time;
             assistant.configure(&settings);
             let read = Arc::new(Mutex::new(Vec::new()));
             let tts = TtsManager::with_parts(
@@ -2312,6 +2739,230 @@ mod tests {
             );
             rig.assistant.detach(1);
             rig.assistant.stop_blocking();
+        }
+
+        /// Change `speaker-turns`, scenario "Second question while Codex works": with one
+        /// speaker at a time on, the second question joins the running turn with
+        /// `turn/steer`, nothing is interrupted, and the posted answer names both questions.
+        #[test]
+        fn with_one_at_a_time_a_second_question_joins_the_running_turn() {
+            let Some(mut rig) = rig_with(true) else {
+                return;
+            };
+            let server = rig.assistant.running_server().unwrap();
+            rig.runtime
+                .block_on(server.request("fake/turnDelay", serde_json::json!({ "ms": 40 })))
+                .unwrap();
+            rig.session.user_text(question("first question"));
+            wait(|| !rig.read.lock().unwrap().is_empty());
+            rig.session.user_text(question("second question"));
+            let answer = rig
+                .runtime
+                .block_on(async {
+                    tokio::time::timeout(Duration::from_secs(10), rig.answers.recv()).await
+                })
+                .expect("an answer in time")
+                .unwrap();
+            assert_eq!(
+                answer.task.as_deref(),
+                Some("first question / second question")
+            );
+            let calls = methods(rig.dir.path());
+            assert!(
+                calls.iter().any(|method| method == "turn/steer"),
+                "{calls:?}"
+            );
+            assert!(
+                !calls.iter().any(|method| method == "turn/interrupt"),
+                "{calls:?}"
+            );
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|method| *method == "turn/start")
+                    .count(),
+                1,
+                "{calls:?}"
+            );
+            let steers = rig
+                .runtime
+                .block_on(server.request("fake/steers", serde_json::json!({})))
+                .unwrap();
+            assert_eq!(steers, serde_json::json!(["Alex: second question"]));
+            rig.assistant.detach(1);
+            rig.assistant.stop_blocking();
+        }
+
+        /// Scenario "The running turn ends at the same moment": a refused steer makes the
+        /// question wait and start the next turn once the running one completes; both
+        /// answers are posted, in order, and nothing is interrupted.
+        #[test]
+        fn with_one_at_a_time_a_refused_steer_becomes_the_next_turn() {
+            let Some(mut rig) = rig_with(true) else {
+                return;
+            };
+            let server = rig.assistant.running_server().unwrap();
+            rig.runtime.block_on(async {
+                server
+                    .request("fake/turnDelay", serde_json::json!({ "ms": 40 }))
+                    .await
+                    .unwrap();
+                server
+                    .request("fake/refuseNextSteer", serde_json::json!({}))
+                    .await
+                    .unwrap();
+            });
+            rig.session.user_text(question("first question"));
+            wait(|| !rig.read.lock().unwrap().is_empty());
+            rig.session.user_text(question("second question"));
+            let mut tasks = Vec::new();
+            for _ in 0..2 {
+                let answer = rig
+                    .runtime
+                    .block_on(async {
+                        tokio::time::timeout(Duration::from_secs(10), rig.answers.recv()).await
+                    })
+                    .expect("an answer in time")
+                    .unwrap();
+                tasks.push(answer.task.unwrap_or_default());
+            }
+            assert_eq!(tasks, ["first question", "second question"]);
+            let calls = methods(rig.dir.path());
+            assert!(
+                !calls.iter().any(|method| method == "turn/interrupt"),
+                "{calls:?}"
+            );
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|method| *method == "turn/start")
+                    .count(),
+                2,
+                "{calls:?}"
+            );
+            // A deactivation still stops everything at once.
+            rig.session.user_text(question("third question"));
+            rig.session.session_wanted(false);
+            assert!(!rig.session.working(), "the voice stopped at once");
+            rig.assistant.detach(1);
+            rig.assistant.stop_blocking();
+        }
+
+        /// Task 6.2 of change `speaker-turns`, when `VOICEBRO_CODEX_TWO_QUESTIONS=1`: against
+        /// the real Codex (a reader stands in for the local voice), Alex's question and Sam's
+        /// 1 s later, with one speaker at a time on; `VOICEBRO_CODEX_TWO_RUNS` runs (default
+        /// 5). Prints per run the posted answers with their tasks, whether each was read to
+        /// its end (no answer cut), whether both cities are answered, and the time to the
+        /// first spoken piece.
+        #[test]
+        fn two_questions_one_at_a_time_when_enabled() {
+            if std::env::var("VOICEBRO_CODEX_TWO_QUESTIONS")
+                .ok()
+                .as_deref()
+                != Some("1")
+            {
+                return;
+            }
+            let runs: usize = std::env::var("VOICEBRO_CODEX_TWO_RUNS")
+                .ok()
+                .and_then(|runs| runs.parse().ok())
+                .unwrap_or(5);
+            let executable = super::super::app_server::find_codex("")
+                .expect("codex is installed")
+                .display()
+                .to_string();
+            let alnum = |text: &str| -> String {
+                text.chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect()
+            };
+            for run in 1..=runs {
+                let mut rig = rig_on(Some(executable.clone()), true).expect("a rig");
+                let started = Instant::now();
+                let mut alex = question("What time is it in Bangkok?");
+                alex.speaker = Some("Alex".to_owned());
+                rig.session.user_text(alex);
+                std::thread::sleep(Duration::from_secs(1));
+                let mut sam = question("And what is the weather in London?");
+                sam.speaker = Some("Sam".to_owned());
+                rig.session.user_text(sam);
+                let mut first_piece = None;
+                let mut answers: Vec<AgentAnswer> = Vec::new();
+                let deadline = Instant::now() + Duration::from_secs(150);
+                // Nobody pulls the voice here, so the end is when both questions have their
+                // answer and the reader has read nothing new for 2 s.
+                let (mut read_count, mut read_since) = (0, Instant::now());
+                loop {
+                    let count = rig.read.lock().unwrap().len();
+                    if first_piece.is_none() && count > 0 {
+                        first_piece = Some(started.elapsed());
+                    }
+                    if count != read_count {
+                        (read_count, read_since) = (count, Instant::now());
+                    }
+                    while let Ok(answer) = rig.answers.try_recv() {
+                        answers.push(answer);
+                    }
+                    let tasks: usize = answers
+                        .iter()
+                        .map(|answer| answer.task.as_deref().unwrap_or("").split(" / ").count())
+                        .sum();
+                    if (tasks >= 2 && read_since.elapsed() > Duration::from_secs(2))
+                        || Instant::now() > deadline
+                    {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                let read = alnum(&rig.read.lock().unwrap().concat());
+                let mut lines = Vec::new();
+                for answer in &answers {
+                    // A markdown link is read by its text only.
+                    let spoken = answer
+                        .text
+                        .split("](")
+                        .enumerate()
+                        .map(|(index, part)| {
+                            if index == 0 {
+                                part
+                            } else {
+                                part.split_once(')').map_or("", |(_, rest)| rest)
+                            }
+                        })
+                        .collect::<String>();
+                    let text = alnum(&spoken);
+                    let tail: String = text
+                        .chars()
+                        .rev()
+                        .take(30)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    lines.push(format!(
+                        "task {:?}, read to its end {}: {:?}",
+                        answer.task,
+                        read.contains(&tail),
+                        answer.text
+                    ));
+                }
+                let all = answers
+                    .iter()
+                    .map(|answer| answer.text.to_lowercase())
+                    .collect::<String>();
+                eprintln!(
+                    "two questions run {run}: first spoken piece {} ms, done {} ms; both answered ({}, {}); {} answer(s): {}",
+                    first_piece.map_or("-".to_owned(), |at| at.as_millis().to_string()),
+                    started.elapsed().as_millis(),
+                    all.contains("bangkok"),
+                    all.contains("london"),
+                    answers.len(),
+                    lines.join(" || ")
+                );
+                rig.assistant.detach(1);
+                rig.assistant.stop_blocking();
+            }
         }
 
         #[test]

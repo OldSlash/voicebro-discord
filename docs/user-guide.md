@@ -485,6 +485,27 @@ that `/join` posts shows the same under **Mode**.
 In the window, **Codex chat** shows what the assistant heard, said and looked up, and
 **Console** shows what the app is doing.
 
+### When two people talk at once
+
+By default the assistant hears the channel as one sound: in the realtime voice mode two
+people talking over each other reach it mixed, and in the Whisper mode a new question stops
+the answer that is playing and is answered instead.
+
+Turn on **One speaker at a time** (**Config → Assistant**, off by default) to change that:
+
+- **Realtime voice:** the assistant hears one person at a time. Whoever talks over them is
+  kept and follows when they pause for about a third of a second, with a short note
+  telling the assistant who is speaking now, so it can answer each person by name; nobody
+  is mixed in. **Speaker names** set to off (Config → Codex) sends no note. Speech kept
+  for someone who waits never cuts an answer that is playing: it follows the answer.
+- **Whisper:** a question asked while Codex works on an answer is added to that answer, and
+  one asked while the answer is being read waits and is answered after it. Talking over the
+  voice no longer stops it; the deactivation phrase or **Mute** does.
+
+In both modes VoiceBro tells people apart by their own Discord stream: two voices that
+reach Discord through one microphone (a friend beside you, speakers without headphones)
+still go to the assistant together.
+
 ### Posting the answers to Discord
 
 When the assistant hands a question to Codex (a web search, a recipe, a price), Codex
@@ -612,7 +633,7 @@ remembers which cards are folded.
 | Config → Discord and Codex | The Discord bot token, the server ID, the path of `codex.exe` when it is not found on its own. Press **Save changes**. |
 | Config → Access | **Who the assistant hears** (Everyone by default, People who agreed, Only my Discord account), **Privacy policy URL**, the link to your Discord account and the people who agreed with `/optin` ([section 8](#who-the-assistant-hears)). |
 | Config → Audio | How loud the assistant hears the channel and how loud it speaks; the short tones at session start and end. |
-| Config → Assistant | **Assistant mode** (realtime voice, the default, or Whisper) and the grey **Recognition** field; wake word or always listening, the phrases, the auto-stop time, and the model with its download: the wake model in the realtime mode, the Whisper model in the Whisper mode, each with its own phrases. |
+| Config → Assistant | **Assistant mode** (realtime voice, the default, or Whisper) and the grey **Recognition** field; wake word or always listening, the phrases, the auto-stop time, and the model with its download: the wake model in the realtime mode, the Whisper model in the Whisper mode, each with its own phrases; **One speaker at a time** (off by default, [section 8](#when-two-people-talk-at-once)). |
 | Config → Local voice | The voice that reads the answers in the Whisper mode, its speed, **Preview**, and its download. Not used in the realtime mode. |
 | Config → Codex | The model and reasoning effort for looked-up answers (in the Whisper mode, for every answer), the voice of the realtime call, your instructions for the assistant, whether it gets the names of the people in the channel, **Save chat history**, **Post answers to Discord** and the channel for it ([section 8](#posting-the-answers-to-discord)). The model, reasoning and voice lists come from the last time VoiceBro read them from Codex; the card says when that was. **Refresh lists** reads them now, and **Refresh the lists at start** (off by default) reads them at every start of VoiceBro. |
 | Config → Hotkey | The mute hotkey. |

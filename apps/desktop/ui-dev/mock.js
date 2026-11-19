@@ -52,7 +52,7 @@
     },
     // `post_answers` and `answers_channel` as the app fills them for a file without them;
     // `mode`, `whisper` and `tts` likewise (change `whisper-mode`).
-    assistant: { engine: "codex", mode: "realtime", speaker_labels: "start", save_chat_history: false, post_answers: "off", answers_channel: "" },
+    assistant: { engine: "codex", mode: "realtime", speaker_labels: "start", save_chat_history: false, post_answers: "off", answers_channel: "", one_speaker_at_a_time: false },
     whisper: { model: "whisper-base-q8_0", device: "cpu", threads: 0, language: "auto", phrases: {} },
     tts: { voice: "supertonic3:F1", speed: 1.0 },
     // `handoff_mode` and `refresh_lists_at_start` as the app fills them for a file without
@@ -135,6 +135,8 @@
   let owner = { linked: null, pending: null, code_ended: null, link_ended: null };
   if (new URLSearchParams(location.search).get("owner") === "linked") owner.linked = { ...LINKED };
   if (new URLSearchParams(location.search).has("owner_only")) settings.discord.access = "owner";
+  // `?one_at_a_time`: one speaker at a time is stored on (change `speaker-turns`).
+  if (new URLSearchParams(location.search).has("one_at_a_time")) settings.assistant.one_speaker_at_a_time = true;
   const accessParam = new URLSearchParams(location.search).get("access");
   if (accessParam) settings.discord.access = accessParam;
   const privacyParam = new URLSearchParams(location.search).get("privacy");
@@ -725,6 +727,9 @@
     if (url && !url.startsWith("https://")) throw "discord.privacy_url: the URL must start with https://";
     if (url && /\s/.test(url)) throw "discord.privacy_url: the URL must not contain spaces";
     if (url && !url.slice(8).split(/[/?#]/)[0]) throw "discord.privacy_url: the URL has no host after https://";
+    if (typeof doc.assistant.one_speaker_at_a_time !== "boolean") {
+      throw `the patch is not a settings document: assistant.one_speaker_at_a_time must be true or false, not ${JSON.stringify(doc.assistant.one_speaker_at_a_time)}`;
+    }
     if (typeof doc.codex.refresh_lists_at_start !== "boolean") {
       throw "invalid type: expected a boolean at codex.refresh_lists_at_start";
     }
@@ -833,7 +838,8 @@
         "1091401169441656933": {
           guild_id: "1091401169441656933", mode: settings.session.mode, muted, active: false,
           listening_for_wake_word: !muted, session_wanted: false, assistant_ready: false,
-          last_wake_phrase: null, replay_held: 0, counters: { input_dropped: 0, replay_dropped: 0, replay_timeouts: 0 },
+          last_wake_phrase: null, replay_held: 0, floor_waiting: 0,
+          counters: { input_dropped: 0, replay_dropped: 0, replay_timeouts: 0, floor_passes: 0, floor_dropped: 0 },
         },
       },
       audio: {

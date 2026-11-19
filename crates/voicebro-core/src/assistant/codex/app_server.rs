@@ -430,6 +430,7 @@ impl AppServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn approvals_tool_calls_and_elicitations_are_declined() {
@@ -553,6 +554,175 @@ mod tests {
                 .expect("listVoices answers");
             assert!(voices.get("voices").is_some());
             server.kill();
+        });
+    }
+
+    /// Collects a thread's notifications with the time they came (probe of change
+    /// `speaker-turns`, task 2.2).
+    struct Collect(tokio::sync::mpsc::UnboundedSender<(Instant, String, Value)>);
+
+    impl ThreadListener for Collect {
+        fn on_notification(&self, method: &str, params: &Value) {
+            let _ = self
+                .0
+                .send((Instant::now(), method.to_owned(), params.clone()));
+        }
+        fn on_declined(&self, _: &str) {}
+        fn on_server_exit(&self) {}
+    }
+
+    /// One text turn's outcome: when its first words came and the agent's final text.
+    async fn finish_turn(
+        notes: &mut tokio::sync::mpsc::UnboundedReceiver<(Instant, String, Value)>,
+        started: Instant,
+    ) -> (Option<Duration>, Duration, String) {
+        let mut first = None;
+        let mut text = String::new();
+        loop {
+            let Ok(Some((at, method, params))) =
+                tokio::time::timeout(Duration::from_secs(120), notes.recv()).await
+            else {
+                return (
+                    first,
+                    started.elapsed(),
+                    format!("{text} [no turn/completed]"),
+                );
+            };
+            match method.as_str() {
+                "item/agentMessage/delta" => {
+                    first.get_or_insert(at - started);
+                }
+                "item/completed" => {
+                    let item = params.get("item").cloned().unwrap_or(Value::Null);
+                    if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
+                        let piece = item.get("text").and_then(Value::as_str).unwrap_or("");
+                        if !text.is_empty() {
+                            text.push_str(" | ");
+                        }
+                        text.push_str(piece.trim());
+                    }
+                }
+                "turn/completed" => return (first, at - started, text),
+                _ => {}
+            }
+        }
+    }
+
+    /// Probe 2.2 of change `speaker-turns`, when `VOICEBRO_CODEX_STEER=1`: against the real
+    /// app-server, a text turn with Alex's question steered with Sam's (`turn/steer` with
+    /// `expectedTurnId`) right after it starts; then a steer of the completed turn; then the
+    /// same two questions as two turns in a row on a fresh thread. Prints per run whether the
+    /// answer covers both cities, the time to the first words and to the end, and the
+    /// late steer's error. `VOICEBRO_CODEX_STEER_RUNS` runs (default 5).
+    #[test]
+    fn turn_steer_when_enabled() {
+        if std::env::var("VOICEBRO_CODEX_STEER").ok().as_deref() != Some("1") {
+            return;
+        }
+        let runs: usize = std::env::var("VOICEBRO_CODEX_STEER_RUNS")
+            .ok()
+            .and_then(|runs| runs.parse().ok())
+            .unwrap_or(5);
+        const A: &str = "Alex: What time is it in Bangkok?";
+        const B: &str = "Sam: And what is the weather in London?";
+        let settings = super::super::thread::ThreadSettings {
+            instructions: "You are a voice assistant in a Discord voice channel with several people. Each user message starts with the speaker's name. Answer briefly, in one or two sentences; when more than one person asked something, answer each of them by name.".to_owned(),
+            ..Default::default()
+        };
+        let covers = |text: &str| {
+            let lower = text.to_lowercase();
+            (lower.contains("bangkok"), lower.contains("london"))
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let executable = find_codex("").expect("codex is installed");
+            for run in 1..=runs {
+                let events = EventBus::new(64);
+                let server = AppServer::spawn(Handle::current(), events.clone(), &executable)
+                    .await
+                    .expect("app-server initializes");
+                let workspace = tempfile::tempdir().unwrap();
+                let thread = |server: &Arc<AppServer>| {
+                    let (sender, notes) = tokio::sync::mpsc::unbounded_channel();
+                    let listener: Arc<dyn ThreadListener> = Arc::new(Collect(sender));
+                    let server = Arc::clone(server);
+                    let events = events.clone();
+                    let settings = settings.clone();
+                    let path = workspace.path().to_owned();
+                    async move {
+                        let info =
+                            super::super::thread::open_thread(&server, &events, &path, &settings)
+                                .await
+                                .expect("a thread");
+                        server.map_thread(&info.id, Arc::downgrade(&listener));
+                        (info.id, notes, listener)
+                    }
+                };
+                let input = |text: &str| json!([{ "type": "text", "text": text }]);
+
+                // The steered turn.
+                let (id, mut notes, _keep) = thread(&server).await;
+                let started = Instant::now();
+                let reply = server
+                    .request("turn/start", json!({ "threadId": id, "input": input(A) }))
+                    .await
+                    .expect("turn/start");
+                let turn = reply["turn"]["id"].as_str().unwrap_or_default().to_owned();
+                let steered_at = started.elapsed();
+                let steer = server
+                    .request(
+                        "turn/steer",
+                        json!({ "threadId": id, "expectedTurnId": turn, "input": input(B) }),
+                    )
+                    .await;
+                let (first, done, text) = finish_turn(&mut notes, started).await;
+                let late = server
+                    .request(
+                        "turn/steer",
+                        json!({ "threadId": id, "expectedTurnId": turn, "input": input(B) }),
+                    )
+                    .await;
+                eprintln!(
+                    "steer run {run}: steered {} ms after start: {}; first words {} ms, done {} ms; covers (Bangkok, London) {:?}; answer: {text}",
+                    steered_at.as_millis(),
+                    match &steer {
+                        Ok(_) => "accepted".to_owned(),
+                        Err(error) => format!("refused ({error})"),
+                    },
+                    first.map_or("-".to_owned(), |first| first.as_millis().to_string()),
+                    done.as_millis(),
+                    covers(&text),
+                );
+                eprintln!(
+                    "steer run {run}: a steer of the completed turn: {}",
+                    match &late {
+                        Ok(value) => format!("accepted?! {value}"),
+                        Err(error) => format!("refused: {error}"),
+                    }
+                );
+
+                // The same two questions as two turns in a row, on a fresh thread.
+                let (id, mut notes, _keep) = thread(&server).await;
+                let started = Instant::now();
+                server
+                    .request("turn/start", json!({ "threadId": id, "input": input(A) }))
+                    .await
+                    .expect("turn/start A");
+                let (first_a, done_a, text_a) = finish_turn(&mut notes, started).await;
+                server
+                    .request("turn/start", json!({ "threadId": id, "input": input(B) }))
+                    .await
+                    .expect("turn/start B");
+                let (first_b, done_b, text_b) = finish_turn(&mut notes, started).await;
+                eprintln!(
+                    "two turns run {run}: A first words {} ms, done {} ms: {text_a}; B first words {} ms, done {} ms: {text_b}",
+                    first_a.map_or("-".to_owned(), |first| first.as_millis().to_string()),
+                    done_a.as_millis(),
+                    first_b.map_or("-".to_owned(), |first| first.as_millis().to_string()),
+                    done_b.as_millis(),
+                );
+                server.kill();
+            }
         });
     }
 }

@@ -28,6 +28,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod floor;
+
 /// About 5 s of 20 ms frames kept before an activation phrase is confirmed. A phrase
 /// confirmed only by a final result arrives after the whole utterance.
 pub const PREROLL_FRAMES: usize = 250;
@@ -69,6 +71,9 @@ pub struct GateSettings {
     pub whisper: bool,
     /// The Whisper mode's phrases in effect.
     pub whisper_phrases: PhraseSet,
+    /// `assistant.one_speaker_at_a_time` (change `speaker-turns`, D0): read at the start of
+    /// each session; a session never switches halfway.
+    pub one_speaker_at_a_time: bool,
 }
 
 impl GateSettings {
@@ -87,6 +92,7 @@ impl GateSettings {
                 &whisper_phrases.activation,
                 &whisper_phrases.deactivation,
             ),
+            one_speaker_at_a_time: settings.assistant.one_speaker_at_a_time,
         }
     }
 }
@@ -163,6 +169,10 @@ pub struct GateCounters {
     pub replay_dropped: u64,
     /// Sessions ended because the assistant never became ready.
     pub replay_timeouts: u64,
+    /// Times the floor passed to a person who waited (change `speaker-turns`, D8).
+    pub floor_passes: u64,
+    /// Frames dropped from full waiting buffers.
+    pub floor_dropped: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -179,6 +189,8 @@ pub struct GateStatus {
     pub last_wake_phrase: Option<String>,
     /// Frames waiting for the assistant to become ready.
     pub replay_held: usize,
+    /// People waiting for the floor (change `speaker-turns`).
+    pub floor_waiting: usize,
     pub counters: GateCounters,
 }
 
@@ -211,6 +223,12 @@ struct GateState {
     heard_hold: Option<HeardHold>,
     /// The last finished turn of the call's transcript, read with the next one.
     heard_previous: Option<HeardTurn>,
+    /// One speaker at a time (change `speaker-turns`): the floor, the waiting buffers and
+    /// the per-speaker rings, kept while the setting is on.
+    floor: floor::Floor,
+    /// Whether the running session uses the floor, decided when it started (D0); `None`
+    /// before its first passing tick.
+    floor_on: Option<bool>,
 }
 
 impl GateState {
@@ -237,6 +255,55 @@ impl GateState {
         self.last_label = None;
         self.heard_hold = None;
         self.heard_previous = None;
+        self.floor.clear();
+        self.floor_on = None;
+    }
+
+    /// The floor's frame for the call this tick (D1 to D5), with the note it calls for: at
+    /// `start` and `changes` every change of the floor, at `off` none (check 6.1 of the
+    /// change: with a note at every change the answers named the right person in 7 of 10
+    /// calls and the wrong one in none; with a note only for a person who waited, right in
+    /// 2 and wrong in 2; without notes, right in 3 and wrong in 5). The person already named
+    /// as the caller gets no second note. Silence when nobody holds the floor.
+    fn floor_frame(
+        &mut self,
+        speakers: &[(u32, &[i16])],
+        answer_playing: bool,
+    ) -> (Frame, Option<Vec<String>>) {
+        let labels = self.settings.speaker_labels;
+        let hold = if labels == SpeakerLabels::Off {
+            0
+        } else {
+            floor::NOTE_HOLD_TICKS
+        };
+        let passes = self.floor.passes;
+        let dropped = self.floor.dropped;
+        let out = self.floor.tick(speakers, answer_playing, hold);
+        self.counters.floor_passes += self.floor.passes - passes;
+        self.counters.floor_dropped += self.floor.dropped - dropped;
+        if let Some(change) = out.change.filter(|change| change.waited) {
+            let name = self
+                .speakers
+                .get(&change.ssrc)
+                .and_then(|speaker| speaker.name.clone())
+                .unwrap_or_else(|| format!("ssrc {}", change.ssrc));
+            crate::detail!(
+                "floor",
+                "floor: passes to {name}, who waited; {} still waiting; passes {}, waiting frames dropped {}",
+                self.floor.waiting(),
+                self.counters.floor_passes,
+                self.counters.floor_dropped
+            );
+        }
+        let note = out.change.and_then(|change| {
+            let wanted = labels != SpeakerLabels::Off;
+            let name = self.speakers.get(&change.ssrc)?.name.clone()?;
+            (wanted && self.last_label.as_deref() != Some(std::slice::from_ref(&name))).then(|| {
+                self.last_label = Some(vec![name.clone()]);
+                vec![name]
+            })
+        });
+        (out.frame.unwrap_or_else(Frame::silence), note)
     }
 
     /// The one deactivation path of both sources (design D4): ends the session, flushes
@@ -309,6 +376,7 @@ impl GateState {
             assistant_ready: self.assistant_ready,
             last_wake_phrase: self.last_wake_phrase.clone(),
             replay_held: self.replay.len(),
+            floor_waiting: self.floor.waiting(),
             counters: self.counters,
         }
     }
@@ -377,6 +445,8 @@ impl RelayGate {
             deactivated_at: None,
             heard_hold: None,
             heard_previous: None,
+            floor: floor::Floor::new(),
+            floor_on: None,
         };
         Arc::new(Self {
             guild,
@@ -506,6 +576,15 @@ impl RelayGate {
                 state.preroll.pop_front();
             }
             state.preroll.push_back(mixed.clone());
+            // One speaker at a time (change `speaker-turns`, D6): each speaker's own pre-roll,
+            // kept while the setting is on, for the next activation.
+            if state.settings.one_speaker_at_a_time && !state.settings.whisper && !state.muted {
+                state.floor.remember(tick, speakers);
+            }
+            // The assistant's voice played within 200 ms: a waiting buffer must not cut it (D4).
+            let answer_playing = assistant_signal
+                .is_some_and(|at| now.saturating_duration_since(at) < Duration::from_millis(200));
+            let mut floor_note = None;
 
             // The Whisper mode hears the channel in both session modes: its text is the input.
             let feed_wake = !state.muted
@@ -542,7 +621,15 @@ impl RelayGate {
                 None
             } else if state.settings.mode == SessionMode::Always {
                 passing = true;
-                Some(mixed.clone())
+                // The session decides once whether it uses the floor (D0).
+                let setting = state.settings.one_speaker_at_a_time;
+                if *state.floor_on.get_or_insert(setting) {
+                    let (frame, note) = state.floor_frame(speakers, answer_playing);
+                    floor_note = note;
+                    Some(frame)
+                } else {
+                    Some(mixed.clone())
+                }
             } else if state.active {
                 // The assistant's own answer also counts as activity, so a long reply is
                 // never cut by the timeout.
@@ -564,6 +651,13 @@ impl RelayGate {
                     );
                     None
                 } else if !ready {
+                    let live = if state.floor_on == Some(true) {
+                        let (frame, note) = state.floor_frame(speakers, answer_playing);
+                        floor_note = note;
+                        frame
+                    } else {
+                        mixed.clone()
+                    };
                     if state.replay.len() >= MAX_REPLAY_FRAMES {
                         // Nothing waits forever: drop the held audio and end the session.
                         let dropped = state.replay.len() as u64;
@@ -578,12 +672,19 @@ impl RelayGate {
                             MAX_REPLAY_FRAMES as f64 * 0.02
                         ));
                     } else {
-                        state.replay.push_back(mixed.clone());
+                        state.replay.push_back(live);
                     }
                     None
                 } else {
                     passing = true;
-                    state.replay.push_back(mixed.clone());
+                    let live = if state.floor_on == Some(true) {
+                        let (frame, note) = state.floor_frame(speakers, answer_playing);
+                        floor_note = note;
+                        frame
+                    } else {
+                        mixed.clone()
+                    };
+                    state.replay.push_back(live);
                     let next = state.replay.pop_front();
                     // Catch up with live audio by skipping silent backlog frames.
                     while state.replay.len() > 1
@@ -600,7 +701,16 @@ impl RelayGate {
                 None
             };
             if passing {
-                effects.speakers = state.labels_for(&starters, now);
+                // With the floor the note follows the floor (D5); otherwise the set of people
+                // who started talking.
+                effects.speakers = if state.floor_on == Some(true) {
+                    floor_note
+                } else {
+                    state.labels_for(&starters, now)
+                };
+            } else if floor_note.is_some() {
+                // A pass while the replay is held: the note goes out ahead of the buffer.
+                effects.speakers = floor_note;
             }
             self.output.set_muted(state.output_muted());
             let wanted = state.wants_session();
@@ -698,11 +808,19 @@ impl RelayGate {
                     } else {
                         DEFAULT_LOOKBACK
                     } + LOOKBACK_MARGIN;
-                    let frames = (lookback.as_millis() as usize)
-                        .div_ceil(20)
-                        .min(state.preroll.len());
-                    let skip = state.preroll.len() - frames;
-                    state.replay = state.preroll.iter().skip(skip).cloned().collect();
+                    let wanted = (lookback.as_millis() as usize).div_ceil(20);
+                    // One speaker at a time (change `speaker-turns`, D6): the caller holds the
+                    // floor and only their speech is replayed; what others said since the end
+                    // of the phrase waits in their buffers.
+                    let use_floor = state.settings.one_speaker_at_a_time;
+                    state.floor_on = Some(use_floor);
+                    if use_floor {
+                        state.replay = state.floor.activate(ssrc, wanted);
+                    } else {
+                        let frames = wanted.min(state.preroll.len());
+                        let skip = state.preroll.len() - frames;
+                        state.replay = state.preroll.iter().skip(skip).cloned().collect();
+                    }
                     effects.earcon = Some(Earcon::Activate);
                     effects.log = Some(format!(
                         "activation phrase «{phrase}» recognized; the assistant is listening"
@@ -1172,6 +1290,7 @@ mod tests {
             deactivation_phrases: Phrase::list(&["dismiss".to_owned()]),
             whisper: false,
             whisper_phrases: PhraseSet::default(),
+            one_speaker_at_a_time: false,
         }
     }
 
@@ -1631,6 +1750,174 @@ mod tests {
         assert!(
             rig.gate.status().replay_held <= 1,
             "silent backlog is skipped"
+        );
+    }
+
+    /// A speaker's frame at `level`, so what reaches the call says whose it is.
+    fn voice_at(level: i16) -> Vec<i16> {
+        (0..crate::audio::FRAME_SAMPLES)
+            .map(|i| if i % 2 == 0 { level } else { -level })
+            .collect()
+    }
+
+    /// The levels of the frames the gate passed to the call so far.
+    fn passed_levels(rig: &Rig) -> Vec<i32> {
+        std::iter::from_fn(|| rig.input.try_recv())
+            .map(|frame| frame.peak())
+            .collect()
+    }
+
+    /// Change `speaker-turns`: an always-mode gate with one speaker at a time on or off and
+    /// speaker names for 7 (Alex) and 8 (Sam).
+    fn floor_rig(on: bool) -> Rig {
+        let rig = rig(SessionMode::Always, None, Duration::ZERO);
+        let mut settings = settings(SessionMode::Always, None);
+        settings.one_speaker_at_a_time = on;
+        settings.speaker_labels = SpeakerLabels::Start;
+        rig.gate.update_settings(settings);
+        rig.gate.set_speaker_name(7, "Alex");
+        rig.gate.set_speaker_name(8, "Sam");
+        rig
+    }
+
+    /// Alex talks 10 ticks; Sam starts on the third and talks 10; then silence. Returns the
+    /// levels passed to the call, read after every tick (the queue toward the call is short).
+    fn overlap(rig: &Rig) -> Vec<i32> {
+        let (alex, sam, quiet) = (
+            voice_at(1000),
+            voice_at(2000),
+            vec![0i16; crate::audio::FRAME_SAMPLES],
+        );
+        let mut levels = Vec::new();
+        for tick in 0..60 {
+            let a: &[i16] = if tick < 10 { &alex } else { &quiet };
+            let s: &[i16] = if (2..12).contains(&tick) {
+                &sam
+            } else {
+                &quiet
+            };
+            let mut sums = Vec::new();
+            let mut mixed = Frame::silence();
+            crate::audio::frame::mix_into(&[a, s], &mut sums, &mut mixed);
+            rig.gate.process_tick(&mixed, &[(7, a), (8, s)]);
+            levels.extend(passed_levels(rig));
+        }
+        levels
+    }
+
+    /// Requirement "One speaker at a time is optional": off, the call gets the mix.
+    #[test]
+    fn with_the_switch_off_the_call_gets_the_mix() {
+        let rig = floor_rig(false);
+        let levels = overlap(&rig);
+        assert!(levels.contains(&1500), "Alex and Sam mixed: {levels:?}");
+        assert_eq!(rig.gate.status().counters.floor_passes, 0);
+    }
+
+    /// Requirements "One speaker at a time toward the call" and "The floor passes after a
+    /// pause": on, Alex alone, then Sam's buffered speech after Alex's pause, with a note
+    /// naming Sam at `start` labels; never a mix.
+    #[test]
+    fn with_the_switch_on_one_person_at_a_time() {
+        let rig = floor_rig(true);
+        let levels = overlap(&rig);
+        assert!(!levels.contains(&1500), "never mixed: {levels:?}");
+        assert_eq!(
+            levels.iter().filter(|level| **level == 1000).count(),
+            10,
+            "{levels:?}"
+        );
+        assert_eq!(
+            levels.iter().filter(|level| **level == 2000).count(),
+            10,
+            "{levels:?}"
+        );
+        let first_sam = levels.iter().position(|level| *level == 2000).unwrap();
+        assert!(levels[..first_sam].iter().all(|level| *level != 2000));
+        assert_eq!(rig.gate.status().counters.floor_passes, 1);
+        assert_eq!(
+            *rig.stub.speakers.lock().unwrap(),
+            vec![vec!["Alex".to_owned()], vec!["Sam".to_owned()]],
+            "a note at every change of the floor at `start` labels too"
+        );
+    }
+
+    /// With the floor and labels `off`, no note at all.
+    #[test]
+    fn with_the_switch_on_and_labels_off_no_note() {
+        let rig = floor_rig(true);
+        let mut settings = settings(SessionMode::Always, None);
+        settings.one_speaker_at_a_time = true;
+        settings.speaker_labels = SpeakerLabels::Off;
+        rig.gate.update_settings(settings);
+        let levels = overlap(&rig);
+        assert_eq!(levels.iter().filter(|level| **level == 2000).count(), 10);
+        assert!(rig.stub.speakers.lock().unwrap().is_empty());
+    }
+
+    /// Requirement "Speaker labels" with the floor: at `changes` a note at every change of
+    /// the floor, Alex's free take and the pass to Sam.
+    #[test]
+    fn with_the_switch_on_changes_labels_name_every_floor_change() {
+        let rig = floor_rig(true);
+        let mut settings = settings(SessionMode::Always, None);
+        settings.one_speaker_at_a_time = true;
+        settings.speaker_labels = SpeakerLabels::Changes;
+        rig.gate.update_settings(settings);
+        let levels = overlap(&rig);
+        assert_eq!(levels.iter().filter(|level| **level == 2000).count(), 10);
+        assert_eq!(
+            *rig.stub.speakers.lock().unwrap(),
+            vec![vec!["Alex".to_owned()], vec!["Sam".to_owned()]]
+        );
+    }
+
+    /// Requirement "A waiting person's speech is kept": a mute empties the buffers.
+    #[test]
+    fn a_mute_empties_the_waiting_buffers() {
+        let rig = floor_rig(true);
+        let (alex, sam) = (voice_at(1000), voice_at(2000));
+        for _ in 0..5 {
+            rig.gate
+                .process_tick(&Frame::silence(), &[(7, &alex), (8, &sam)]);
+        }
+        assert_eq!(rig.gate.status().floor_waiting, 1);
+        rig.gate.set_muted(true);
+        assert_eq!(rig.gate.status().floor_waiting, 0);
+        let _ = passed_levels(&rig);
+        rig.gate.set_muted(false);
+        let quiet = vec![0i16; crate::audio::FRAME_SAMPLES];
+        for _ in 0..40 {
+            rig.gate
+                .process_tick(&Frame::silence(), &[(7, &quiet), (8, &quiet)]);
+        }
+        assert!(
+            !passed_levels(&rig).contains(&2000),
+            "nothing of Sam's buffer"
+        );
+    }
+
+    /// Requirement "Pre-roll replay from the end of the phrase", scenario "Someone else talks
+    /// during the phrase": on, only the caller's speech is replayed and Sam's waits.
+    #[test]
+    fn an_activation_with_the_switch_on_replays_only_the_caller() {
+        let rig = rig(SessionMode::WakeWord, None, Duration::ZERO);
+        let mut settings = settings(SessionMode::WakeWord, None);
+        settings.one_speaker_at_a_time = true;
+        rig.gate.update_settings(settings);
+        let (alex, sam) = (voice_at(1000), voice_at(2000));
+        for _ in 0..20 {
+            rig.gate
+                .process_tick(&Frame::silence(), &[(7, &alex), (8, &sam)]);
+        }
+        rig.gate
+            .phrase_applied(PhraseKind::Activate, "luna", 7, Duration::from_millis(100));
+        assert_eq!(rig.gate.status().floor_waiting, 1, "Sam waits");
+        rig.gate.process_tick(&Frame::silence(), &[(7, &alex)]);
+        let levels = passed_levels(&rig);
+        assert!(
+            !levels.is_empty() && levels.iter().all(|level| *level == 1000),
+            "{levels:?}"
         );
     }
 

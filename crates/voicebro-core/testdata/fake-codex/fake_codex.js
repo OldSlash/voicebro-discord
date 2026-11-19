@@ -16,7 +16,10 @@
 // interim agent message and the final one as `item/agentMessage/delta` pieces, each item
 // completed, and `turn/completed`; `turn/interrupt` ends the running turn as `interrupted`.
 // `fake/turnDelay` (params `{ms}`) waits that long between the pieces; `fake/lastTurnStart`
-// returns the params of the last `turn/start`.
+// returns the params of the last `turn/start`. `turn/steer` (change `speaker-turns`) accepts
+// a question while that turn runs and is refused with Codex CLI 0.167.0's message once it
+// has ended; `fake/steers` returns the questions steered so far, and `fake/refuseNextSteer`
+// refuses the next steer as if its turn had just ended.
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
   console.log("codex-cli 0.0.0-fake");
@@ -69,6 +72,8 @@ const delegate = (threadId, outcome) => {
 
 let turnDelay = 0;
 let lastTurnStart = null;
+const steers = [];
+let refuseNextSteer = false;
 const running = new Map();
 // A text turn: the question echoed in the answer, streamed in pieces.
 const textTurn = (threadId, turnId, question) => {
@@ -179,6 +184,25 @@ lines.on("line", (line) => {
       }
       break;
     }
+    case "turn/steer": {
+      const params = message.params || {};
+      const state = running.get(params.threadId);
+      if (!state || state.turnId !== params.expectedTurnId || refuseNextSteer) {
+        refuseNextSteer = false;
+        fail(message.id, "no active turn to steer");
+        break;
+      }
+      steers.push(((params.input || [])[0] || {}).text || "");
+      reply(message.id, { turnId: state.turnId });
+      break;
+    }
+    case "fake/steers":
+      reply(message.id, steers);
+      break;
+    case "fake/refuseNextSteer":
+      refuseNextSteer = true;
+      reply(message.id, {});
+      break;
     case "fake/turnDelay":
       turnDelay = (message.params || {}).ms || 0;
       reply(message.id, {});

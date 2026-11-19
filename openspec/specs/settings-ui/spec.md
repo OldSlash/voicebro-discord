@@ -13,9 +13,9 @@ size) and Diagnostics (performance monitoring, memory measurement, verbose log, 
 codec). The Config tab holds the bot's settings: "Discord and Codex" (token, guild id, Codex
 executable), then Access (who the assistant hears, privacy policy URL); Audio (both gains,
 earcons and their volume); Assistant (session mode, idle timeout, wake engine and model,
-activation and deactivation phrases); Codex (refresh the lists at start, model, reasoning
-effort, voice, answer handoff, speaker labels, save chat history, post answers to Discord
-and its channel, instructions); Hotkey (mute), in that order.
+activation and deactivation phrases, one speaker at a time); Codex (refresh the lists at
+start, model, reasoning effort, voice, answer handoff, speaker labels, save chat history,
+post answers to Discord and its channel, instructions); Hotkey (mute), in that order.
 
 #### Scenario: Field for each setting
 - **WHEN** the Settings and Config tabs are opened
@@ -440,10 +440,11 @@ expanded by default.
 
 ### Requirement: Switches are large
 Every on/off setting SHALL be a switch control with an "On" or "Off" label next to it:
-Earcons, Save chat history, Refresh the lists at start, Memory measurement, Verbose log,
-and Performance monitoring both in the Diagnostics card and on the Performance tab. The
-switch SHALL be at least 44 × 24 px, SHALL toggle when the switch or its On/Off label is
-clicked, SHALL toggle with Space when focused, and SHALL show a visible focus mark.
+Earcons, One speaker at a time, Save chat history, Refresh the lists at start, Memory
+measurement, Verbose log, and Performance monitoring both in the Diagnostics card and on
+the Performance tab. The switch SHALL be at least 44 × 24 px, SHALL toggle when the switch
+or its On/Off label is clicked, SHALL toggle with Space when focused, and SHALL show a
+visible focus mark.
 
 #### Scenario: Size
 - **WHEN** the Diagnostics card is shown at the default font size
@@ -683,3 +684,18 @@ second. When the records file could not be read, the card SHALL say so.
 #### Scenario: Unreadable file
 - **WHEN** the app started with a records file it could not read
 - **THEN** the card says the records could not be read and lists nobody
+
+### Requirement: One speaker at a time in the Assistant card
+The Assistant card SHALL hold the switch "One speaker at a time", off by default and saved
+on change, in both assistant modes. Its help line SHALL say that while on the assistant
+hears one person at a time in the voice mode (others wait and follow), that a question
+during an answer waits instead of stopping it in the Whisper mode, and that the
+deactivation phrase and Mute still stop an answer.
+
+#### Scenario: First start
+- **WHEN** the window opens with a settings file without `assistant.one_speaker_at_a_time`
+- **THEN** the Assistant card shows the switch off
+
+#### Scenario: Turned on
+- **WHEN** the user clicks the switch
+- **THEN** it reads "On" and `assistant.one_speaker_at_a_time` is saved as `true` without a button

@@ -68,6 +68,16 @@ struct Running {
     /// No piece of this turn was queued yet: the first one marks the turn on the player.
     first_piece: bool,
     last_agent_text: Option<String>,
+    /// The questions added to this turn with `turn/steer` (change `speaker-turns`, D6'),
+    /// after `question`; the posted answer's task names them all.
+    added: Vec<String>,
+}
+
+/// A question that could not join the running turn and waits for the next one (D6').
+struct Waiting {
+    /// As sent to Codex (with the speaker's name).
+    text: String,
+    question: UserText,
 }
 
 #[derive(Default)]
@@ -84,6 +94,8 @@ struct TextState {
     last_user_text: Option<String>,
     last_assistant_text: Option<String>,
     last_error: Option<String>,
+    /// Questions waiting for the next turn, in order (one speaker at a time only).
+    waiting: Vec<Waiting>,
 }
 
 pub struct CodexTextSession {
@@ -253,6 +265,7 @@ impl CodexTextSession {
     /// to interrupt on the server.
     fn stop_running(&self, state: &mut TextState) -> Option<String> {
         self.player.flush();
+        state.waiting.clear();
         let running = state.running.take()?;
         state.timings.remove(&running.number);
         let id = running.turn_id?;
@@ -374,6 +387,8 @@ impl CodexTextSession {
                 let Some(running) = finished else {
                     return;
                 };
+                // Questions that waited for this turn start the next one (D6').
+                self.start_waiting();
                 if status == "completed" {
                     if let Some(text) = running.last_agent_text.filter(|text| !text.is_empty()) {
                         {
@@ -381,9 +396,14 @@ impl CodexTextSession {
                                 self.conversation.lock().expect("conversation lock");
                             conversation.push("assistant", text.clone());
                         }
+                        // Every question of the turn, the added ones too (task 5.3).
+                        let task = std::iter::once(running.question)
+                            .chain(running.added)
+                            .collect::<Vec<_>>()
+                            .join(" / ");
                         self.ports.answers.send(AgentAnswer {
                             guild: self.guild,
-                            task: Some(running.question),
+                            task: Some(task),
                             text,
                         });
                     }
@@ -475,6 +495,136 @@ impl CodexTextSession {
                 self.events.log(format!("Codex {}: {message}", self.guild));
                 self.errors.report("codex", Some(message));
             }
+        }
+    }
+
+    /// Makes `question` the running turn and starts it on the server, after interrupting
+    /// `previous`. Returns the turn's number.
+    fn begin_turn(&self, text: String, question: UserText, previous: Option<String>) -> u64 {
+        let number = {
+            let mut state = self.lock();
+            state.turns += 1;
+            let number = state.turns;
+            state.running = Some(Running {
+                number,
+                turn_id: None,
+                question: question.text.clone(),
+                language: question.language.clone(),
+                epoch: self.player.epoch(),
+                splitter: SentenceSplitter::new(),
+                first_piece: true,
+                last_agent_text: None,
+                added: Vec::new(),
+            });
+            state.timings.insert(
+                number,
+                Timing {
+                    speech_end: question.speech_end,
+                    text_at: question.text_at,
+                    first_words_at: None,
+                    audio_seconds: question.audio_seconds,
+                    model: question.model.clone(),
+                    device: question.device.clone(),
+                    latency: Arc::clone(&question.latency),
+                },
+            );
+            state.last_user_text = Some(question.text.clone());
+            number
+        };
+        if let Some(session) = self.me.upgrade() {
+            self.handle.spawn(async move {
+                session.start_turn(number, previous, text).await;
+            });
+        }
+        number
+    }
+
+    /// Adds `text` to turn `number` with `turn/steer` once its start has returned (D6').
+    /// When the turn has ended or refuses it, the question waits for the next turn, or
+    /// starts it when no turn runs any more.
+    async fn steer_turn(&self, number: u64, text: String, question: UserText) {
+        let refusal = {
+            // The start of the turn holds this lock until its id is known.
+            let _one = self.turn_lock.lock().await;
+            let id = self
+                .lock()
+                .running
+                .as_ref()
+                .filter(|running| running.number == number)
+                .and_then(|running| running.turn_id.clone());
+            match id {
+                Some(id) => self
+                    .server
+                    .request(
+                        "turn/steer",
+                        json!({
+                            "threadId": self.thread_id,
+                            "expectedTurnId": id,
+                            "input": [{ "type": "text", "text": text }],
+                        }),
+                    )
+                    .await
+                    .err(),
+                None => Some("the turn has ended".to_owned()),
+            }
+        };
+        let Some(refusal) = refusal else {
+            return;
+        };
+        self.events.log(format!(
+            "Codex {}: the question could not join turn {number} ({refusal}); it waits for the next turn",
+            self.guild
+        ));
+        let start_now = {
+            let mut state = self.lock();
+            if let Some(running) = state
+                .running
+                .as_mut()
+                .filter(|running| running.number == number)
+            {
+                if let Some(index) = running
+                    .added
+                    .iter()
+                    .rposition(|added| *added == question.text)
+                {
+                    running.added.remove(index);
+                }
+            }
+            if state.running.is_some() {
+                state.waiting.push(Waiting { text, question });
+                None
+            } else {
+                Some((text, question))
+            }
+        };
+        if let Some((text, question)) = start_now {
+            self.begin_turn(text, question, None);
+        }
+    }
+
+    /// Starts the next turn with every question that waited, in order (D6').
+    fn start_waiting(&self) {
+        let waiting = std::mem::take(&mut self.lock().waiting);
+        let mut waiting = waiting.into_iter();
+        let Some(first) = waiting.next() else {
+            return;
+        };
+        let rest: Vec<Waiting> = waiting.collect();
+        let text = std::iter::once(first.text)
+            .chain(rest.iter().map(|waiting| waiting.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let number = self.begin_turn(text, first.question, None);
+        if let Some(running) = self
+            .lock()
+            .running
+            .as_mut()
+            .filter(|running| running.number == number)
+        {
+            running.added = rest
+                .into_iter()
+                .map(|waiting| waiting.question.text)
+                .collect();
         }
     }
 
@@ -580,42 +730,44 @@ impl AssistantSession for CodexTextSession {
             .lock()
             .expect("conversation lock")
             .push("user", text.clone());
-        let (number, previous) = {
-            let mut state = self.lock();
-            let previous = self.stop_running(&mut state);
-            state.turns += 1;
-            let number = state.turns;
-            state.running = Some(Running {
-                number,
-                turn_id: None,
-                question: question.text.clone(),
-                language: question.language.clone(),
-                epoch: self.player.epoch(),
-                splitter: SentenceSplitter::new(),
-                first_piece: true,
-                last_agent_text: None,
-            });
-            state.timings.insert(
-                number,
-                Timing {
-                    speech_end: question.speech_end,
-                    text_at: question.text_at,
-                    first_words_at: None,
-                    audio_seconds: question.audio_seconds,
-                    model: question.model.clone(),
-                    device: question.device.clone(),
-                    latency: Arc::clone(&question.latency),
-                },
-            );
-            state.last_user_text = Some(question.text.clone());
-            (number, previous)
-        };
-        let Some(session) = self.me.upgrade() else {
+        let one_at_a_time = self
+            .config
+            .read()
+            .expect("codex config lock")
+            .one_speaker_at_a_time;
+        if one_at_a_time {
+            // Change `speaker-turns`, D6': nothing is interrupted. A running turn takes the
+            // question with `turn/steer`; with none running it starts the next turn, and
+            // its answer is spoken after the current one.
+            let added_to = {
+                let mut state = self.lock();
+                state.last_user_text = Some(question.text.clone());
+                state.running.as_mut().map(|running| {
+                    running.added.push(question.text.clone());
+                    running.number
+                })
+            };
+            if let Some(number) = added_to {
+                self.events.log(format!(
+                    "Codex {}: question added to turn {number}",
+                    self.guild
+                ));
+                let Some(session) = self.me.upgrade() else {
+                    return;
+                };
+                self.handle.spawn(async move {
+                    session.steer_turn(number, text, question).await;
+                });
+                return;
+            }
+            self.begin_turn(text, question, None);
             return;
+        }
+        let previous = {
+            let mut state = self.lock();
+            self.stop_running(&mut state)
         };
-        self.handle.spawn(async move {
-            session.start_turn(number, previous, text).await;
-        });
+        self.begin_turn(text, question, previous);
     }
 
     fn working(&self) -> bool {

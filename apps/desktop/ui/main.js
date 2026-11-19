@@ -1959,6 +1959,8 @@
     if (gate.session_wanted) parts.push(gate.assistant_ready ? "assistant ready" : "assistant connecting");
     if (gate.last_wake_phrase) parts.push(`last phrase “${gate.last_wake_phrase}”`);
     if (gate.replay_held) parts.push(`${gate.replay_held} frames held`);
+    // One speaker at a time (change `speaker-turns`): who waits for the floor.
+    if (gate.floor_waiting) parts.push(`${gate.floor_waiting} waiting to speak`);
     return parts.join(", ");
   }
   function levelText(reading) {
@@ -2411,6 +2413,8 @@
       ["Reported loss, %", decimal(delivery.last_reported_loss_percent)],
       ["Reported jitter, ms", decimal(delivery.last_reported_jitter_ms)],
       ["Frames the assistant missed", number(gates.reduce((sum, gate) => sum + (gate.counters?.input_dropped || 0), 0))],
+      ["Floor passes (one speaker at a time)", number(gates.reduce((sum, gate) => sum + (gate.counters?.floor_passes || 0), 0))],
+      ["Waiting speech dropped, frames", number(gates.reduce((sum, gate) => sum + (gate.counters?.floor_dropped || 0), 0))],
       ["Wake chunks dropped", number(status.wake?.dropped_chunks)],
       ["Input peak, %", number((levels.input?.peak || 0) * 100)],
       ["Input clips", number(levels.input?.clips)],
