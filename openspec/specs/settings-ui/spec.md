@@ -11,11 +11,11 @@ Every field of the settings document SHALL have a control, split between the Set
 Config tabs. The Settings tab holds the window's own settings: Appearance (theme, font
 size) and Diagnostics (performance monitoring, memory measurement, verbose log, Opus
 codec). The Config tab holds the bot's settings: "Discord and Codex" (token, guild id, Codex
-executable), then Access (owner only); Audio (both gains, earcons and their volume);
-Assistant (session mode, idle timeout, wake engine and model, activation and deactivation
-phrases); Codex (refresh the lists at start, model, reasoning effort, voice, answer handoff,
-speaker labels, save chat history, post answers to Discord and its channel, instructions);
-Hotkey (mute), in that order.
+executable), then Access (who the assistant hears, privacy policy URL); Audio (both gains,
+earcons and their volume); Assistant (session mode, idle timeout, wake engine and model,
+activation and deactivation phrases); Codex (refresh the lists at start, model, reasoning
+effort, voice, answer handoff, speaker labels, save chat history, post answers to Discord
+and its channel, instructions); Hotkey (mute), in that order.
 
 #### Scenario: Field for each setting
 - **WHEN** the Settings and Config tabs are opened
@@ -439,12 +439,11 @@ expanded by default.
 - **THEN** the Whisper tab opens with the Voice card collapsed
 
 ### Requirement: Switches are large
-Every on/off setting SHALL be a switch control with an "On" or "Off" label next to it: Only
-my Discord account, Earcons, Save chat history, Refresh the lists at start, Memory
-measurement, Verbose log, and Performance monitoring both in the Diagnostics card and on the
-Performance tab. The switch SHALL be at least 44 × 24 px, SHALL toggle when the switch or
-its On/Off label is clicked, SHALL toggle with Space when focused, and SHALL show a visible
-focus mark.
+Every on/off setting SHALL be a switch control with an "On" or "Off" label next to it:
+Earcons, Save chat history, Refresh the lists at start, Memory measurement, Verbose log,
+and Performance monitoring both in the Diagnostics card and on the Performance tab. The
+switch SHALL be at least 44 × 24 px, SHALL toggle when the switch or its On/Off label is
+clicked, SHALL toggle with Space when focused, and SHALL show a visible focus mark.
 
 #### Scenario: Size
 - **WHEN** the Diagnostics card is shown at the default font size
@@ -526,23 +525,32 @@ that the names appear once the bot is connected.
 - **THEN** the list shows that id as the chosen channel and a note that the channel names appear once the bot is connected
 
 ### Requirement: Access card
-The Config tab SHALL have an Access card after "Discord and Codex" with the switch "Only my
-Discord account", saved on change, and the link state: the owner's Discord name, or "not
-linked" with the reason when a link ended. Its help line SHALL say that while on only the
-linked account's voice reaches the assistant, that everyone can still use the bot's
-commands and hears the answers, and that a change applies at once.
+The Config tab SHALL have an Access card after "Discord and Codex" with the list "Who the
+assistant hears" (Everyone, People who agreed, Only my Discord account), the field "Privacy
+policy URL", both saved on change, and the link state: the owner's Discord name, or "not
+linked" with the reason when a link ended. The list's help line SHALL say what each choice
+lets through, that everyone can still use the bot's commands and hears the answers, and
+that a change applies at once.
 
 #### Scenario: First start
-- **WHEN** the window opens with a settings file without `discord.owner_only` and no link file
-- **THEN** the Access card shows the switch off, "not linked" and a Link button
+- **WHEN** the window opens with a settings file without `discord.access` or `discord.owner_only` and no link file
+- **THEN** the Access card shows "Everyone", an empty privacy policy URL, "not linked" and a Link button
 
 #### Scenario: Linked
 - **WHEN** an owner is linked
 - **THEN** the card shows the owner's Discord name and an Unlink button, and no Link code
 
 #### Scenario: Switch on without a link
-- **WHEN** the user turns the switch on while no owner is linked
+- **WHEN** the user picks "Only my Discord account" while no owner is linked
 - **THEN** the setting is saved and the card says that the assistant hears nobody until an account is linked
+
+#### Scenario: Agreed mode without a policy
+- **WHEN** the user picks "People who agreed" while the privacy policy URL is empty
+- **THEN** the setting is saved and the card warns that `/optin` is refused until a privacy policy URL is set
+
+#### Scenario: A wrong URL
+- **WHEN** the user types `example.org/privacy` into the privacy policy URL and leaves the field
+- **THEN** nothing is saved and the field says the URL must start with `https://`
 
 ### Requirement: Link code in the Access card
 While a code is waiting, the Access card SHALL show the code, the command to type with it,
@@ -657,3 +665,21 @@ apply to the realtime voice mode only.
 #### Scenario: Voice help
 - **WHEN** the user reads the help line of the Codex card's Voice field
 - **THEN** it says the field applies to the realtime voice mode only
+
+### Requirement: People who agreed in the Access card
+The Access card SHALL list every person with a consent record, by Discord name with the
+time they agreed and a Remove button, in every access mode, and SHALL say "Nobody yet"
+when the list is empty. The list SHALL follow `/optin`, `/optout` and Remove within a
+second. When the records file could not be read, the card SHALL say so.
+
+#### Scenario: A new record
+- **WHEN** a member presses "I agree" in Discord while the window is open
+- **THEN** the card lists their name and time within a second
+
+#### Scenario: Empty list
+- **WHEN** nobody has a record
+- **THEN** the list says "Nobody yet" and that people agree with `/optin` in Discord
+
+#### Scenario: Unreadable file
+- **WHEN** the app started with a records file it could not read
+- **THEN** the card says the records could not be read and lists nobody

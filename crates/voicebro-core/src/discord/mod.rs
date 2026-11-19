@@ -159,11 +159,37 @@ pub trait VoiceHost: Send + Sync {
     fn codec_failures(&self, _guild: u64) -> CodecFailures {
         CodecFailures::none()
     }
-    /// Whose voice passes (change `owner-only-access`), read once per tick:
-    /// [`crate::owner::FILTER_EVERYONE`], [`crate::owner::FILTER_NOBODY`] or the owner's
-    /// Discord user id.
-    fn owner_filter(&self) -> u64 {
-        crate::owner::FILTER_EVERYONE
+    /// Whose voice passes (change `voice-consent`, design D4), read once per tick.
+    fn voice_filter(&self) -> Arc<crate::access::VoiceFilter> {
+        Arc::new(crate::access::VoiceFilter::Everyone)
+    }
+    /// `discord.access`, for the replies of `/join`, `/status` and `/optin`.
+    fn access_mode(&self) -> crate::settings::AccessMode {
+        crate::settings::AccessMode::Everyone
+    }
+    /// `discord.privacy_url`; empty when none is published.
+    fn privacy_url(&self) -> String {
+        String::new()
+    }
+    /// Who receives the speech, as the consent text names it.
+    fn consent_provider(&self) -> &'static str {
+        crate::consent::provider_name("codex")
+    }
+    /// The consent record of `user`, if any.
+    fn consent_record(&self, _user: u64) -> Option<crate::consent::ConsentRecord> {
+        None
+    }
+    /// "I agree" pressed by `user` under the consent text of `version`.
+    fn agree(&self, _user: u64, _name: &str, _version: u32) -> crate::consent::AgreeOutcome {
+        crate::consent::AgreeOutcome::OldText
+    }
+    /// `/optout` from `user`.
+    fn withdraw(&self, _user: u64) -> crate::consent::WithdrawOutcome {
+        crate::consent::WithdrawOutcome::NothingToRemove
+    }
+    /// The names of `people` (account id, name) whose voice the filter lets through.
+    fn passing_names(&self, people: &[(u64, String)]) -> Vec<String> {
+        people.iter().map(|(_, name)| name.clone()).collect()
     }
     /// A `/link` from Discord: `user` is the id Discord put in the interaction.
     fn complete_link(&self, _user: u64, _name: &str, _code: &str) -> crate::owner::CompleteOutcome {
@@ -172,7 +198,9 @@ pub trait VoiceHost: Send + Sync {
     /// Every 20 ms while the bot is in a channel: the mix and each speaker's own frame.
     fn on_tick(&self, guild: u64, mixed: &Frame, speakers: &[(u32, &[i16])]);
     fn set_speaker_name(&self, guild: u64, ssrc: u32, name: &str);
-    fn set_participants(&self, guild: u64, names: &[String]);
+    /// The people in the bot's channel (account id, name). Only the names the access
+    /// filter lets through reach the assistant (change `voice-consent`, design D6).
+    fn set_participants(&self, guild: u64, people: &[(u64, String)]);
     /// The bot joined a channel; `output` is where the assistant's audio goes.
     fn on_join(&self, guild: u64, output: OutputHandle);
     fn on_leave(&self, guild: u64);
@@ -496,7 +524,7 @@ mod tests {
     impl VoiceHost for NullHost {
         fn on_tick(&self, _: u64, _: &Frame, _: &[(u32, &[i16])]) {}
         fn set_speaker_name(&self, _: u64, _: u32, _: &str) {}
-        fn set_participants(&self, _: u64, _: &[String]) {}
+        fn set_participants(&self, _: u64, _: &[(u64, String)]) {}
         fn on_join(&self, _: u64, _: OutputHandle) {}
         fn on_leave(&self, _: u64) {}
         fn assistant_state(&self, _: u64) -> AssistantState {

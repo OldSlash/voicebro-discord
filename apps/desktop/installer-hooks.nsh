@@ -3,7 +3,8 @@
 ; VoiceBro keeps its data next to voicebro.exe, so Tauri's own "Delete the application
 ; data" step (which clears %APPDATA% and %LOCALAPPDATA%\<identifier>) does not reach it.
 ; With the box checked, and never during an update, this removes the app's data from the
-; install folder (the owner link `owner-link.bin` among it) and the Discord token from the
+; install folder (the owner link `owner-link.bin` and the consent records `consents.bin`
+; among it) and the Discord token from the
 ; Windows Credential Manager, then the folder itself once it is empty. Unchecked, the data
 ; stays for a later install.
 
@@ -36,6 +37,8 @@
     Delete "$INSTDIR\settings.json.tmp"
     Delete "$INSTDIR\owner-link.bin"
     Delete "$INSTDIR\owner-link.bin.tmp"
+    Delete "$INSTDIR\consents.bin"
+    Delete "$INSTDIR\consents.bin.tmp"
     Delete "$INSTDIR\.voicebro-write-test"
     nsExec::Exec 'cmdkey /delete:VoiceBro/discord_token'
     Pop $0

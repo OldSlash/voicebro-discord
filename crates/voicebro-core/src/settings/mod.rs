@@ -294,30 +294,129 @@ impl Default for UiSettings {
     }
 }
 
+/// Whose voice reaches the wake word and the assistant (change `voice-consent`, design D1).
+/// The commands stay open to everyone in every mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", try_from = "String")]
+pub enum AccessMode {
+    /// Every member in the bot's voice channel.
+    #[default]
+    Everyone,
+    /// The linked owner and every person with a consent record ([`crate::consent`]).
+    Agreed,
+    /// Only the linked owner (change `owner-only-access`).
+    Owner,
+}
+
+impl AccessMode {
+    pub const ALL: [AccessMode; 3] = [AccessMode::Everyone, AccessMode::Agreed, AccessMode::Owner];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            AccessMode::Everyone => "everyone",
+            AccessMode::Agreed => "agreed",
+            AccessMode::Owner => "owner",
+        }
+    }
+}
+
+impl TryFrom<String> for AccessMode {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.name() == value)
+            .ok_or_else(|| {
+                format!(
+                    "discord.access: «{value}» is not an access mode; use one of everyone, agreed, owner"
+                )
+            })
+    }
+}
+
+/// The longest `discord.privacy_url` the settings take.
+pub const MAX_PRIVACY_URL_LEN: usize = 512;
+
 /// The bot always connects at start when a token is stored; an `auto_connect` field in an
 /// older file is ignored and gone after the next save.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "DiscordSettingsFile")]
 pub struct DiscordSettings {
     /// A server whose slash commands are also registered directly, so they appear there at
     /// once. They are always registered globally as well.
     pub guild_id: String,
-    /// Only the linked owner's voice reaches the wake word and the assistant (change
-    /// `owner-only-access`); off by default. The owner is not stored here: the link lives in
-    /// its own encrypted file ([`crate::owner`]). The commands stay open to everyone.
-    #[serde(deserialize_with = "owner_only_flag")]
-    pub owner_only: bool,
+    /// Whose voice reaches the wake word and the assistant (change `voice-consent`);
+    /// everyone by default. Neither the owner nor the consent records are stored here: they
+    /// live in their own encrypted files ([`crate::owner`], [`crate::consent`]).
+    pub access: AccessMode,
+    /// The operator's privacy policy, shown by `/privacy` and in the `/optin` text: empty or
+    /// an `https://` URL, stored trimmed.
+    pub privacy_url: String,
 }
 
-/// `discord.owner_only` takes only `true` or `false`; anything else is refused with the
-/// field's path, as the lists of fixed values are.
-fn owner_only_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+/// `discord` as a file holds it: `owner_only` of builds 1.0.2 to 1.1.0 is read once to set
+/// the access mode when `access` is missing, and never written again (design D1).
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct DiscordSettingsFile {
+    guild_id: String,
+    access: Option<AccessMode>,
+    #[serde(deserialize_with = "owner_only_flag")]
+    owner_only: Option<bool>,
+    privacy_url: String,
+}
+
+impl From<DiscordSettingsFile> for DiscordSettings {
+    fn from(file: DiscordSettingsFile) -> Self {
+        let access = file.access.unwrap_or(if file.owner_only == Some(true) {
+            AccessMode::Owner
+        } else {
+            AccessMode::Everyone
+        });
+        Self {
+            guild_id: file.guild_id,
+            access,
+            privacy_url: file.privacy_url.trim().to_owned(),
+        }
+    }
+}
+
+/// `discord.owner_only` of an older file takes only `true` or `false`; anything else is
+/// refused with the field's path, as the lists of fixed values are.
+fn owner_only_flag<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<bool>, D::Error> {
     match Value::deserialize(deserializer)? {
-        Value::Bool(on) => Ok(on),
+        Value::Bool(on) => Ok(Some(on)),
         other => Err(serde::de::Error::custom(format!(
             "discord.owner_only must be true or false, not {other}"
         ))),
     }
+}
+
+/// Why `url` is not a valid `discord.privacy_url`, if it is not: empty, or `https://` with a
+/// host, no spaces, at most [`MAX_PRIVACY_URL_LEN`] characters.
+pub fn privacy_url_problem(url: &str) -> Option<String> {
+    if url.is_empty() {
+        return None;
+    }
+    if url.chars().count() > MAX_PRIVACY_URL_LEN {
+        return Some(format!(
+            "the URL is longer than {MAX_PRIVACY_URL_LEN} characters"
+        ));
+    }
+    let Some(rest) = url.strip_prefix("https://") else {
+        return Some("the URL must start with https://".to_owned());
+    };
+    if url.chars().any(char::is_whitespace) {
+        return Some("the URL must not contain spaces".to_owned());
+    }
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if host.is_empty() {
+        return Some("the URL has no host after https://".to_owned());
+    }
+    None
 }
 
 impl DiscordSettings {
@@ -730,6 +829,9 @@ impl Settings {
                 "a server id is digits only; leave it empty to register commands globally",
             ));
         }
+        if let Some(problem) = privacy_url_problem(&self.discord.privacy_url) {
+            return Err(invalid("discord.privacy_url", problem));
+        }
         let timeout = self.session.idle_timeout_seconds;
         if timeout != 0 && !(5..=3600).contains(&timeout) {
             return Err(invalid(
@@ -997,14 +1099,16 @@ impl Settings {
 
     /// Which top-level sections differ between two documents. The answer posting fields of
     /// `assistant` count as their own part, `answers`, which nothing has to apply: the
-    /// answers read them when they arrive. `discord.owner_only` is its own part, `owner`,
-    /// which only sets the voice filter.
+    /// answers read them when they arrive. `discord.access` and `discord.privacy_url` are
+    /// their own part, `owner`, which only sets the voice filter and the replies.
     pub fn changed_sections(&self, other: &Settings) -> Vec<&'static str> {
         let mut changed = Vec::new();
         if self.discord.guild_id != other.discord.guild_id {
             changed.push("discord");
         }
-        if self.discord.owner_only != other.discord.owner_only {
+        if (self.discord.access, &self.discord.privacy_url)
+            != (other.discord.access, &other.discord.privacy_url)
+        {
             changed.push("owner");
         }
         if self.session != other.session {
@@ -1383,36 +1487,120 @@ mod tests {
         );
     }
 
-    /// Change `owner-only-access`, scenarios "Older file" and "Not a boolean": a 1.0.1 file
-    /// loads with the mode off and the next save writes it; a change of it is the `owner`
-    /// part only.
+    /// Change `voice-consent`, requirement "Access mode setting": everyone by default, the
+    /// three names only, and a change of it is the `owner` part only.
     #[test]
-    fn owner_only_defaults_to_off_and_is_its_own_part() {
+    fn access_defaults_to_everyone_and_is_its_own_part() {
+        assert_eq!(Settings::default().discord.access, AccessMode::Everyone);
         let older: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
-        assert!(!older.discord.owner_only);
+        assert_eq!(
+            older.discord.access,
+            AccessMode::Everyone,
+            "1.0.1: neither field"
+        );
         let written = serde_json::to_value(&older).unwrap();
         assert_eq!(
-            written["discord"]["owner_only"], false,
+            written["discord"]["access"], "everyone",
             "the next save writes it"
         );
+        assert!(written["discord"].get("owner_only").is_none());
 
-        let on = older
-            .with_patch(&json!({ "discord": { "owner_only": true } }))
+        let agreed = older
+            .with_patch(&json!({ "discord": { "access": "agreed" } }))
             .unwrap();
-        on.validate().expect("a boolean is valid");
-        assert!(on.discord.owner_only);
-        assert_eq!(older.changed_sections(&on), vec!["owner"]);
+        agreed.validate().expect("a known mode is valid");
+        assert_eq!(agreed.discord.access, AccessMode::Agreed);
+        assert_eq!(older.changed_sections(&agreed), vec!["owner"]);
 
         let error = older
-            .with_patch(&json!({ "discord": { "owner_only": "yes" } }))
+            .with_patch(&json!({ "discord": { "access": "friends" } }))
             .unwrap_err()
             .to_string();
-        assert!(error.contains("owner_only"), "{error}");
+        assert!(
+            error.contains("discord.access") && error.contains("everyone, agreed, owner"),
+            "{error}"
+        );
 
         let guild = older
             .with_patch(&json!({ "discord": { "guild_id": "1091401169441656933" } }))
             .unwrap();
         assert_eq!(older.changed_sections(&guild), vec!["discord"]);
+    }
+
+    /// Requirement "The owner-only switch of older files": `owner_only: true` of 1.1.0 loads
+    /// as `owner` and is never written again; `access` decides when both are there.
+    #[test]
+    fn owner_only_of_older_files_becomes_the_access_mode() {
+        let on: Settings = serde_json::from_str(
+            r#"{ "version": 2, "discord": { "guild_id": "", "owner_only": true } }"#,
+        )
+        .unwrap();
+        assert_eq!(on.discord.access, AccessMode::Owner);
+        let written = serde_json::to_value(&on).unwrap();
+        assert_eq!(written["discord"]["access"], "owner");
+        assert!(written["discord"].get("owner_only").is_none(), "{written}");
+
+        let off: Settings =
+            serde_json::from_str(r#"{ "discord": { "owner_only": false } }"#).unwrap();
+        assert_eq!(off.discord.access, AccessMode::Everyone);
+
+        let both: Settings =
+            serde_json::from_str(r#"{ "discord": { "owner_only": true, "access": "agreed" } }"#)
+                .unwrap();
+        assert_eq!(both.discord.access, AccessMode::Agreed, "access decides");
+
+        let error = serde_json::from_str::<Settings>(r#"{ "discord": { "owner_only": "yes" } }"#)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("discord.owner_only"), "{error}");
+    }
+
+    /// Requirement "Privacy policy URL setting": empty or `https://` with a host, trimmed, at
+    /// most 512 characters; its own `owner` part.
+    #[test]
+    fn privacy_url_is_https_or_empty() {
+        let base = Settings::default();
+        assert!(base.discord.privacy_url.is_empty());
+        base.validate().expect("empty is valid");
+
+        let set = base
+            .with_patch(
+                &json!({ "discord": { "privacy_url": " https://example.org/voicebro-privacy " } }),
+            )
+            .unwrap();
+        set.validate().expect("https with a host is valid");
+        assert_eq!(
+            set.discord.privacy_url,
+            "https://example.org/voicebro-privacy"
+        );
+        assert_eq!(base.changed_sections(&set), vec!["owner"]);
+
+        for (url, words) in [
+            ("http://example.org/privacy", "https://"),
+            ("example.org/privacy", "https://"),
+            ("https:///privacy", "no host"),
+            ("https://example.org/my privacy", "spaces"),
+        ] {
+            let bad = base
+                .with_patch(&json!({ "discord": { "privacy_url": url } }))
+                .unwrap();
+            let error = bad.validate().unwrap_err();
+            assert_eq!(error.field, "discord.privacy_url", "{url}");
+            assert!(error.to_string().contains(words), "{url}: {error}");
+        }
+        let long = format!("https://example.org/{}", "a".repeat(MAX_PRIVACY_URL_LEN));
+        let bad = base
+            .with_patch(&json!({ "discord": { "privacy_url": long } }))
+            .unwrap();
+        assert_eq!(bad.validate().unwrap_err().field, "discord.privacy_url");
+        let longest = format!(
+            "https://example.org/{}",
+            "a".repeat(MAX_PRIVACY_URL_LEN - "https://example.org/".len())
+        );
+        let ok = base
+            .with_patch(&json!({ "discord": { "privacy_url": longest } }))
+            .unwrap();
+        ok.validate().expect("512 characters are valid");
     }
 
     #[test]

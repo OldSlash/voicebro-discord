@@ -391,12 +391,14 @@ pub(crate) async fn refresh_participants(shared: &Arc<Shared>, guild: GuildId) {
                 return;
             }
             session.participants = names.clone();
-            session.people = people;
+            session.people = people.clone();
         } else {
             return;
         }
     }
-    shared.host.set_participants(guild.get(), &names);
+    // The panel and the window show everyone; the host passes on only the names the access
+    // filter lets through (change `voice-consent`, D6).
+    shared.host.set_participants(guild.get(), &people);
     shared
         .panels_dirty
         .store(true, std::sync::atomic::Ordering::Release);
@@ -491,7 +493,7 @@ mod tests {
         }
         fn on_tick(&self, _: u64, _: &Frame, _: &[(u32, &[i16])]) {}
         fn set_speaker_name(&self, _: u64, _: u32, _: &str) {}
-        fn set_participants(&self, _: u64, _: &[String]) {}
+        fn set_participants(&self, _: u64, _: &[(u64, String)]) {}
         fn on_join(&self, _: u64, _: OutputHandle) {
             self.joins.fetch_add(1, Ordering::Relaxed);
         }

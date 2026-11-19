@@ -205,6 +205,17 @@ fn owner_unlink(state: State<'_, AppState>) -> Result<bool, String> {
     state.runtime.unlink()
 }
 
+/// Remove next to a person in the Access card (change `voice-consent`): their consent
+/// record is deleted as by their `/optout`; nothing is sent to them. `id` is the Discord
+/// user id as a string. Returns the records left.
+#[tauri::command]
+fn consent_remove(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<voicebro_core::consent::ConsentStatus, String> {
+    state.runtime.consent_remove(&id)
+}
+
 #[tauri::command]
 async fn codex_models(state: State<'_, AppState>) -> Result<Vec<Value>, String> {
     let models = codex(&state)?.models().await?;
@@ -819,6 +830,7 @@ fn main() {
             owner_link_start,
             owner_link_cancel,
             owner_unlink,
+            consent_remove,
             capabilities,
             discord_text_channels,
             wake_models,

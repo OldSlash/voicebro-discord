@@ -134,7 +134,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const CARDS = ["discord", "access", "audio", "assistant", "local-voice", "codex", "hotkey"];
 const SETTINGS_CARDS = ["appearance", "diagnostics", "whisper"];
 const SWITCHES = [
-  ["config", "owner-only"], ["config", "earcons"], ["config", "codex-refresh-lists"], ["config", "save-chat-history"],
+  ["config", "earcons"], ["config", "codex-refresh-lists"], ["config", "save-chat-history"],
   ["settings", "diagnostics-performance"], ["settings", "diagnostics-memory"], ["settings", "diagnostics-verbose-log"],
   ["performance", "performance-monitoring"],
 ];
@@ -519,28 +519,95 @@ const scenarios = [
     expect(r.saves === 0, "the connection saved something");
   }],
 
-  // ---- Access: only my Discord account (change `owner-only-access`)
-  ["the Access card holds the switch and the link, with help lines", async () => {
+  // ---- Access: who the assistant hears (changes `owner-only-access` and `voice-consent`)
+  ["the Access card holds the mode, the policy URL, the link and the people who agreed, with help lines", async () => {
     await load();
     const r = await page(`
       const body = $("card-access-body");
       const fields = [...body.querySelectorAll("input, select, textarea, button")].map((node) => node.dataset.path || node.id);
-      return { fields, switchHelp: $("owner-only").closest("label").querySelector(".field-help").textContent,
-        linkHelp: $("owner-link").querySelector(".field-help:not(.warning-text):not(#owner-code-ended)").textContent };`);
-    expect(same(r.fields, ["discord.owner_only", "owner-link-start", "owner-link-cancel", "owner-unlink"]), `fields: ${r.fields}`);
-    expect(["linked Discord account", "/join", "hears the answers", "Applies at once", "Default: off"].every((part) => r.switchHelp.includes(part)), `help: ${r.switchHelp}`);
+      return { fields, options: [...$("access-mode").options].map((o) => [o.value, o.textContent]),
+        modeHelp: $("access-mode").closest("label").querySelector(".field-help").textContent,
+        urlHelp: $("privacy-url").closest("label").querySelector(".field-help").textContent,
+        linkHelp: $("owner-link").querySelector(".field-help:not(.warning-text):not(#owner-code-ended)").textContent,
+        listName: $("consent-list").querySelector(".field-name").textContent };`);
+    expect(same(r.fields, ["discord.access", "discord.privacy_url", "owner-link-start", "owner-link-cancel", "owner-unlink"]), `fields: ${r.fields}`);
+    expect(same(r.options, [["everyone", "Everyone"], ["agreed", "People who agreed (/optin)"], ["owner", "Only my Discord account"]]), `options: ${JSON.stringify(r.options)}`);
+    expect(["/optin", "/optout", "linked account", "/join", "hears the answers", "Applies at once", "Default: Everyone"].every((part) => r.modeHelp.includes(part)), `help: ${r.modeHelp}`);
+    expect(["https://", "PRIVACY-POLICY-TEMPLATE", "/privacy", "refused", "Developer Portal"].every((part) => r.urlHelp.includes(part)), `help: ${r.urlHelp}`);
     expect(["one-time code", "10 minutes", "/link", "encrypted"].every((part) => r.linkHelp.includes(part)), `help: ${r.linkHelp}`);
+    expect(r.listName === "People who agreed", r.listName);
   }],
-  ["first start: the switch is off, nothing is linked, and Link is offered", async () => {
+  ["first start: Everyone, no policy URL, nothing linked, nobody agreed, and Link is offered", async () => {
     await load("?fresh");
     const r = await page(`
       tab("config");
-      return { on: $("owner-only").checked, label: $("owner-only-label").textContent, state: $("owner-state").textContent,
+      return { mode: $("access-mode").value, url: $("privacy-url").value, state: $("owner-state").textContent,
         link: !$("owner-link-start").hidden, linkText: $("owner-link-start").textContent, unlink: !$("owner-unlink").hidden,
-        code: !$("owner-code").hidden, note: $("owner-note").textContent };`);
-    expect(!r.on && r.label === "Off", `switch ${JSON.stringify(r)}`);
+        code: !$("owner-code").hidden, note: $("owner-note").textContent, consentNote: $("consent-note").textContent,
+        people: $("consent-people").children.length, empty: !$("consent-empty").hidden, emptyText: $("consent-empty").textContent };`);
+    expect(r.mode === "everyone" && r.url === "", `mode ${JSON.stringify(r)}`);
     expect(r.state === "not linked" && r.link && r.linkText === "Link my Discord account", JSON.stringify(r));
-    expect(!r.unlink && !r.code && r.note === "", JSON.stringify(r));
+    expect(!r.unlink && !r.code && r.note === "" && r.consentNote === "", JSON.stringify(r));
+    expect(r.people === 0 && r.empty && r.emptyText.startsWith("Nobody yet"), JSON.stringify(r));
+  }],
+  ["People who agreed without a policy URL saves at once and warns that /optin is refused", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      const saves = calls("save_settings").length;
+      $("access-mode").value = "agreed"; $("access-mode").dispatchEvent(new Event("change")); await sleep(400);
+      return { stored: stored().discord.access, saves: calls("save_settings").length - saves, last: calls("save_settings").at(-1).args.patch,
+        note: $("consent-note").textContent, ownerNote: $("owner-note").textContent };`);
+    expect(r.stored === "agreed" && r.saves === 1 && same(r.last, { discord: { access: "agreed" } }), JSON.stringify(r));
+    expect(r.note.startsWith("No privacy policy URL: /optin is refused") && r.ownerNote === "", JSON.stringify(r));
+  }],
+  ["a privacy policy URL without https:// is not saved and the field says so; a good one clears the warning", async () => {
+    await load("?access=agreed");
+    const r = await page(`
+      tab("config");
+      const before = $("consent-note").textContent;
+      $("privacy-url").value = "example.org/privacy"; $("privacy-url").dispatchEvent(new Event("change")); await sleep(400);
+      const bad = { stored: stored().discord.privacy_url, message: document.querySelector('[data-for="privacy-url"]').textContent };
+      $("privacy-url").value = " https://example.org/privacy "; $("privacy-url").dispatchEvent(new Event("change")); await sleep(400);
+      return { before, bad, stored: stored().discord.privacy_url, shown: $("privacy-url").value, note: $("consent-note").textContent };`);
+    expect(r.before !== "", "the warning before a URL");
+    expect(r.bad.stored === "" && r.bad.message.includes("must start with https://"), JSON.stringify(r.bad));
+    expect(r.stored === "https://example.org/privacy" && r.shown === "https://example.org/privacy" && r.note === "", JSON.stringify(r));
+  }],
+  ["an /optin appears in the list within a second, and Remove deletes it without a message to the person", async () => {
+    await load("?access=agreed&privacy=https://example.org/p&consents=Alex");
+    const r = await page(`
+      tab("config");
+      await until(() => $("consent-people").children.length === 1, 2000);
+      const sent = Date.now();
+      const id = window.__mock.optin("Sam");
+      const shown = await until(() => $("consent-people").children.length === 2, 1000);
+      const ms = Date.now() - sent;
+      const rows = [...$("consent-people").children].map((li) => li.querySelector(".consent-name").textContent);
+      const row = [...$("consent-people").children].find((li) => li.dataset.id === id);
+      const time = row.querySelector(".consent-time").textContent;
+      row.querySelector("button").click();
+      await until(() => $("consent-people").children.length === 1, 2000);
+      return { shown, ms, rows, time, after: [...$("consent-people").children].map((li) => li.querySelector(".consent-name").textContent),
+        removes: calls("consent_remove").map((c) => c.args), records: window.__mock.consent().records.length, empty: !$("consent-empty").hidden };`);
+    expect(r.shown && r.ms <= 1000, `not shown within a second: ${JSON.stringify(r)}`);
+    expect(same(r.rows, ["Alex", "Sam"]) && r.time.startsWith("agreed "), JSON.stringify(r));
+    expect(same(r.after, ["Alex"]) && r.removes.length === 1 && r.records === 1 && !r.empty, JSON.stringify(r));
+  }],
+  ["an /optout leaves the list, and an unreadable records file is named", async () => {
+    await load("?consents=Alex");
+    const r = await page(`
+      tab("config");
+      await until(() => $("consent-people").children.length === 1, 2000);
+      const id = $("consent-people").children[0].dataset.id;
+      window.__mock.optout(id);
+      await until(() => $("consent-people").children.length === 0, 2000);
+      const empty = !$("consent-empty").hidden;
+      window.__mock.consentUnreadable();
+      await until(() => $("consent-unreadable").textContent !== "", 2000);
+      return { empty, unreadable: $("consent-unreadable").textContent };`);
+    expect(r.empty, "Nobody yet after the /optout");
+    expect(r.unreadable.startsWith("The consent records could not be read"), r.unreadable);
   }],
   ["linked: the owner's name and Unlink, which removes the link", async () => {
     await load("?owner=linked");
@@ -555,18 +622,18 @@ const scenarios = [
     expect(r.before.linkText === "Link another account", `link button: ${r.before.linkText}`);
     expect(r.after === "not linked" && !r.unlink && r.calls === 1, JSON.stringify(r));
   }],
-  ["the switch saves at once and, with nothing linked, says the assistant hears nobody", async () => {
+  ["Only my Discord account saves at once and, with nothing linked, says the assistant hears nobody", async () => {
     await load();
     const r = await page(`
       tab("config");
       const saves = calls("save_settings").length;
-      $("owner-only-label").click(); await sleep(400);
-      return { stored: stored().discord.owner_only, saves: calls("save_settings").length - saves, last: calls("save_settings").at(-1).args.patch,
-        label: $("owner-only-label").textContent, note: $("owner-note").textContent, feedback: $("config-autosave-feedback").textContent,
+      $("access-mode").value = "owner"; $("access-mode").dispatchEvent(new Event("change")); await sleep(400);
+      return { stored: stored().discord.access, saves: calls("save_settings").length - saves, last: calls("save_settings").at(-1).args.patch,
+        note: $("owner-note").textContent, feedback: $("config-autosave-feedback").textContent,
         saveButton: $("config-save").disabled };`);
-    expect(r.stored === true && r.saves === 1 && same(r.last, { discord: { owner_only: true } }), JSON.stringify(r));
-    expect(r.label === "On" && r.note === "No account is linked: the assistant hears nobody until you link one.", JSON.stringify(r));
-    expect(r.feedback === "Saved: Only my Discord account" && r.saveButton, `feedback ${r.feedback}`);
+    expect(r.stored === "owner" && r.saves === 1 && same(r.last, { discord: { access: "owner" } }), JSON.stringify(r));
+    expect(r.note === "No account is linked: the assistant hears nobody until you link one.", JSON.stringify(r));
+    expect(r.feedback === "Saved: Who the assistant hears" && r.saveButton, `feedback ${r.feedback}`);
   }],
   ["Link shows the code, the command and the countdown; Cancel ends it", async () => {
     await load();

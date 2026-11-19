@@ -321,6 +321,15 @@ input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-
 .owner-code[hidden] { display: none; }
 .owner-code code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 1.25em; letter-spacing: 0.06em; user-select: all; }
 .owner-countdown { color: var(--ink-dim); font-size: 0.88em; }
+/* The people who agreed (change `voice-consent`): one row per record, the name, the time
+   and Remove; the time gives way first on a narrow window. */
+.consent-people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.consent-people:empty { display: none; }
+.consent-people li { display: flex; align-items: center; gap: 10px; min-height: 32px; }
+.consent-name { font-weight: 600; overflow-wrap: anywhere; }
+.consent-time { color: var(--ink-dim); font-size: 0.88em; flex: 1 1 auto; min-width: 0; }
+.consent-people .button { margin-left: auto; }
+[hidden].field-help { display: none; }
 
 /* ---- Collapsible cards (Config tab): the title is the button; the body hides. */
 .collapsible > .card-heading,

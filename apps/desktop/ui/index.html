@@ -300,14 +300,16 @@
               </div>
             </article>
 
-            <!-- Change `owner-only-access`: only the linked account's voice reaches the
-                 assistant while the switch is on; the commands and the answers stay open.
-                 The link part is status (redrawn from it), the switch is a form field. -->
+            <!-- Changes `owner-only-access` and `voice-consent`: whose voice reaches the
+                 assistant (everyone, people who agreed with /optin, or only the linked
+                 account); the commands and the answers stay open. The list and the URL are
+                 form fields; the link and the people who agreed are status (redrawn from it). -->
             <div class="card settings-section collapsible" data-card="access">
               <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-access-body"><span class="chevron" aria-hidden="true"></span>Access</button></h2>
               <div class="card-body" id="card-access-body">
               <div class="form-grid">
-                <label>Only my Discord account <span class="switch-row"><input id="owner-only" type="checkbox" role="switch" class="switch" data-path="discord.owner_only" data-kind="bool"><span class="switch-state" id="owner-only-label">Off</span></span><small class="field-help">While on, only the voice of the linked Discord account reaches the wake word and the assistant, for a subscription that is yours alone. Everyone can still use /join, /leave, /status and the Mute button, and everyone hears the answers. Applies at once. Default: off.</small><small class="field-help warning-text" id="owner-note"></small><small class="field-message" data-for="owner-only"></small></label>
+                <label>Who the assistant hears<select id="access-mode" data-path="discord.access" data-kind="string"><option value="everyone">Everyone</option><option value="agreed">People who agreed (/optin)</option><option value="owner">Only my Discord account</option></select><small class="field-help">Everyone: every member in the bot's voice channel. People who agreed: your linked account and everyone who ran /optin in Discord and pressed "I agree"; /optout or Remove below takes them off. Only my Discord account: the linked account alone, for a subscription that is yours alone. Everyone can still use /join, /leave, /status and the Mute button, and everyone hears the answers. Applies at once. Default: Everyone.</small><small class="field-help warning-text" id="owner-note"></small><small class="field-message" data-for="access-mode"></small></label>
+                <label>Privacy policy URL<input id="privacy-url" type="url" data-path="discord.privacy_url" data-kind="string" placeholder="https://" spellcheck="false" autocomplete="off"><small class="field-help">Your bot's privacy policy, an https:// page you publish yourself (a template is in VoiceBro's repository: docs/PRIVACY-POLICY-TEMPLATE.md). /privacy shows it, the /optin text links to it, and /optin is refused while it is empty. Put the same URL in the Discord Developer Portal. Applies at once. Default: empty.</small><small class="field-help warning-text" id="consent-note"></small><small class="field-message" data-for="privacy-url"></small></label>
                 <div class="field owner-link" id="owner-link">
                   <span class="field-name">Linked Discord account</span>
                   <span class="owner-state" id="owner-state">not linked</span>
@@ -325,6 +327,14 @@
                   <small class="field-help">Link reads your Codex account and shows a one-time code for 10 minutes; send it with /link from your own Discord account. Five wrong codes end it. The link stays until you unlink, link another account, sign Codex into another account, or delete VoiceBro with its data. It is stored encrypted for your Windows user, never in settings.json.</small>
                   <small class="field-help" id="owner-code-ended"></small>
                   <small class="field-message" id="owner-message"></small>
+                </div>
+                <div class="field consent-list wide" id="consent-list">
+                  <span class="field-name">People who agreed</span>
+                  <ul class="consent-people" id="consent-people"></ul>
+                  <small class="field-help" id="consent-empty">Nobody yet. People agree with /optin in Discord.</small>
+                  <small class="field-help warning-text" id="consent-unreadable"></small>
+                  <small class="field-help">Each record holds the person's Discord account, name and the time they agreed, encrypted for your Windows user, never in settings.json. Remove deletes a record as their /optout does and sends them nothing. Records count only while "People who agreed" is chosen.</small>
+                  <small class="field-message" id="consent-message"></small>
                 </div>
               </div>
               </div>

@@ -44,6 +44,9 @@ pub enum AppEvent {
     /// The owner link or its code changed (change `owner-only-access`). The code reaches
     /// only the window; its `Debug` form is hidden.
     Owner(Box<crate::owner::OwnerStatus>),
+    /// The consent records changed (change `voice-consent`): a person agreed, withdrew or
+    /// was removed, or records were cleared.
+    Consent(Box<crate::consent::ConsentStatus>),
     /// Progress of a first-use asset download, in steps of at least 20 %.
     Assets {
         label: String,
@@ -172,6 +175,7 @@ mod tests {
             ("chat", AppEvent::Chat(Box::new(chat))),
             ("assistant", AppEvent::Assistant(Box::default())),
             ("owner", AppEvent::Owner(Box::default())),
+            ("consent", AppEvent::Consent(Box::default())),
             (
                 "assets",
                 AppEvent::Assets {

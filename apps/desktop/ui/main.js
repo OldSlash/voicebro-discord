@@ -367,6 +367,8 @@
       if (control.id === "codex-model") applyEffortList();
       if (control.dataset.path.startsWith("diagnostics.")) applyDiagnostics();
       if (control.dataset.path === "assistant.mode") applyAssistantMode();
+      // The access mode's warnings follow a saved mode or URL at once.
+      if (control.dataset.path.startsWith("discord.")) renderAccessNotes();
       // The CUDA runtime's notice follows the chosen device at once.
       if (control.id === "whisper-device" && lastStatus) renderWhisperNotices(lastStatus);
     } catch (error) {
@@ -2097,6 +2099,7 @@
     renderWhisperNotices(status);
     renderWhisperInstall(status);
     renderOwner(status.owner);
+    renderConsent(status.consent);
     const badge = $("token-badge");
     badge.textContent = tokenSet ? "stored" : "not stored";
     badge.className = `badge ${tokenSet ? "ok" : "warn"}`;
@@ -2132,9 +2135,7 @@
     $("owner-link-start").textContent = linked ? "Link another account" : "Link my Discord account";
     $("owner-link-cancel").hidden = !waiting;
     $("owner-unlink").hidden = !linked || waiting;
-    $("owner-note").textContent = stored?.discord?.owner_only && !linked
-      ? "No account is linked: the assistant hears nobody until you link one."
-      : "";
+    renderAccessNotes();
     if (waiting && !ownerTimer) {
       ownerTimer = setInterval(() => renderOwner(ownerStatus), 1000);
     } else if (!waiting && ownerTimer) {
@@ -2160,6 +2161,67 @@
   $("owner-link-start").addEventListener("click", () => ownerAction("owner_link_start", "Reading the Codex account…"));
   $("owner-link-cancel").addEventListener("click", () => ownerAction("owner_link_cancel"));
   $("owner-unlink").addEventListener("click", () => ownerAction("owner_unlink"));
+
+  // ---------- Access card: the warnings of each mode (change `voice-consent`) ----------
+  // From the stored settings and the link, never from the form fields.
+  function renderAccessNotes() {
+    const access = stored?.discord?.access || "everyone";
+    const linked = Boolean(ownerStatus.linked);
+    $("owner-note").textContent = access === "owner" && !linked
+      ? "No account is linked: the assistant hears nobody until you link one."
+      : "";
+    $("consent-note").textContent = access === "agreed" && !stored?.discord?.privacy_url
+      ? "No privacy policy URL: /optin is refused, so only your linked account is heard, until you set one."
+      : "";
+  }
+
+  // ---------- Access card: the people who agreed (change `voice-consent`) ----------
+  // Status, not form: redrawn from every status and after each Remove.
+  let consentStatus = {};
+  const agreedTime = (rfc3339) => {
+    const time = new Date(rfc3339);
+    return Number.isNaN(time.getTime()) ? rfc3339 : time.toLocaleString();
+  };
+  function renderConsent(consent) {
+    consentStatus = consent || {};
+    const records = consentStatus.records || [];
+    const list = $("consent-people");
+    const shown = Array.from(list.children).map((item) => item.dataset.id).join(",");
+    if (shown !== records.map((record) => record.id).join(",")) {
+      list.innerHTML = "";
+      for (const record of records) {
+        const item = document.createElement("li");
+        item.dataset.id = record.id;
+        const name = document.createElement("span");
+        name.className = "consent-name";
+        name.textContent = record.name;
+        const time = document.createElement("span");
+        time.className = "consent-time";
+        time.textContent = `agreed ${agreedTime(record.agreed_at)}`;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "button";
+        remove.textContent = "Remove";
+        remove.setAttribute("aria-label", `Remove ${record.name}'s consent`);
+        remove.addEventListener("click", () => removeConsent(record.id, remove));
+        item.append(name, time, remove);
+        list.appendChild(item);
+      }
+    }
+    $("consent-empty").hidden = records.length > 0;
+    $("consent-unreadable").textContent = consentStatus.unreadable ? sentence(consentStatus.unreadable) : "";
+  }
+  async function removeConsent(id, button) {
+    if (!invoke) return;
+    button.disabled = true;
+    $("consent-message").textContent = "";
+    try {
+      renderConsent(await invoke("consent_remove", { id }));
+    } catch (error) {
+      $("consent-message").textContent = String(error);
+      button.disabled = false;
+    }
+  }
 
   async function refresh() {
     if (!invoke) return;

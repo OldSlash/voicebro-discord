@@ -2,9 +2,11 @@
 //! adapter, the gates, the wake engine and the assistant, and it is the only place that
 //! knows every subsystem.
 
+use crate::access::{AccessState, VoiceFilter};
 use crate::assistant::{AgentAnswer, AnswerSink, Assistant, StubAssistant};
 use crate::audio::codec::{CodecFailure, CodecFailureHub, CodecFailures, OpusCodec};
 use crate::audio::{frame_channel, AudioPorts, Frame, OutputHandle, INPUT_CAPACITY};
+use crate::consent::{AgreeOutcome, ConsentRecord, ConsentState, WithdrawOutcome};
 use crate::discord::{
     AnswerDestination, AssistantState, DiscordError, DiscordRuntime, JoinPreparation, PostOutcome,
     TextChannelGroup, VoiceHost,
@@ -14,7 +16,9 @@ use crate::gate::{ErrorReporter, GateSettings, RelayGate, RelayRegistry};
 use crate::owner::{CompleteOutcome, OwnerState, PendingCode};
 use crate::secrets::{SecretError, SecretKey, SecretStore};
 use crate::settings::store::{SettingsStore, StoreError};
-use crate::settings::{AssistantSettings, PostAnswers, SessionMode, Settings, ValidationError};
+use crate::settings::{
+    AccessMode, AssistantSettings, PostAnswers, SessionMode, Settings, ValidationError,
+};
 use crate::status::{ConnectionErrors, HotkeyStatus, SecretStatus, Status};
 use crate::stt::manager::WhisperManager;
 use crate::tts::manager::TtsManager;
@@ -68,8 +72,29 @@ struct GateHost {
     codec_failures: Arc<CodecFailureHub>,
     /// Where every session sends its agent's answers for posting.
     answers: AnswerSink,
-    /// The owner link and the voice filter (change `owner-only-access`).
+    /// The owner link (change `owner-only-access`).
     owner: Arc<OwnerState>,
+    /// The consent records (change `voice-consent`).
+    consent: Arc<ConsentState>,
+    /// The access mode and the voice filter of the three modes.
+    access: Arc<AccessState>,
+    /// The current settings, shared with the runtime (`discord.privacy_url`).
+    settings: Arc<RwLock<Settings>>,
+    /// The people in each joined guild's channel (account id, name), so that a change of
+    /// the access filter can resend the names it lets through (design D6).
+    people: Mutex<std::collections::HashMap<u64, Vec<(u64, String)>>>,
+}
+
+impl GateHost {
+    /// Gives every joined guild's gate the names the current filter lets through.
+    fn reapply_participants(&self) {
+        let people = self.people.lock().expect("people lock").clone();
+        for (guild, people) in people {
+            if let Some(gate) = self.registry.get(guild) {
+                gate.set_participants(&self.access.passing_names(&people));
+            }
+        }
+    }
 }
 
 /// The fingerprint of the assistant account a status reports (change `owner-only-access`,
@@ -100,8 +125,43 @@ impl WakeFeed for ModeFeed {
 }
 
 impl VoiceHost for GateHost {
-    fn owner_filter(&self) -> u64 {
-        self.owner.filter()
+    fn voice_filter(&self) -> Arc<VoiceFilter> {
+        self.access.filter()
+    }
+
+    fn access_mode(&self) -> AccessMode {
+        self.access.mode()
+    }
+
+    fn privacy_url(&self) -> String {
+        self.settings
+            .read()
+            .expect("settings lock")
+            .discord
+            .privacy_url
+            .clone()
+    }
+
+    fn consent_provider(&self) -> &'static str {
+        let settings = self.settings.read().expect("settings lock");
+        crate::consent::provider_name(&settings.assistant.engine)
+    }
+
+    fn consent_record(&self, user: u64) -> Option<ConsentRecord> {
+        self.consent.record(user)
+    }
+
+    fn agree(&self, user: u64, name: &str, version: u32) -> AgreeOutcome {
+        self.consent
+            .agree(user, name, version, &chrono::Utc::now().to_rfc3339())
+    }
+
+    fn withdraw(&self, user: u64) -> WithdrawOutcome {
+        self.consent.withdraw(user, false)
+    }
+
+    fn passing_names(&self, people: &[(u64, String)]) -> Vec<String> {
+        self.access.passing_names(people)
     }
 
     fn complete_link(&self, user: u64, name: &str, code: &str) -> CompleteOutcome {
@@ -159,9 +219,13 @@ impl VoiceHost for GateHost {
         }
     }
 
-    fn set_participants(&self, guild: u64, names: &[String]) {
+    fn set_participants(&self, guild: u64, people: &[(u64, String)]) {
+        self.people
+            .lock()
+            .expect("people lock")
+            .insert(guild, people.to_vec());
         if let Some(gate) = self.registry.get(guild) {
-            gate.set_participants(names);
+            gate.set_participants(&self.access.passing_names(people));
         }
     }
 
@@ -191,6 +255,7 @@ impl VoiceHost for GateHost {
     }
 
     fn on_leave(&self, guild: u64) {
+        self.people.lock().expect("people lock").remove(&guild);
         self.assistant.detach(guild);
         self.whisper.clear_guild(guild);
         if let Some(gate) = self.registry.unregister(guild) {
@@ -534,8 +599,12 @@ pub struct Runtime {
     codec_failures: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<CodecFailure>>>,
     /// The agents' answers, taken by `start` for the answer handler task.
     answers: Mutex<Option<tokio::sync::mpsc::Receiver<AgentAnswer>>>,
-    /// The owner link and the voice filter, shared with the gate host.
+    /// The owner link, shared with the gate host.
     owner: Arc<OwnerState>,
+    /// The consent records, shared with the gate host (change `voice-consent`).
+    consent: Arc<ConsentState>,
+    /// The access mode and its voice filter, shared with the gate host.
+    access: Arc<AccessState>,
 }
 
 impl Runtime {
@@ -593,6 +662,13 @@ impl Runtime {
             crate::owner::platform_store(&data_dir),
             events.clone(),
         ));
+        let settings = Arc::new(RwLock::new(Settings::default()));
+        let consent = Arc::new(ConsentState::new(
+            crate::consent::platform_store(&data_dir),
+            events.clone(),
+            &Settings::default().assistant.engine,
+        ));
+        let access = AccessState::new(Arc::clone(&owner), Arc::clone(&consent));
         let host = Arc::new(GateHost {
             registry,
             wake: wake.clone(),
@@ -607,7 +683,17 @@ impl Runtime {
             codec_failures,
             answers,
             owner: Arc::clone(&owner),
+            consent: Arc::clone(&consent),
+            access: Arc::clone(&access),
+            settings: Arc::clone(&settings),
+            people: Mutex::new(std::collections::HashMap::new()),
         });
+        let weak = Arc::downgrade(&host);
+        access.observe(Box::new(move || {
+            if let Some(host) = weak.upgrade() {
+                host.reapply_participants();
+            }
+        }));
         let discord = Arc::new(DiscordRuntime::new(
             events.clone(),
             host.clone(),
@@ -621,7 +707,7 @@ impl Runtime {
             secrets,
             events,
             handle,
-            settings: Arc::new(RwLock::new(Settings::default())),
+            settings,
             host,
             discord,
             wake,
@@ -632,6 +718,8 @@ impl Runtime {
             codec_failures: Mutex::new(Some(failure_reports)),
             answers: Mutex::new(Some(answer_queue)),
             owner,
+            consent,
+            access,
         }
     }
 
@@ -669,7 +757,9 @@ impl Runtime {
         self.host.registry.gains().apply(&self.settings().audio);
         *self.host.opus_codec.lock().expect("opus codec lock") =
             self.settings().diagnostics.codec();
-        self.owner.set_mode(self.settings().discord.owner_only);
+        self.consent
+            .set_assistant(&self.settings().assistant.engine);
+        self.access.set_mode(self.settings().discord.access);
         // Every signed-in account the assistant reports (Check, Link, a join, the read at
         // start) is compared with the link's; another account ends the link (D4).
         {
@@ -819,12 +909,13 @@ impl Runtime {
                 "discord" => {
                     log::info!("settings: the guild id applies at the next connection");
                 }
-                // One atomic the receive path reads per tick: nothing is rebuilt.
+                // One filter the receive path reads per tick: nothing is rebuilt. The privacy
+                // URL is read by each reply.
                 "owner" => {
-                    self.owner.set_mode(settings.discord.owner_only);
+                    self.access.set_mode(settings.discord.access);
                     log::info!(
-                        "settings: only the owner's voice reaches the assistant: {}, from the next frame",
-                        if settings.discord.owner_only { "on" } else { "off" }
+                        "settings: access mode {}, from the next frame",
+                        settings.discord.access.name()
                     );
                 }
                 "session" => {
@@ -843,6 +934,8 @@ impl Runtime {
                 "assistant" => {
                     gates_dirty = true;
                     self.assistant.configure(&settings);
+                    // A consent names the engine's provider (change `voice-consent`, D2).
+                    self.consent.set_assistant(&settings.assistant.engine);
                 }
                 "codex" => self.assistant.configure(&settings),
                 // Change `whisper-mode`: the mode switches at once (D1); Whisper and the
@@ -1075,8 +1168,21 @@ impl Runtime {
             latency: self.host.registry.latency_reports(),
             assistant: self.assistant.status(),
             owner: self.owner.status(),
+            consent: self.consent.status(),
             settings: self.settings(),
         }
+    }
+
+    /// Remove next to a person in the Access card (change `voice-consent`): their record is
+    /// deleted as by their `/optout`, and nothing is sent to them. `id` is the Discord user
+    /// id as the window holds it, a string.
+    pub fn consent_remove(&self, id: &str) -> Result<crate::consent::ConsentStatus, String> {
+        let user: u64 = id
+            .trim()
+            .parse()
+            .map_err(|_| format!("«{id}» is not a Discord user id"))?;
+        self.consent.withdraw(user, true);
+        Ok(self.consent.status())
     }
 
     /// Link in the window, after the window had the assistant read its account (as Check
@@ -1243,10 +1349,10 @@ mod tests {
         again.shutdown();
     }
 
-    /// Change `owner-only-access`, scenario "Turned on while in a channel": the switch is
+    /// Change `voice-consent`, scenario "Changed while in a channel": the access mode is
     /// stored and rebuilds no gate, wake engine or call.
     #[test]
-    fn the_owner_only_switch_restarts_nothing() {
+    fn the_access_mode_restarts_nothing() {
         let tokio_rt = tokio::runtime::Runtime::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let runtime = runtime(&dir, &tokio_rt);
@@ -1259,7 +1365,7 @@ mod tests {
             .clone();
         let mut events = runtime.events().subscribe();
         runtime
-            .save_settings(&json!({ "discord": { "owner_only": true } }))
+            .save_settings(&json!({ "discord": { "access": "agreed" } }))
             .unwrap();
         while let Ok(event) = events.try_recv() {
             assert!(
@@ -1277,19 +1383,20 @@ mod tests {
             "the gates keep their settings"
         );
         let error = runtime
-            .save_settings(&json!({ "discord": { "owner_only": "yes" } }))
+            .save_settings(&json!({ "discord": { "access": "friends" } }))
             .unwrap_err()
             .to_string();
-        assert!(error.contains("discord.owner_only"), "{error}");
-        assert!(
-            runtime.settings().discord.owner_only,
+        assert!(error.contains("discord.access"), "{error}");
+        assert_eq!(
+            runtime.settings().discord.access,
+            AccessMode::Agreed,
             "the stored value stays"
         );
         runtime.shutdown();
 
         let again = super::tests::runtime(&dir, &tokio_rt);
         again.start().unwrap();
-        assert!(again.settings().discord.owner_only);
+        assert_eq!(again.settings().discord.access, AccessMode::Agreed);
         again.shutdown();
     }
 
@@ -1458,19 +1565,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, assistant) = owner_runtime(&dir, &tokio_rt);
         let host: Arc<dyn VoiceHost> = runtime.host.clone();
-        assert_eq!(host.owner_filter(), crate::owner::FILTER_EVERYONE);
+        assert_eq!(*host.voice_filter(), VoiceFilter::Everyone);
         runtime
-            .save_settings(&json!({ "discord": { "owner_only": true } }))
+            .save_settings(&json!({ "discord": { "access": "owner" } }))
             .unwrap();
-        assert_eq!(host.owner_filter(), crate::owner::FILTER_NOBODY);
+        assert_eq!(*host.voice_filter(), only(&[]), "nobody");
         assistant.sign_in(Some("me@example.com"));
         let pending = runtime.start_link().unwrap();
         host.complete_link(42_000_000_000, "Alex", &pending.code);
-        assert_eq!(host.owner_filter(), 42_000_000_000);
+        assert_eq!(*host.voice_filter(), only(&[42_000_000_000]));
         runtime
-            .save_settings(&json!({ "discord": { "owner_only": false } }))
+            .save_settings(&json!({ "discord": { "access": "everyone" } }))
             .unwrap();
-        assert_eq!(host.owner_filter(), crate::owner::FILTER_EVERYONE);
+        assert_eq!(*host.voice_filter(), VoiceFilter::Everyone);
         runtime.shutdown();
 
         let (again, _) = owner_runtime(&dir, &tokio_rt);
@@ -1492,7 +1599,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, assistant) = owner_runtime(&dir, &tokio_rt);
         runtime
-            .save_settings(&json!({ "discord": { "owner_only": true } }))
+            .save_settings(&json!({ "discord": { "access": "owner" } }))
             .unwrap();
         assistant.sign_in(Some("me@example.com"));
         let pending = runtime.start_link().unwrap();
@@ -1523,7 +1630,74 @@ mod tests {
             owner.link_ended.as_deref(),
             Some("the Codex account changed")
         );
-        assert_eq!(host.owner_filter(), crate::owner::FILTER_NOBODY);
+        assert_eq!(*host.voice_filter(), only(&[]));
+        runtime.shutdown();
+    }
+
+    fn only(ids: &[u64]) -> VoiceFilter {
+        VoiceFilter::Only(ids.iter().copied().collect())
+    }
+
+    /// Change `voice-consent`: the `agreed` mode lets through the owner and the recorded, an
+    /// "I agree" and a Remove apply at once, and the window's status and event follow.
+    #[test]
+    fn the_agreed_mode_follows_the_records() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, _) = owner_runtime(&dir, &tokio_rt);
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        runtime
+            .save_settings(&json!({ "discord": { "access": "agreed" } }))
+            .unwrap();
+        assert_eq!(host.access_mode(), AccessMode::Agreed);
+        assert_eq!(
+            *host.voice_filter(),
+            only(&[]),
+            "nobody agreed, nobody linked"
+        );
+        let mut events = runtime.events().subscribe();
+        assert_eq!(
+            host.agree(7, "Alex", crate::consent::CONSENT_TEXT_VERSION),
+            AgreeOutcome::Recorded
+        );
+        assert_eq!(*host.voice_filter(), only(&[7]));
+        assert!(std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::Consent(_))));
+        assert_eq!(runtime.status().consent.records[0].name, "Alex");
+        assert_eq!(
+            host.passing_names(&[(7, "Alex".to_owned()), (8, "Sam".to_owned())]),
+            ["Alex"]
+        );
+        // Requirement "Call context for the assistant": a joined gate gets only the names
+        // the filter lets through, and again after each change of it.
+        let (output, _source) = crate::audio::output_pair();
+        host.on_join(42, output);
+        host.set_participants(42, &[(7, "Alex".to_owned()), (8, "Sam".to_owned())]);
+        let gate = runtime.host.registry.get(42).expect("a gate");
+        assert_eq!(gate.participants(), ["Alex"], "Sam has no record");
+        assert_eq!(
+            host.agree(8, "Sam", crate::consent::CONSENT_TEXT_VERSION),
+            AgreeOutcome::Recorded
+        );
+        assert_eq!(gate.participants(), ["Alex", "Sam"], "after Sam's /optin");
+        runtime
+            .save_settings(&json!({ "discord": { "access": "everyone" } }))
+            .unwrap();
+        assert_eq!(gate.participants(), ["Alex", "Sam"]);
+        runtime
+            .save_settings(&json!({ "discord": { "access": "owner" } }))
+            .unwrap();
+        assert!(gate.participants().is_empty(), "owner mode, nobody linked");
+        runtime
+            .save_settings(&json!({ "discord": { "access": "agreed" } }))
+            .unwrap();
+        host.withdraw(8);
+        host.on_leave(42);
+        let after = runtime.consent_remove("7").unwrap();
+        assert!(after.records.is_empty());
+        assert_eq!(*host.voice_filter(), only(&[]));
+        assert!(runtime.consent_remove("not a number").is_err());
+        assert_eq!(host.withdraw(7), WithdrawOutcome::NothingToRemove);
         runtime.shutdown();
     }
 
@@ -1535,18 +1709,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, assistant) = owner_runtime(&dir, &tokio_rt);
         runtime
-            .save_settings(&json!({ "discord": { "owner_only": true } }))
+            .save_settings(&json!({ "discord": { "access": "owner" } }))
             .unwrap();
         assistant.sign_in(Some("me@example.com"));
         let pending = runtime.start_link().unwrap();
         let host: Arc<dyn VoiceHost> = runtime.host.clone();
         host.complete_link(111, "Alex", &pending.code);
-        assert_eq!(host.owner_filter(), 111);
+        assert_eq!(*host.voice_filter(), only(&[111]));
 
         assistant.sign_in(Some("you@example.com"));
         let prepared = tokio_rt.block_on(host.prepare_join(42));
         assert_eq!(prepared, Ok(()), "the join goes on");
-        assert_eq!(host.owner_filter(), crate::owner::FILTER_NOBODY);
+        assert_eq!(*host.voice_filter(), only(&[]));
         assert_eq!(
             runtime.status().owner.link_ended.as_deref(),
             Some("the Codex account changed")

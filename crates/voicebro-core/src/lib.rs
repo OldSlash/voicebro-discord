@@ -18,15 +18,18 @@ macro_rules! detail {
     };
 }
 
+pub mod access;
 pub mod assets;
 pub mod assistant;
 pub mod audio;
+pub mod consent;
 pub mod discord;
 pub mod events;
 pub mod gate;
 pub mod latency;
 pub mod owner;
 pub mod paths;
+pub mod protect;
 pub mod runtime;
 pub mod secrets;
 pub mod settings;

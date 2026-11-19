@@ -302,18 +302,33 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
 
 - **Start**: the client starts whenever a token is stored, at launch and after a token is
   saved; Connect and Disconnect stay as manual controls. There is no auto-connect setting.
-- Slash commands `/join`, `/leave`, `/status` and `/link`, registered globally on `ready`
-  and, when `discord.guild_id` is set, also in that server (where they appear at once); each
-  registration's result is logged. `/link code:<8 to 12 characters>` (change
-  `owner-only-access`, 4.11) is the global one with the contexts `Guild` and `BotDm`, so it
-  also works in a direct message to the bot; the guild's copy has no contexts (Discord takes
-  them only on global commands). It hands the sender's id from the interaction, a cleaned
+- Slash commands `/join`, `/leave`, `/status`, `/link`, `/optin`, `/optout` and `/privacy`,
+  registered globally on `ready` and, when `discord.guild_id` is set, also in that server
+  (where they appear at once); each registration's result is logged. `/link code:<8 to 12
+  characters>` (change `owner-only-access`, 4.11) and the three consent commands (change
+  `voice-consent`, 4.13) are global with the contexts `Guild` and `BotDm`, so they also work
+  in a direct message to the bot; the guild's copies have no contexts (Discord takes them
+  only on global commands). `/link` hands the sender's id from the interaction, a cleaned
   name (global name, else user name) and the typed code to `VoiceHost::complete_link` and
-  answers only the sender. The owner-only mode limits none of the commands: `/join`,
-  `/leave` and the Mute button work for everyone; `/status` adds "Only the owner's voice
-  reaches the assistant here." while the mode is on. `/status` also names the assistant
-  mode, "Mode: Realtime voice." or "Mode: Whisper mode." (`VoiceHost::assistant_mode`,
-  change `whisper-mode`).
+  answers only the sender. No access mode limits a command: `/join`, `/leave` and the Mute
+  button work for everyone. `/status` and the reply to a successful `/join` add one line for
+  a limited mode: "Only the owner's voice reaches the assistant here." (`owner`) or "Only the
+  owner and people who ran /optin are heard here. See /privacy." (`agreed`). `/status` also
+  names the assistant mode, "Mode: Realtime voice." or "Mode: Whisper mode."
+  (`VoiceHost::assistant_mode`, change `whisper-mode`).
+- **Consent commands** (change `voice-consent`, 4.13). Every reply is ephemeral.
+  - `/optin` with no `discord.privacy_url` answers that the operator has not published a
+    policy and records nothing. With a record for the current text it gives the time and
+    `/optout`. Otherwise it shows the consent text (`consent::consent_text`) with the buttons
+    "I agree" (`vb:optin:agree:<version>`) and "Cancel" (`vb:optin:cancel`).
+  - `handle_component` parses these ids before the Mute button's. Agree hands the presser's
+    id and cleaned name and the version to `VoiceHost::agree`. An ephemeral message is seen
+    and pressed only by the person who ran the command, so the presser is the person who
+    agrees. The message is replaced by the outcome without buttons: recorded (naming the
+    mode when it is not `agreed`), already agreed, or an older text. Cancel replaces it with
+    "Nothing changed."
+  - `/optout` calls `VoiceHost::withdraw` and says that earlier speech was already sent.
+    `/privacy` gives the URL or says none is published.
 - `/join` first awaits `VoiceHost::prepare_join(guild)`: the assistant starts its process
   and checks its sign-in, and in the Whisper mode Whisper and the voice load (4.7). An error
   is the reply ("Not joined: …") and the bot stays out of the channel; only then does the
@@ -359,17 +374,21 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   account are taken for the source and logged "assigned as the only person in the
   channel"; a real mapping from a later speaking event replaces it. (Before the change a
   bot's stream, having no name, got the only person's name this way.)
-- **Participants** are kept current from `voice_state_update` and pushed to the gate (names);
-  the session also keeps them with their account ids (`VoiceSession.people`) for the rule
-  above.
-- **The owner filter** (change `owner-only-access`, 4.11). Each `VoiceTick` reads
-  `VoiceHost::owner_filter()` once. While it is not "everyone", the "only person" rule runs
-  for every source first, then only the sources whose account is the owner's pass
-  (`passing_sources`); with "nobody" none pass. The others are not decoded (opus-rs), not
-  mixed and not handed to the host; each dropped frame counts in
-  `VoiceCounters.ignored_frames`, and the first drop of a source per join logs "receive:
-  ignored <name or an unknown source> (ssrc N) in guild G: not the owner". The gate, the
-  wake feed and the assistant need nothing of their own: they only ever see the owner.
+- **Participants** are kept current from `voice_state_update`. The session keeps them with
+  their account ids (`VoiceSession.people`) for the rule above, the panel and the status show
+  them all, and `VoiceHost::set_participants` gets them with their ids. The host keeps them
+  per guild and gives the gate only the names the access filter lets through
+  (`AccessState::passing_names`), again after each change of the filter (change
+  `voice-consent`, D6): those names are the call context sent to the assistant.
+- **The access filter** (changes `owner-only-access` and `voice-consent`, 4.11 and 4.13).
+  Each `VoiceTick` reads `VoiceHost::voice_filter()` once, an `Arc<VoiceFilter>`
+  (`Everyone` or `Only(ids)`). For `Only`, the "only person" rule runs for every source
+  first, then only the sources whose account is in the set pass (`passing_sources`); an
+  empty set lets none pass. The others are not decoded (opus-rs), not mixed and not handed
+  to the host; each dropped frame counts in `VoiceCounters.ignored_frames`, and the first
+  drop of a source per join logs "receive: ignored <name or an unknown source> (ssrc N) in
+  guild G: <not the owner | has not run /optin>". The gate, the wake feed and the assistant
+  need nothing of their own: they only ever see the voices that passed.
 - The receive handler decodes per-speaker PCM at 48 kHz stereo (never mono or 24 kHz: songbird
   0.6's packet-loss recovery for those modes is unproven), mixes it into reusable buffers,
   and calls the app's `VoiceHost::on_tick(guild, mixed, per_speaker)`. `VoiceHost` is the
@@ -1124,7 +1143,7 @@ One schema, one place to validate, one place to apply.
 #[derive(Serialize, Deserialize, Default)]
 pub struct Settings {
     pub version: u32,                      // schema version, migrated on load
-    pub discord: DiscordSettings,          // guild_id (an older auto_connect is ignored and dropped at the next save); owner_only: only the linked owner's voice passes (4.11), default false, its own `owner` part in changed_sections
+    pub discord: DiscordSettings,          // guild_id (an older auto_connect is ignored and dropped at the next save); access: everyone | agreed | owner, whose voice passes (4.13), default everyone (a file without it takes owner from owner_only: true of builds up to 1.1.0, everyone otherwise; owner_only is read only, never written); privacy_url: empty or https:// with a host, at most 512 characters, stored trimmed; access and privacy_url are their own `owner` part in changed_sections
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation?, deactivation? } } (an absent list: the model's defaults)
@@ -1516,17 +1535,24 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     the Access, Audio, Assistant, Local voice, Codex and Hotkey cards, which save each change at once, then the
     tab's feedback line and one line with the path of `settings.json` (`#config-path`),
     outside every card. The tab never shows the contents of the settings file.
-  - **Access** (Config, after "Discord and Codex"; change `owner-only-access`, 4.11): the
-    switch "Only my Discord account" (`#owner-only`, `discord.owner_only`, saved at once
-    like every switch) and the link part, which is status and not form: `renderOwner`
+  - **Access** (Config, after "Discord and Codex"; changes `owner-only-access` and
+    `voice-consent`, 4.11 and 4.13): the list "Who the assistant hears" (`#access-mode`,
+    `discord.access`: Everyone, People who agreed (/optin), Only my Discord account) and the
+    field "Privacy policy URL" (`#privacy-url`, `discord.privacy_url`; a value the settings
+    reject is not saved and the field shows the error), both saved on change; then the link
+    part and the list "People who agreed", which are status and not form. `renderAccessNotes`
+    redraws two warnings from the stored settings and the link: `owner` with nothing linked
+    (the assistant hears nobody), `agreed` with no URL (`/optin` is refused). `renderConsent`
+    redraws the list from `Status.consent` (the `consent` event refreshes the status): one
+    row per record with the name, "agreed <local time>" and Remove (`consent_remove`, which
+    returns the records left), "Nobody yet" when empty, and the unreadable reason. `renderOwner`
     redraws it from `Status.owner` on every status (the `owner` event refreshes the status).
     It shows the owner as "<name> (<id>)" or "not linked" with `link_ended` as the reason;
     while a code waits, `/link <code>` and a countdown from `expires_at_ms` (redrawn every
     second, its own timer stopped when no code waits) with Cancel; otherwise Link (or "Link
     another account") and, when linked, Unlink. A code that ended without a link shows
     `code_ended` as a sentence ("The code was cancelled."); a code past its time shows "The
-    code expired." With the switch on and nothing linked, the note under the switch says
-    the assistant hears nobody. Link, Cancel and Unlink call `owner_link_start` (Codex's
+    code expired." Link, Cancel and Unlink call `owner_link_start` (Codex's
     account read as Check, then a code; its error shows under the buttons),
     `owner_link_cancel` and `owner_unlink`, disable the three buttons meanwhile and refresh
     the status.
@@ -1649,9 +1675,13 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
   `?collapsed=<ids>` with those cards stored as collapsed; `discord_text_channels` answers
   two servers with "rules" marked can't post, `?disconnected` starts with the bot not
   connected and `setConnected(on)` changes it, `?post_answers=<value>&answers_channel=<id>`
-  starts with that answer posting stored, `?owner=linked` with Alex linked and `?owner_only`
-  with the Access switch on; `completeLink(name)`, `wrongCode()` and `expireCode()` act as
-  Discord and the clock on a waiting code, and `owner()` returns the link state; for the
+  starts with that answer posting stored, `?owner=linked` with Alex linked,
+  `?access=agreed|owner` (or the older `?owner_only`) with that access mode,
+  `?privacy=<url>` with that policy URL and `?consents=<name,name>` with those people
+  recorded; `completeLink(name)`, `wrongCode()` and `expireCode()` act as Discord and the
+  clock on a waiting code, `owner()` returns the link state, `optin(name)` and `optout(id)`
+  act as a person's "I agree" and `/optout`, `consentUnreadable()` as an unreadable records
+  file, and `consent()` returns the records; for the
   Whisper mode the catalogs as the app lists them, the `missing` files in the statuses of
   both modes, `tts_download`, `?whisper` (the Whisper mode with its files on disk),
   `?whisper_missing` (nothing downloaded) and `?gpu_fallback` (Whisper loaded in a channel,
@@ -1707,13 +1737,13 @@ is built on it.
   `SHCNE_UPDATEITEM` for `$INSTDIR\voicebro.exe` and `SHCNE_ASSOCCHANGED`, both flushed.
   Without them Explorer, the shortcuts and the taskbar keep the icon of the earlier build.
 - **Update and uninstall:** an install over an older one replaces only the bundled files,
-  so the data files (`owner-link.bin` among them) stay.
+  so the data files (`owner-link.bin` and `consents.bin` among them) stay.
   `apps/desktop/installer-hooks.nsh` defines `NSIS_HOOK_POSTINSTALL` (the installer
   language for the uninstaller, the icon notice above) and `NSIS_HOOK_POSTUNINSTALL`:
   only when "Delete the application data" is checked and not in update mode, it removes
   `logs`, `assets` (the Whisper and voice downloads too), `models`, `whisper-models`,
-  `codex-workspace`, `webview-data`, `settings.json`, `owner-link.bin` (with their `.tmp`
-  files), runs
+  `codex-workspace`, `webview-data`, `settings.json`, `owner-link.bin`, `consents.bin` (with
+  their `.tmp` files), runs
   `cmdkey /delete:VoiceBro/discord_token`, and removes the then empty install folder.
   Tauri's own deletion of `%APPDATA%` / `%LOCALAPPDATA%\com.voicebro.desktop` stays.
 - **Release script** `scripts\build-release.ps1`: checks that `tauri.conf.json` and
@@ -1770,12 +1800,13 @@ open to everyone.
     account's fingerprint, the time);
   - at most one waiting code;
   - why the last code ended (`code_ended`) and why there is no link (`link_ended`);
-  - `filter: AtomicU64`, read by the receive path once per tick through
-    `VoiceHost::owner_filter`: `0` (mode off, everyone), `u64::MAX` (mode on, nobody
-    linked: nobody) or the owner's Discord user id.
+  - `linked: AtomicU64`, the owner's id whatever the mode (`linked_id()`), and the older
+    `filter: AtomicU64`, both lock-free, for the access filter (4.13).
 
-  The runtime sets the mode from `discord.owner_only` at start and on every save of it (its
-  own `owner` part in `changed_sections`). Every change publishes `AppEvent::Owner`.
+  The owner-only mode is the `owner` value of `discord.access`; `AccessState::set_mode`
+  passes it on at start and on every save of it. Every change publishes `AppEvent::Owner`
+  and then calls the listener the access state registered (`set_listener`), still under
+  the owner's lock, so the listener reads only the two atomics.
 - **The code.** Link in the window: the desktop shell has Codex read the account (as Check),
   then `Runtime::start_link` issues a code bound to that account; not signed in is
   refused.
@@ -1791,10 +1822,11 @@ open to everyone.
     code came (n of 5), or an account was linked.
 - **The file.** `owner-link.bin` in the data folder: the link's JSON (`"version": 1`)
   encrypted with `CryptProtectData` for the current user (`CRYPTPROTECT_UI_FORBIDDEN`, the
-  entropy `VoiceBro owner link v1`), written through `owner-link.bin.tmp` and a rename,
-  read once at start. A file that does not decrypt, parse or match the version is no link
-  (`link_ended`: "the link file could not be read", one warning). Unlink deletes it. Off
-  Windows the link is kept in memory only.
+  entropy `VoiceBro owner link v1`; the calls are in `protect.rs`, shared with 4.13),
+  written through `owner-link.bin.tmp` and a rename, read once at start. A file that does
+  not decrypt, parse or match the version is no link (`link_ended`: "the link file could
+  not be read", one warning). Unlink deletes it. Off Windows the link is kept in memory
+  only.
 - **The assistant account.** The fingerprint is SHA-256 of `<account type>:<email trimmed,
   lower-cased>`; the email is never stored. The runtime compares every signed-in
   `AppEvent::Assistant` status (Check, Link, the read at start) and, synchronously, the
@@ -2115,6 +2147,49 @@ They take their files from `--assets`, `VOICEBRO_WHISPER_DIR` or
 **Not tested:** a real Discord channel with two or more people and a game running, the
 Whisper mode's wake phrase in a channel, and the comparison of both modes' resource use.
 These are the user's tests.
+
+### 4.13 Access and consent (`access.rs`, `consent.rs`, `protect.rs`)
+
+Change `voice-consent`: whose voice reaches the wake word and the assistant, chosen by the
+operator in `discord.access`, and the records of the people who agreed with `/optin`. Every
+mode is optional; the default `everyone` is the behavior before the change.
+
+- **`VoiceFilter`.** `Everyone`, or `Only(HashSet<u64>)` of Discord user ids:
+  - `everyone` gives `Everyone`;
+  - `owner` gives the linked owner alone, or an empty set with no link;
+  - `agreed` gives the linked owner (who needs no record) and every record.
+
+  `passes(user)` lets a source with no known account through only `Everyone`.
+- **`AccessState`** holds the mode, the owner state, the consent state and
+  `RwLock<Arc<VoiceFilter>>`. `refresh` rebuilds the filter and swaps the `Arc`; the
+  receive path clones it once per tick and holds no lock while mixing. `refresh` runs on
+  `set_mode` and from the listeners of the owner and the consent state, so a mode change, a
+  link, an unlink, an "I agree", an `/optout` and a Remove apply from the next frame. Its
+  observers (the gate host's participant names) run after each refresh.
+- **The records** (`ConsentRecord`): Discord user id, the name at the moment of agreeing,
+  `agreed_at` (RFC 3339, UTC), `text_version` and the `assistant` engine. `consents.bin` in
+  the data folder holds `{"version": 1, "records": [...]}` encrypted like the owner link
+  with the entropy `VoiceBro consents v1`, written through `consents.bin.tmp` and a rename,
+  and deleted when the last record goes. A file that does not decrypt, parse or match the
+  version gives no records and one warning; `ConsentStatus.unreadable` keeps the reason
+  until the next write. Off Windows the records are kept in memory only.
+- **`ConsentState`** keeps the records behind a mutex and their ids in a separate
+  `RwLock<Arc<HashSet<u64>>>` for the filter. `agree`, `withdraw` and `set_assistant`
+  write the file, publish `AppEvent::Consent` and call the listener outside the lock. Log
+  lines: "consent: <name> agreed (text v<n>)", "consent: <name> withdrew", "consent: <name>
+  removed in the window", and at start or on an engine change "consent: N record(s)
+  removed because the <consent text | assistant engine> changed".
+- **The consent text.** `CONSENT_TEXT_VERSION` (1) and every published version's text in
+  `CONSENT_TEXTS`, filled with the engine's provider ("OpenAI, through Codex") and the
+  policy URL. It says that after the activation phrase the voice (voice mode) or the text
+  of the speech made on the operator's PC (Whisper mode) goes to the provider, what is
+  kept, that `/optout` withdraws at once and earlier speech is already sent, and where the
+  policy is. A record of another version or engine is deleted at start and when
+  `assistant.engine` changes; raising the version makes everyone run `/optin` again.
+- **The window.** `Status.consent` and `AppEvent::Consent` carry the records (id as a
+  string, name, `agreed_at`) and the unreadable reason; `Runtime::consent_remove(id)`
+  (the Tauri command `consent_remove`) deletes one record as `/optout` does and sends the
+  person nothing.
 
 ## 5. Data flow
 
