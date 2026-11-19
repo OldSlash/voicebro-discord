@@ -134,7 +134,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const CARDS = ["discord", "access", "audio", "assistant", "local-voice", "codex", "hotkey"];
 const SETTINGS_CARDS = ["appearance", "diagnostics", "whisper"];
 const SWITCHES = [
-  ["config", "earcons"], ["config", "codex-refresh-lists"], ["config", "save-chat-history"],
+  ["config", "earcons"], ["config", "one-speaker"], ["config", "codex-refresh-lists"], ["config", "save-chat-history"],
   ["settings", "diagnostics-performance"], ["settings", "diagnostics-memory"], ["settings", "diagnostics-verbose-log"],
   ["performance", "performance-monitoring"],
 ];
@@ -517,6 +517,23 @@ const scenarios = [
     expect(r.off.note === "The channel names appear once the bot is connected.", `note: ${r.off.note}`);
     expect(r.selected === "#rules (can't post)" && r.value === "1571000000000000002", `connected: ${JSON.stringify(r)}`);
     expect(r.saves === 0, "the connection saved something");
+  }],
+
+  // ---- Assistant: one speaker at a time (change `speaker-turns`)
+  ["one speaker at a time is off at first, saves at once, and its help names both modes", async () => {
+    await load("?fresh");
+    const r = await page(`
+      tab("config");
+      const before = { on: $("one-speaker").checked, label: $("one-speaker-label").textContent };
+      const help = $("one-speaker").closest("label").querySelector(".field-help").textContent;
+      const saves = calls("save_settings").length;
+      $("one-speaker-label").click(); await sleep(400);
+      return { before, help, stored: stored().assistant.one_speaker_at_a_time, saves: calls("save_settings").length - saves,
+        last: calls("save_settings").at(-1).args.patch, label: $("one-speaker-label").textContent,
+        inAssistant: Boolean($("card-assistant-body").querySelector("#one-speaker")) };`);
+    expect(!r.before.on && r.before.label === "Off", JSON.stringify(r.before));
+    expect(["realtime voice mode", "one person at a time", "Whisper mode", "waits", "deactivation phrase and Mute", "Default: off"].every((part) => r.help.includes(part)), `help: ${r.help}`);
+    expect(r.stored === true && r.saves === 1 && same(r.last, { assistant: { one_speaker_at_a_time: true } }) && r.label === "On" && r.inAssistant, JSON.stringify(r));
   }],
 
   // ---- Access: who the assistant hears (changes `owner-only-access` and `voice-consent`)

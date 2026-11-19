@@ -141,6 +141,7 @@ mod tests {
             assistant_ready: false,
             last_wake_phrase: None,
             replay_held: 0,
+            floor_waiting: 0,
             counters: Default::default(),
         };
         let all = [

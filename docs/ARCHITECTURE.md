@@ -546,6 +546,41 @@ state machine. A `RelayRegistry` holds all gates and the single app-wide mute fl
 - The gate tells the assistant `session_wanted`, `call_context(caller, participants)` before a
   session, and `speakers_changed(names)` when the set of talking people changes (the
   latter only with `speaker_labels: changes`; `start` sends names in the call context only).
+  With one speaker at a time on, the floor decides the notes instead (below).
+- **One speaker at a time** (change `speaker-turns`; `assistant.one_speaker_at_a_time`,
+  `GateSettings.one_speaker_at_a_time`, off by default). A session decides once whether it
+  uses the floor, on its first passing tick or at its activation (`GateState.floor_on`), so
+  a change applies from the next session; off, everything above is unchanged.
+  - *The floor* (`gate/floor.rs`, `Floor`). The first voiced speaker of a tick takes a free
+    floor (the louder of two). Their frames go to the call as they come. Whoever else
+    speaks waits: their frames go to a buffer of their own (`MAX_WAIT_FRAMES` = 750, 15 s;
+    the oldest dropped and counted in `floor_dropped`; after 15 silent frames in a row a
+    waiting person's silence is no longer kept).
+  - *Passing.* The holder releases the floor after `FLOOR_PAUSE_TICKS` = 15 receive ticks
+    (300 ms) without a voiced frame, once their own buffer has played. The floor then goes
+    to whoever started waiting first, unless the assistant's voice played within 200 ms
+    (`OutputHandle::last_signal`): the buffer then waits for the answer to end, so it does
+    not cut it. A new speaker while people wait queues behind them.
+  - *The buffer.* It goes to the call one frame per tick, silent frames at its front skipped
+    while more wait (the replay's catch-up), and the holder's live frames follow it (a
+    silent live frame only right after a voiced one, so a finished speaker's buffer
+    empties). Unless the labels are `off`, a passed buffer is held `NOTE_HOLD_TICKS` = 12
+    ticks (240 ms) for its note.
+  - *Notes.* At `start` and `changes` a note at every change of the floor (not for the
+    caller the call context already named), at `off` none; the gate sends the name through
+    `speakers_changed`, and the Codex session sends any note it gets unless the labels are
+    `off`. Check 6.1 of the change (`docs/SPEAKER-TURNS-PROBES.md`): with a note at every
+    change the answers named who asked what right in 7 of 10 calls and never the wrong way
+    round; without notes, right in 3 and wrong in 5. A detail line "floor: passes to
+    <name>, who waited; …" is logged on each pass.
+  - *The pre-roll per speaker.* While the setting is on, `Floor::remember` keeps each
+    speaker's last 250 frames, and a ring is given back after 5 s without a frame. An
+    activation gives the caller the floor and replays the caller's ring from the end of the
+    phrase. Every other ring's frames from that point that hold speech go to that person's
+    buffer, in the order they started talking. The mixed pre-roll stays for a session
+    without the floor.
+  - The end of a session, mute and a deactivation clear the floor and every buffer.
+    `GateStatus.floor_waiting` and the counters `floor_passes` and `floor_dropped` show it.
 - The gate is the receive path's tick sink (`VoiceHost::on_tick` finds the guild's gate in
   the registry), the wake worker's `PhraseSink` (the registry routes `on_phrase` to the
   guild's gate) and the assistant's `HeardSink` (the registry routes `on_heard` the same
@@ -579,9 +614,10 @@ state machine. A `RelayRegistry` holds all gates and the single app-wide mute fl
   - *A change of the flag* ends the session, as a change of the session mode does. A mode
     switch builds new gates anyway (4.7).
 - `GateStatus` per guild: mode, muted, active, listening for the wake word, session wanted,
-  assistant ready, last wake phrase, frames held for replay, and counters (input frames the
-  assistant did not take, replay frames dropped, replay timeouts). Every transition is
-  published as `AppEvent::Gate`.
+  assistant ready, last wake phrase, frames held for replay, people waiting for the floor,
+  and counters (input frames the assistant did not take, replay frames dropped, replay
+  timeouts, floor passes, waiting frames dropped). Every transition is published as
+  `AppEvent::Gate`.
 
 Speech detection for these decisions is a peak threshold (700) per 20 ms frame.
 
@@ -1039,7 +1075,22 @@ assistant is given, so the app never panics on an unknown engine setting.
     and sends `turn/interrupt { threadId, turnId }` before the new `turn/start` (one
     `turn_lock`). The old turn id is stale, and its late notifications are ignored. A turn
     that started after its session ended is interrupted as soon as its id is known. This
-    reacts to words Whisper heard, not to any sound.
+    reacts to words Whisper heard, not to any sound. This is the behavior with
+    `assistant.one_speaker_at_a_time` off.
+  - *Questions wait their turn* (change `speaker-turns`, D6'; the setting on, read per
+    question from `CodexConfig`). Nothing is interrupted or flushed. With a turn running,
+    the question is added to `Running.added`, the log says "question added to turn <n>",
+    and `steer_turn` waits for `turn_lock` (the turn's start has returned and its id is
+    known), then sends `turn/steer { threadId, expectedTurnId, input }`. A refusal (Codex
+    CLI 0.167.0: "no active turn to steer" once the turn has ended) moves the question to
+    `TextState.waiting`, or starts it at once when no turn runs any more. With no turn
+    running the question starts one (`begin_turn`), and its answer's sentences queue in the
+    voice's FIFO behind the current answer's, under the same epoch. On `turn/completed` the
+    waiting questions start the next turn together, joined by line breaks
+    (`start_waiting`). The posted answer's task joins the turn's questions with " / ".
+    Deactivation, mute, `/leave`, the idle timeout and a mode change still stop everything
+    (`stop_running` also drops the waiting questions). Probe 2.2 of the change (live, five
+    runs): every steer was accepted and the answer named both people and both answers.
   - *The answer.* Each `item/agentMessage/delta` of the running turn goes through the turn's
     `SentenceSplitter` into the voice queue; the first piece marks the turn on the player,
     and the first delta is "Codex first words" for the latency line. `item/completed` with
@@ -2260,6 +2311,8 @@ Whisper mode:
 activation phrase in Whisper's text ─► gate: Waiting→Active, rising tone, call_context
    ─► the words after the phrase, if any, as the first question
 question ─► CodexTextSession: flush the voice, turn/interrupt the running turn (if any)
+   (one speaker at a time on: turn/steer into the running turn, or the next turn; nothing
+   interrupted)
    ─► turn/start {text, additionalContext} ─► deltas spoken ─► turn/completed (completed)
    ─► AgentAnswer {guild, task: question, last agent text} ─► AudioPorts.answers (as above)
 deactivation phrase / idle timeout / mute ─► session_wanted(false): voice flushed, turn interrupted

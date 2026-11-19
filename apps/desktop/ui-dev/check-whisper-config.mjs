@@ -196,7 +196,7 @@ const scenarios = [
       return { order, rec: { value: rec.value, readOnly: rec.readOnly, grey: getComputedStyle(rec).backgroundColor !== getComputedStyle($("wake-model")).backgroundColor },
         engine: Boolean($("wake-engine")), mode: $("assistant-mode").value, options: [...$("assistant-mode").options].map((o) => o.value), help: help("assistant-mode"),
         note: Boolean($("assistant-whisper-note")) };`);
-    expect(same(r.order, ["assistant.mode", "recognition-engine", "assistant.engine", "wake.model", "wake.phrases", "wake.phrases", "session.mode", "session.idle_timeout_seconds"]), `order: ${r.order}`);
+    expect(same(r.order, ["assistant.mode", "recognition-engine", "assistant.engine", "wake.model", "wake.phrases", "wake.phrases", "session.mode", "session.idle_timeout_seconds", "assistant.one_speaker_at_a_time"]), `order: ${r.order}`);
     expect(r.rec.value === "Vosk" && r.rec.readOnly && r.rec.grey, `Recognition: ${JSON.stringify(r.rec)}`);
     expect(!r.engine && !r.note, "the wake engine select or the old note is still there");
     expect(r.mode === "realtime" && same(r.options, ["realtime", "whisper"]), `mode: ${r.mode}`);
@@ -225,7 +225,7 @@ const scenarios = [
     expect(r.whisper.shown.every(Boolean) && r.whisper.hidden.every(Boolean), `rows: ${JSON.stringify(r.whisper)}`);
     expect(same(r.whisper.phrases, ["bro", "peace out"]), `Whisper phrases: ${r.whisper.phrases}`);
     expect(!r.whisper.disabled.some(Boolean), "the Vosk rows were disabled instead of hidden");
-    expect(same(r.whisper.order, ["assistant-mode", "recognition-engine", "assistant-engine", "whisper-model", "whisper-activation", "whisper-deactivation", "session-mode", "idle-timeout"]), `order: ${r.whisper.order}`);
+    expect(same(r.whisper.order, ["assistant-mode", "recognition-engine", "assistant-engine", "whisper-model", "whisper-activation", "whisper-deactivation", "session-mode", "idle-timeout", "one-speaker"]), `order: ${r.whisper.order}`);
     expect(r.back.stored === "realtime" && r.back.rec === "Vosk", `back: ${JSON.stringify(r.back)}`);
     expect(same(r.back.values, ["alpha", "omega", "vosk-model-small-ru-0.22"]) && r.back.shown.every(Boolean) && r.back.hidden.every(Boolean), `back: ${JSON.stringify(r.back)}`);
   }],

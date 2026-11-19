@@ -654,6 +654,23 @@ pub struct AssistantSettings {
     /// The channel id for [`PostAnswers::Channel`]: digits, or empty. Kept while another
     /// destination is chosen, so choosing `channel` again needs no new pick.
     pub answers_channel: String,
+    /// One speaker at a time (change `speaker-turns`, design D0): the voice call gets one
+    /// person at a time and the others wait, and in the Whisper mode a question waits for
+    /// the running answer instead of stopping it. Off by default: the mix and the barge-in
+    /// as before.
+    #[serde(deserialize_with = "one_speaker_flag")]
+    pub one_speaker_at_a_time: bool,
+}
+
+/// `assistant.one_speaker_at_a_time` takes only `true` or `false`; anything else is refused
+/// with the field's path.
+fn one_speaker_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    match Value::deserialize(deserializer)? {
+        Value::Bool(on) => Ok(on),
+        other => Err(serde::de::Error::custom(format!(
+            "assistant.one_speaker_at_a_time must be true or false, not {other}"
+        ))),
+    }
 }
 
 impl Default for AssistantSettings {
@@ -665,6 +682,7 @@ impl Default for AssistantSettings {
             save_chat_history: false,
             post_answers: PostAnswers::Off,
             answers_channel: String::new(),
+            one_speaker_at_a_time: false,
         }
     }
 }
@@ -1553,6 +1571,26 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("discord.owner_only"), "{error}");
+    }
+
+    /// Change `speaker-turns`, requirement "One speaker at a time setting": off by default
+    /// and in older files, a boolean only, and a change of it is the `assistant` part.
+    #[test]
+    fn one_speaker_at_a_time_defaults_to_off() {
+        let older: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
+        assert!(!older.assistant.one_speaker_at_a_time);
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(written["assistant"]["one_speaker_at_a_time"], false);
+        let on = older
+            .with_patch(&json!({ "assistant": { "one_speaker_at_a_time": true } }))
+            .unwrap();
+        assert!(on.assistant.one_speaker_at_a_time);
+        assert_eq!(older.changed_sections(&on), vec!["assistant"]);
+        let error = older
+            .with_patch(&json!({ "assistant": { "one_speaker_at_a_time": "yes" } }))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("assistant.one_speaker_at_a_time"), "{error}");
     }
 
     /// Requirement "Privacy policy URL setting": empty or `https://` with a host, trimmed, at

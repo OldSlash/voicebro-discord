@@ -1155,7 +1155,10 @@ impl AssistantSession for CodexSession {
             .lock()
             .expect("conversation lock")
             .speakers = Some(names.join(", "));
-        if self.config().speaker_labels != SpeakerLabels::Changes {
+        // The gate decides when a note is due: at `changes` for a new set of talkers, and with
+        // one speaker at a time (change `speaker-turns`, D5) when the floor passes, also at
+        // `start`. Only `off` sends nothing.
+        if self.config().speaker_labels == SpeakerLabels::Off {
             return;
         }
         let Some(note) = speaker_note(names) else {
