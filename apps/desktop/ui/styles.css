@@ -452,6 +452,13 @@ input.switch:checked + .switch-state { color: var(--accent); }
 .wake-download ul, .download-notice ul, .codex-setup ul { margin: 0 0 10px; padding-left: 18px; }
 .wake-download li, .download-notice li, .codex-setup li { line-height: 1.5; }
 .codex-setup ul:empty { display: none; }
+/* Change `claude-and-opencode-engines`: the Claude subscription notice in the Assistant and
+   Access cards and in its dialog, in the same frame as the download notices. */
+.claude-notice { align-self: stretch; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); background: var(--field); }
+.claude-notice p, #claude-notice-text p { margin: 0 0 6px; line-height: 1.45; }
+.claude-notice .notice-links, #claude-notice-text .notice-links { color: var(--ink-dim); }
+.claude-notice .button { margin-top: 4px; }
+.claude-notice[hidden] { display: none; }
 .download-notice .notice-total { color: var(--ink-dim); }
 .download-notice .notice-total:empty { display: none; }
 

@@ -99,9 +99,20 @@ impl GateHost {
 
 /// The fingerprint of the assistant account a status reports (change `owner-only-access`,
 /// design D4); `None` while it is not signed in.
-fn signed_in_account(status: &crate::assistant::AssistantStatus) -> Option<String> {
+fn signed_in_account(status: &crate::assistant::AssistantStatus) -> Option<(String, String)> {
+    // OpenCode has no account of its own: a link made with it is bound to none (change
+    // `claude-and-opencode-engines`, D9).
+    if status.engine == crate::settings::AssistantEngine::Opencode.name() {
+        return Some((status.engine.clone(), String::new()));
+    }
     status.signed_in.then(|| {
-        crate::owner::account_fingerprint(status.account_type.as_deref(), status.email.as_deref())
+        (
+            status.engine.clone(),
+            crate::owner::account_fingerprint(
+                status.account_type.as_deref(),
+                status.email.as_deref(),
+            ),
+        )
     })
 }
 
@@ -142,9 +153,18 @@ impl VoiceHost for GateHost {
             .clone()
     }
 
-    fn consent_provider(&self) -> &'static str {
+    fn consent_provider(&self) -> String {
         let settings = self.settings.read().expect("settings lock");
-        crate::consent::provider_name(&settings.assistant.engine)
+        crate::consent::provider_name(&crate::consent::recipient_key(&settings))
+    }
+
+    fn engine_name(&self) -> &'static str {
+        self.settings
+            .read()
+            .expect("settings lock")
+            .assistant
+            .engine
+            .display_name()
     }
 
     fn consent_record(&self, user: u64) -> Option<ConsentRecord> {
@@ -192,8 +212,8 @@ impl VoiceHost for GateHost {
                     // The account was just read: a link made with another one ends here,
                     // before the first frame of this join is filtered. The join goes on
                     // (change `owner-only-access`, D4).
-                    if let Some(account) = signed_in_account(&self.assistant.status()) {
-                        self.owner.check_account(&account);
+                    if let Some((engine, account)) = signed_in_account(&self.assistant.status()) {
+                        self.owner.check_account_of(&engine, &account);
                     }
                     Ok(())
                 }
@@ -360,8 +380,70 @@ impl GateHost {
     /// with the falling tone, the assistant is attached again in the new mode to a new gate
     /// on the same output, and the bot stays in the channel.
     fn switch_mode(&self, settings: &Settings) {
+        for (guild, gate, receiver, output) in self.rebuild_gates(settings) {
+            self.attach(guild, &gate, receiver, output);
+            self.events.log(format!(
+                "guild {guild}: the assistant switched to the {} mode",
+                settings.assistant.mode.name()
+            ));
+        }
+        if let Some(discord) = self.discord.lock().expect("discord lock").as_ref() {
+            discord.mark_panels_dirty();
+        }
+    }
+
+    /// The engine changed while the bot is in voice channels (change
+    /// `claude-and-opencode-engines`, D1): the gates are rebuilt as for a mode change, and
+    /// each guild is attached to the new engine once it is prepared for it. A guild whose
+    /// preparation fails stays in its channel without a session, with the engine's error.
+    async fn switch_engine(
+        self: Arc<Self>,
+        settings: Settings,
+        rebuilt: Vec<(
+            u64,
+            Arc<RelayGate>,
+            crate::audio::FrameReceiver,
+            OutputHandle,
+        )>,
+    ) {
+        let product = settings.assistant.engine.product_name();
+        for (guild, gate, receiver, output) in rebuilt {
+            match self.assistant.prepare(guild).await {
+                Ok(()) => {
+                    self.attach(guild, &gate, receiver, output);
+                    self.errors.report("assistant", None);
+                    self.events.log(format!(
+                        "guild {guild}: the assistant switched to {product}"
+                    ));
+                }
+                Err(error) => {
+                    let message = format!("{product} could not start for this channel: {error}");
+                    self.events.log(format!("guild {guild}: {message}"));
+                    self.errors.report("assistant", Some(message));
+                }
+            }
+        }
+        if let Some(discord) = self.discord.lock().expect("discord lock").as_ref() {
+            discord.mark_panels_dirty();
+        }
+    }
+
+    /// Every guild's gate rebuilt in `settings`: the running session ends with the falling
+    /// tone, the old session is detached, and a new gate takes the same output. Returns what
+    /// each new gate needs for its session.
+    #[allow(clippy::type_complexity)]
+    fn rebuild_gates(
+        &self,
+        settings: &Settings,
+    ) -> Vec<(
+        u64,
+        Arc<RelayGate>,
+        crate::audio::FrameReceiver,
+        OutputHandle,
+    )> {
         let gate_settings = GateSettings::from_settings(settings);
         *self.gate_settings.lock().expect("gate settings lock") = gate_settings.clone();
+        let mut rebuilt = Vec::new();
         for old in self.registry.all() {
             let guild = old.guild();
             self.assistant.detach(guild);
@@ -394,15 +476,9 @@ impl GateHost {
             gate.set_participants(&old.participants());
             output.use_latency(gate.latency(), guild);
             self.registry.register(Arc::clone(&gate));
-            self.attach(guild, &gate, receiver, output);
-            self.events.log(format!(
-                "guild {guild}: the assistant switched to the {} mode",
-                settings.assistant.mode.name()
-            ));
+            rebuilt.push((guild, gate, receiver, output));
         }
-        if let Some(discord) = self.discord.lock().expect("discord lock").as_ref() {
-            discord.mark_panels_dirty();
-        }
+        rebuilt
     }
 
     fn after_mute_change(&self, muted: bool) {
@@ -666,7 +742,7 @@ impl Runtime {
         let consent = Arc::new(ConsentState::new(
             crate::consent::platform_store(&data_dir),
             events.clone(),
-            &Settings::default().assistant.engine,
+            &crate::consent::recipient_key(&Settings::default()),
         ));
         let access = AccessState::new(Arc::clone(&owner), Arc::clone(&consent));
         let host = Arc::new(GateHost {
@@ -758,7 +834,7 @@ impl Runtime {
         *self.host.opus_codec.lock().expect("opus codec lock") =
             self.settings().diagnostics.codec();
         self.consent
-            .set_assistant(&self.settings().assistant.engine);
+            .set_assistant(&crate::consent::recipient_key(&self.settings()));
         self.access.set_mode(self.settings().discord.access);
         // Every signed-in account the assistant reports (Check, Link, a join, the read at
         // start) is compared with the link's; another account ends the link (D4).
@@ -769,8 +845,8 @@ impl Runtime {
                 loop {
                     match events.recv().await {
                         Ok(AppEvent::Assistant(status)) => {
-                            if let Some(account) = signed_in_account(&status) {
-                                owner.check_account(&account);
+                            if let Some((engine, account)) = signed_in_account(&status) {
+                                owner.check_account_of(&engine, &account);
                             }
                         }
                         Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -903,6 +979,7 @@ impl Runtime {
         let mut gates_dirty = false;
         let mut whisper_dirty = false;
         let mut mode_switched = false;
+        let mut engine_switched = false;
         for section in changed {
             log::info!("settings: {section} changed");
             match *section {
@@ -934,10 +1011,23 @@ impl Runtime {
                 "assistant" => {
                     gates_dirty = true;
                     self.assistant.configure(&settings);
-                    // A consent names the engine's provider (change `voice-consent`, D2).
-                    self.consent.set_assistant(&settings.assistant.engine);
                 }
-                "codex" => self.assistant.configure(&settings),
+                "codex" | "claude" | "instructions" => self.assistant.configure(&settings),
+                // A consent names the engine's recipient (change `voice-consent`, D2; change
+                // `claude-and-opencode-engines`, D10): OpenCode's provider is part of it.
+                "opencode" => {
+                    self.assistant.configure(&settings);
+                    self.consent
+                        .set_assistant(&crate::consent::recipient_key(&settings));
+                }
+                // Change `claude-and-opencode-engines`, D1: the engine switches at once, on
+                // the same path as a mode change.
+                "engine" => {
+                    engine_switched = true;
+                    self.assistant.configure(&settings);
+                    self.consent
+                        .set_assistant(&crate::consent::recipient_key(&settings));
+                }
                 // Change `whisper-mode`: the mode switches at once (D1); Whisper and the
                 // voice reload in the background, phrases apply from the next utterance.
                 "mode" => {
@@ -1003,9 +1093,16 @@ impl Runtime {
         if whisper_dirty {
             self.host.whisper.configure(&settings);
         }
-        if mode_switched {
+        if mode_switched || engine_switched {
             self.host.tts.configure(&settings);
-            self.host.switch_mode(&settings);
+            if engine_switched {
+                let rebuilt = self.host.rebuild_gates(&settings);
+                let host = Arc::clone(&self.host);
+                let next = settings.clone();
+                self.handle.spawn(host.switch_engine(next, rebuilt));
+            } else {
+                self.host.switch_mode(&settings);
+            }
             if settings.assistant.mode == crate::settings::AssistantMode::Whisper
                 && !self.host.registry.all().is_empty()
             {
@@ -1188,15 +1285,18 @@ impl Runtime {
     /// Link in the window, after the window had the assistant read its account (as Check
     /// does): a code bound to that account. Refused while it is not signed in.
     pub fn start_link(&self) -> Result<PendingCode, String> {
-        let Some(account) = signed_in_account(&self.assistant.status()) else {
-            return Err(
-                "Codex is not signed in: use Sign in on the Status tab first, then press Link again"
-                    .to_owned(),
-            );
+        let status = self.assistant.status();
+        let Some((engine, account)) = signed_in_account(&status) else {
+            let product = crate::settings::AssistantEngine::parse(&status.engine)
+                .map(crate::settings::AssistantEngine::product_name)
+                .unwrap_or("The assistant");
+            return Err(format!(
+                "{product} is not signed in: use Sign in on the Status tab first, then press Link again"
+            ));
         };
-        self.owner.check_account(&account);
+        self.owner.check_account_of(&engine, &account);
         self.owner
-            .issue_code(account)
+            .issue_code_for(&engine, account)
             .map_err(|error| error.to_string())
     }
 
@@ -1467,7 +1567,9 @@ mod tests {
         }
         fn status(&self) -> crate::assistant::AssistantStatus {
             let email = self.email.lock().unwrap().clone();
+            // It stands in for Codex: the link records the engine it was made with.
             crate::assistant::AssistantStatus {
+                engine: "codex".to_owned(),
                 signed_in: email.is_some(),
                 account_type: email.as_ref().map(|_| "chatgpt".to_owned()),
                 email,
@@ -1849,6 +1951,7 @@ mod tests {
             guild: 7,
             task: Some("find the weather in Bangkok".to_owned()),
             text: text.to_owned(),
+            engine: "Codex",
         }
     }
 
@@ -2188,6 +2291,153 @@ mod tests {
             events.try_recv().is_err(),
             "no event when the state did not change"
         );
+    }
+
+    /// Change `claude-and-opencode-engines`, D9: the account a link is bound to comes with
+    /// its engine; OpenCode links without one, a Claude Code without a sign-in cannot link.
+    #[test]
+    fn the_linked_account_comes_with_its_engine() {
+        use crate::assistant::AssistantStatus;
+        let opencode = AssistantStatus {
+            engine: "opencode".to_owned(),
+            ..AssistantStatus::default()
+        };
+        assert_eq!(
+            signed_in_account(&opencode),
+            Some(("opencode".to_owned(), String::new()))
+        );
+        let claude_out = AssistantStatus {
+            engine: "claude".to_owned(),
+            ..AssistantStatus::default()
+        };
+        assert_eq!(signed_in_account(&claude_out), None);
+        let claude_in = AssistantStatus {
+            engine: "claude".to_owned(),
+            signed_in: true,
+            account_type: Some("claude.ai".to_owned()),
+            email: Some("me@example.com".to_owned()),
+            ..AssistantStatus::default()
+        };
+        let (engine, fingerprint) = signed_in_account(&claude_in).unwrap();
+        assert_eq!(engine, "claude");
+        assert_eq!(
+            fingerprint,
+            crate::owner::account_fingerprint(Some("claude.ai"), Some("me@example.com"))
+        );
+    }
+
+    /// An engine whose preparation always fails, as a Claude Code that is not signed in.
+    struct RefusingEngine(StubAssistant);
+
+    impl Assistant for RefusingEngine {
+        fn id(&self) -> &'static str {
+            "refusing"
+        }
+        fn prepare(&self, _guild: u64) -> crate::assistant::PrepareFuture<'_> {
+            Box::pin(async {
+                Err(crate::assistant::AssistantError::Unavailable(
+                    "not signed in".to_owned(),
+                ))
+            })
+        }
+        fn attach(
+            &self,
+            guild: u64,
+            ports: crate::audio::AudioPorts,
+        ) -> Result<Arc<dyn crate::assistant::AssistantSession>, crate::assistant::AssistantError>
+        {
+            self.0.attach(guild, ports)
+        }
+        fn detach(&self, guild: u64) {
+            self.0.detach(guild)
+        }
+        fn capabilities(&self) -> crate::assistant::Capabilities {
+            self.0.capabilities()
+        }
+        fn status(&self) -> crate::assistant::AssistantStatus {
+            self.0.status()
+        }
+    }
+
+    /// Requirement "The engine switches at once" (change `claude-and-opencode-engines`,
+    /// task 4.1): the bot stays in the channel, the old engine's session is detached and
+    /// the new engine's attached; an engine that cannot start leaves the channel without a
+    /// session and with its error.
+    #[test]
+    fn switching_the_engine_in_a_channel_keeps_the_bot_and_moves_the_session() {
+        use crate::assistant::switch::EngineSwitch;
+        use crate::settings::AssistantEngine;
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let codex = Arc::new(StubAssistant::new(Duration::ZERO));
+        let claude = Arc::new(StubAssistant::new(Duration::ZERO));
+        let opencode = Arc::new(RefusingEngine(StubAssistant::new(Duration::ZERO)));
+        let switch = EngineSwitch::new(
+            vec![
+                (
+                    AssistantEngine::Codex,
+                    Arc::clone(&codex) as Arc<dyn Assistant>,
+                ),
+                (
+                    AssistantEngine::Claude,
+                    Arc::clone(&claude) as Arc<dyn Assistant>,
+                ),
+                (
+                    AssistantEngine::Opencode,
+                    Arc::clone(&opencode) as Arc<dyn Assistant>,
+                ),
+            ],
+            AssistantEngine::Codex,
+        );
+        let errors = Arc::new(ConnectionErrors::new(EventBus::new(16)));
+        let runtime = Runtime::with_assistant(
+            "0.1.0+test",
+            dir.path().to_path_buf(),
+            SettingsStore::new(dir.path().join("settings.json")),
+            Arc::new(MemoryStore::default()),
+            EventBus::new(64),
+            tokio_rt.handle().clone(),
+            errors,
+            Arc::new(switch),
+        );
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({ "session": { "mode": "always" } }))
+            .unwrap();
+        let (output, _source) = output_pair();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.on_join(42, output);
+        assert!(codex.session(42).is_some());
+
+        runtime
+            .save_settings(&json!({ "assistant": { "engine": "claude", "mode": "whisper" } }))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(runtime.host.registry.get(42).is_some(), "the bot stays");
+        assert!(codex.session(42).is_none(), "Codex's session ended");
+        assert!(
+            claude.session(42).is_some(),
+            "Claude Code's session attached"
+        );
+
+        runtime
+            .save_settings(&json!({ "assistant": { "engine": "opencode" } }))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(runtime.host.registry.get(42).is_some(), "the bot stays");
+        assert!(claude.session(42).is_none());
+        assert!(opencode.0.session(42).is_none(), "nothing attached");
+        let error = runtime
+            .status()
+            .connection_errors
+            .get("assistant")
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            error.contains("OpenCode could not start") && error.contains("not signed in"),
+            "{error}"
+        );
+        runtime.shutdown();
     }
 
     /// Scenario "Switched to Whisper while in a channel" (change `whisper-mode`, task 8.2):

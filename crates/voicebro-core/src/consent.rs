@@ -44,12 +44,64 @@ pub fn consent_text(version: u32, provider: &str, url: &str) -> Option<String> {
         .map(|(_, text)| text.replace("{provider}", provider).replace("{url}", url))
 }
 
-/// Who receives the speech of an assistant engine, as the consent text names it.
-pub fn provider_name(engine: &str) -> &'static str {
-    match engine {
-        "codex" => "OpenAI, through Codex",
-        _ => "the assistant's provider",
+/// The recipient a record is made for (change `claude-and-opencode-engines`, design D10):
+/// `codex`, `claude`, or `opencode:<provider>` with the provider of OpenCode's model in use
+/// (`opencode:default` while OpenCode picks its own). A record of another key is deleted, so
+/// a change of the engine or of OpenCode's provider ends the records.
+pub fn recipient_key(settings: &crate::settings::Settings) -> String {
+    use crate::settings::AssistantEngine;
+    match settings.assistant.engine {
+        AssistantEngine::Codex => "codex".to_owned(),
+        AssistantEngine::Claude => "claude".to_owned(),
+        AssistantEngine::Opencode => format!(
+            "opencode:{}",
+            settings.opencode.provider().unwrap_or("default")
+        ),
     }
+}
+
+/// Who receives the speech for a recipient key, as the consent text names it. The Codex
+/// wording is the one of build 1.2.0, so its records stay valid.
+pub fn provider_name(key: &str) -> String {
+    match key {
+        "codex" => "OpenAI, through Codex".to_owned(),
+        "claude" => "Anthropic, through Claude Code".to_owned(),
+        _ => match key.strip_prefix("opencode:") {
+            Some(provider) => format!(
+                "{}, through OpenCode, and, for the web searches the assistant makes, \
+                 OpenCode's web search service",
+                opencode_company(provider)
+            ),
+            None => "the assistant's provider".to_owned(),
+        },
+    }
+}
+
+/// The company behind an OpenCode provider id, for the consent text; an id not in the
+/// table is named as it is.
+fn opencode_company(provider: &str) -> String {
+    let company = match provider {
+        // No model chosen: OpenCode's default, which may be one of its own free models.
+        "default" => {
+            "the AI provider set up in OpenCode (or, for its free models, the OpenCode \
+             project's own service)"
+        }
+        "openai" => "OpenAI",
+        "anthropic" => "Anthropic",
+        "google" => "Google",
+        "google-vertex" => "Google Cloud (Vertex AI)",
+        "amazon-bedrock" => "Amazon Web Services (Bedrock)",
+        "azure" => "Microsoft (Azure)",
+        "github-copilot" => "GitHub (Copilot)",
+        "openrouter" => "OpenRouter",
+        "opencode" => "the OpenCode project (OpenCode Zen)",
+        "mistral" => "Mistral AI",
+        "xai" => "xAI",
+        "groq" => "Groq",
+        "deepseek" => "DeepSeek",
+        other => return format!("the provider «{other}»"),
+    };
+    company.to_owned()
 }
 
 /// The records file in the app's folder.
@@ -497,9 +549,59 @@ mod tests {
         assert!(store.load().unwrap().is_empty());
     }
 
+    /// Change `claude-and-opencode-engines`, D10: the recipient follows the engine and
+    /// OpenCode's provider, and the Codex text is the one of 1.2.0 word for word.
+    #[test]
+    fn the_recipient_follows_the_engine_and_the_codex_text_is_unchanged() {
+        use crate::settings::{AssistantEngine, Settings};
+        let mut settings = Settings::default();
+        assert_eq!(recipient_key(&settings), "codex");
+        let codex = consent_text(1, &provider_name("codex"), "https://example.org/p").unwrap();
+        assert!(codex.starts_with(
+            "This bot runs an AI assistant. If you agree:\n- After someone in the channel says \
+             the activation phrase, what you say is sent to OpenAI, through Codex so that"
+        ), "{codex}");
+
+        settings.assistant.engine = AssistantEngine::Claude;
+        assert_eq!(recipient_key(&settings), "claude");
+        let claude = consent_text(1, &provider_name("claude"), "u").unwrap();
+        assert!(
+            claude.contains("Anthropic, through Claude Code"),
+            "{claude}"
+        );
+        assert!(!claude.contains("OpenAI"), "{claude}");
+
+        settings.assistant.engine = AssistantEngine::Opencode;
+        assert_eq!(recipient_key(&settings), "opencode:default");
+        settings.opencode.model = "anthropic/claude-sonnet-4-5".to_owned();
+        let key = recipient_key(&settings);
+        assert_eq!(key, "opencode:anthropic");
+        let opencode = consent_text(1, &provider_name(&key), "u").unwrap();
+        assert!(
+            opencode.contains("Anthropic, through OpenCode"),
+            "{opencode}"
+        );
+        assert!(opencode.contains("web search service"), "{opencode}");
+        assert!(provider_name("opencode:acme").contains("«acme»"));
+    }
+
+    /// Requirement "Records end with a new consent text or engine": OpenCode's provider is
+    /// part of the engine.
+    #[test]
+    fn a_change_of_opencode_provider_ends_the_records() {
+        let store: Arc<dyn ConsentStore> = Arc::new(MemoryConsentStore::default());
+        store
+            .save(&[record(1, CONSENT_TEXT_VERSION, "opencode:openai")])
+            .unwrap();
+        let state = ConsentState::new(Arc::clone(&store), EventBus::default(), "opencode:openai");
+        assert_eq!(state.ids().len(), 1);
+        state.set_assistant("opencode:anthropic");
+        assert!(state.ids().is_empty());
+    }
+
     #[test]
     fn the_version_one_text_says_what_is_sent_kept_and_how_to_withdraw() {
-        let text = consent_text(1, provider_name("codex"), "https://example.org/p").unwrap();
+        let text = consent_text(1, &provider_name("codex"), "https://example.org/p").unwrap();
         for words in [
             "OpenAI",
             "your voice",

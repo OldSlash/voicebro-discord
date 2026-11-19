@@ -36,8 +36,10 @@ fn command_definitions(global: bool) -> Vec<CreateCommand> {
         );
     // Change `voice-consent`: the three consent commands work in servers and in a direct
     // message to the bot, like `/link`.
+    // The description names no company: the engine, and with it the recipient, can change
+    // (change `claude-and-opencode-engines`); `/optin`'s text names it.
     let optin = CreateCommand::new("optin").description(
-        "Let VoiceBro's assistant hear you (your speech goes to OpenAI after the wake phrase)",
+        "Let this bot's AI assistant hear you: after the wake phrase your speech goes to it",
     );
     let optout = CreateCommand::new("optout")
         .description("Stop VoiceBro's assistant hearing you and delete your consent");
@@ -311,14 +313,16 @@ impl Handler {
         let channel = command
             .guild_id
             .and_then(|guild| session::session_channel_name(&self.shared, guild));
-        let assistant = command
+        let state = command
             .guild_id
             .map(|guild| self.shared.host.assistant_state(guild.get()).label())
             .unwrap_or("off");
+        // Change `claude-and-opencode-engines`: the reply names the engine in use.
+        let assistant = format!("{}, {state}", self.shared.host.engine_name());
         let text = status_text(
             connected,
             channel,
-            assistant,
+            &assistant,
             self.shared.host.assistant_mode(),
             self.shared.host.is_muted(),
             self.shared.host.access_mode(),
@@ -352,7 +356,7 @@ impl Handler {
         let reply = optin_reply(
             &host.privacy_url(),
             host.consent_record(command.user.id.get()).as_ref(),
-            host.consent_provider(),
+            &host.consent_provider(),
         );
         let response = match reply {
             OptinReply::Note(text) => ephemeral(&text),
@@ -563,10 +567,14 @@ mod tests {
                 "{command}"
             );
         }
-        assert!(global[4]["description"]
-            .as_str()
-            .unwrap()
-            .contains("hear you"));
+        let optin = global[4]["description"].as_str().unwrap();
+        assert!(optin.contains("hear you"), "{optin}");
+        // Change `claude-and-opencode-engines`: no company named, within Discord's 100.
+        assert!(optin.contains("AI assistant"), "{optin}");
+        for company in ["OpenAI", "Anthropic", "Codex", "Claude"] {
+            assert!(!optin.contains(company), "{optin}");
+        }
+        assert!(optin.chars().count() <= 100, "{optin}");
         assert!(global[5]["description"]
             .as_str()
             .unwrap()
@@ -615,6 +623,7 @@ mod tests {
     #[test]
     fn optin_replies_with_the_text_a_note_or_the_time() {
         let provider = crate::consent::provider_name("codex");
+        let provider = provider.as_str();
         let OptinReply::Note(note) = optin_reply("", None, provider) else {
             panic!("no policy: a note");
         };

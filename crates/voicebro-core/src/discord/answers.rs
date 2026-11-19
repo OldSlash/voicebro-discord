@@ -90,15 +90,20 @@ pub(crate) fn resolve(
     }
 }
 
-/// The text as posted: a small first line naming the task (Discord's `-#` subtext), then
-/// the answer with its Markdown, its tables put into code blocks.
+/// The text of a Codex answer as posted; see [`format_answer_of`].
 pub fn format_answer(task: Option<&str>, text: &str) -> String {
+    format_answer_of("Codex", task, text)
+}
+
+/// The text as posted: a small first line naming the engine and the task (Discord's `-#`
+/// subtext), then the answer with its Markdown, its tables put into code blocks.
+pub fn format_answer_of(engine: &str, task: Option<&str>, text: &str) -> String {
     let task = task
         .map(|task| task.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|task| !task.is_empty());
     let line = match task {
-        Some(task) => format!("-# Codex: {}", cut(&task, TASK_LINE_LIMIT)),
-        None => "-# Codex".to_owned(),
+        Some(task) => format!("-# {engine}: {}", cut(&task, TASK_LINE_LIMIT)),
+        None => format!("-# {engine}"),
     };
     format!("{line}\n{}", wrap_tables(text.trim()))
 }
@@ -710,7 +715,7 @@ pub(crate) async fn post_answer(
         _ => channel_name(cache.as_ref(), guild, channel),
     };
     let server = server_name(cache.as_ref(), guild);
-    let text = format_answer(answer.task.as_deref(), &answer.text);
+    let text = format_answer_of(answer.engine, answer.task.as_deref(), &answer.text);
     let parts = split_for_discord(&text, MESSAGE_LIMIT);
     for part in &parts {
         if let Err(error) = ChannelId::new(channel)
@@ -921,6 +926,11 @@ mod tests {
         );
         assert_eq!(format_answer(None, "Hi"), "-# Codex\nHi");
         assert_eq!(format_answer(Some("  "), "Hi"), "-# Codex\nHi");
+        // Change `claude-and-opencode-engines`: the label names the engine that answered.
+        assert_eq!(
+            format_answer_of("Claude", Some("weather"), "Sunny."),
+            "-# Claude: weather\nSunny."
+        );
         let long = "ask ".repeat(100);
         let first = format_answer(Some(&long), "x");
         let line = first.lines().next().unwrap();

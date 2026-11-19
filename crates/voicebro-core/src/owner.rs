@@ -287,6 +287,8 @@ fn same_code(a: &[u8; CODE_LEN], b: &[u8; CODE_LEN]) -> bool {
 
 struct Waiting {
     code: [u8; CODE_LEN],
+    /// The engine the account belongs to (change `claude-and-opencode-engines`, D9).
+    engine: String,
     account: String,
     expires_at: Instant,
     expires_at_ms: u64,
@@ -440,9 +442,14 @@ impl OwnerState {
         }
     }
 
-    /// Issues a code bound to the assistant account `account` (its fingerprint). A code
-    /// already waiting is replaced.
+    /// Issues a code bound to the Codex account `account` (its fingerprint).
     pub fn issue_code(&self, account: String) -> Result<PendingCode, OwnerError> {
+        self.issue_code_for("codex", account)
+    }
+
+    /// Issues a code bound to `engine`'s account `account` (its fingerprint; empty for an
+    /// engine without accounts, OpenCode). A code already waiting is replaced.
+    pub fn issue_code_for(&self, engine: &str, account: String) -> Result<PendingCode, OwnerError> {
         let code = new_code()?;
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -451,6 +458,7 @@ impl OwnerState {
         let mut inner = self.lock();
         inner.waiting = Some(Waiting {
             code,
+            engine: engine.to_owned(),
             account,
             expires_at: (self.clock)() + CODE_LIFETIME,
             expires_at_ms: now_ms + CODE_LIFETIME.as_millis() as u64,
@@ -519,12 +527,13 @@ impl OwnerState {
             };
         }
         let account = waiting.account.clone();
+        let engine = waiting.engine.clone();
         inner.waiting = None;
         let link = OwnerLink {
             version: FILE_VERSION,
             discord_user_id: user,
             discord_name: name.to_owned(),
-            assistant: "codex".to_owned(),
+            assistant: engine,
             account,
             linked_at: chrono::Utc::now().to_rfc3339(),
         };
@@ -566,27 +575,57 @@ impl OwnerState {
         Ok(true)
     }
 
-    /// The assistant reported a signed-in account (Check, Link, a join, the read at start).
-    /// A link made with another account is removed; returns `true` then.
+    /// Codex reported a signed-in account; see [`OwnerState::check_account_of`].
     pub fn check_account(&self, fingerprint: &str) -> bool {
+        self.check_account_of("codex", fingerprint)
+    }
+
+    /// The selected engine reported its signed-in account (Check, Link, a join, the read at
+    /// start). A link made with another account of the same engine is removed; returns
+    /// `true` then. A link made with another engine is kept and records this engine and
+    /// account from now on (change `claude-and-opencode-engines`, D9).
+    pub fn check_account_of(&self, engine: &str, fingerprint: &str) -> bool {
         let mut inner = self.lock();
-        let differs = inner
-            .link
-            .as_ref()
-            .is_some_and(|link| link.account != fingerprint);
-        if !differs {
+        let Some(link) = inner.link.as_mut() else {
+            return false;
+        };
+        if link.assistant != engine {
+            let mut kept = link.clone();
+            kept.assistant = engine.to_owned();
+            kept.account = fingerprint.to_owned();
+            if let Err(reason) = self.store.save(&kept) {
+                log::error!("owner link: could not store the link: {reason}");
+                return false;
+            }
+            *link = kept;
+            self.events.log(format!(
+                "owner link: kept for {}; its account is recorded from now on",
+                engine_label(engine)
+            ));
+            return false;
+        }
+        if link.account == fingerprint {
             return false;
         }
         if let Err(reason) = self.store.delete() {
             log::error!("owner link: could not delete the link file: {reason}");
         }
+        let label = engine_label(engine);
         inner.link = None;
-        inner.link_ended = Some("the Codex account changed".to_owned());
-        self.events
-            .log("owner link: removed because the Codex account changed; link again in the window");
+        inner.link_ended = Some(format!("the {label} account changed"));
+        self.events.log(format!(
+            "owner link: removed because the {label} account changed; link again in the window"
+        ));
         self.changed(&inner);
         true
     }
+}
+
+/// The engine as the link's messages name it: "Codex", "Claude", "OpenCode".
+fn engine_label(engine: &str) -> &str {
+    crate::settings::AssistantEngine::parse(engine)
+        .map(crate::settings::AssistantEngine::display_name)
+        .unwrap_or(engine)
 }
 
 #[cfg(test)]
@@ -848,6 +887,51 @@ mod tests {
             !state.check_account("fp-x"),
             "the first account does not bring it back"
         );
+    }
+
+    /// Change `claude-and-opencode-engines`, D9: requirements "Linking with a one-time
+    /// code" (Claude Code, OpenCode), "A different assistant account ends the link" (Claude)
+    /// and "An engine change keeps the link".
+    #[test]
+    fn the_link_follows_the_engine_and_compares_only_the_same_engine() {
+        let (state, _, store) = state();
+        state.set_mode(true);
+        // OpenCode has no account: the code is bound to none.
+        let pending = state.issue_code_for("opencode", String::new()).unwrap();
+        state.complete(111, "Alex", &typed(&pending));
+        let stored = store.load().unwrap().unwrap();
+        assert_eq!(
+            (stored.assistant.as_str(), stored.account.as_str()),
+            ("opencode", "")
+        );
+        assert!(!state.check_account_of("opencode", ""));
+
+        // Codex to Claude Code: kept, and the Claude account is recorded.
+        assert!(!state.check_account_of("claude", "fp-claude-x"));
+        assert!(
+            state.status().linked.is_some(),
+            "an engine change keeps the link"
+        );
+        let stored = store.load().unwrap().unwrap();
+        assert_eq!(stored.assistant, "claude");
+        assert_eq!(stored.account, "fp-claude-x");
+        assert!(!state.check_account_of("claude", "fp-claude-x"));
+
+        // Another Claude account ends it, naming Claude.
+        assert!(state.check_account_of("claude", "fp-claude-y"));
+        let status = state.status();
+        assert!(status.linked.is_none());
+        assert_eq!(
+            status.link_ended.as_deref(),
+            Some("the Claude account changed")
+        );
+
+        // A code issued for Claude records Claude.
+        let pending = state
+            .issue_code_for("claude", "fp-claude-y".to_owned())
+            .unwrap();
+        state.complete(222, "Sam", &typed(&pending));
+        assert_eq!(store.load().unwrap().unwrap().assistant, "claude");
     }
 
     #[cfg(windows)]

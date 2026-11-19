@@ -24,6 +24,9 @@ pub struct ChatEntry {
     pub kind: &'static str,
     pub who: Option<String>,
     pub text: String,
+    /// The engine in use when the entry was made: "Codex", "Claude" or "OpenCode" (change
+    /// `claude-and-opencode-engines`); the Chat tab's labels name it.
+    pub engine: &'static str,
 }
 
 pub struct ChatLog {
@@ -34,6 +37,14 @@ pub struct ChatLog {
     /// `assistant.save_chat_history`: append each entry to today's file. Off until the
     /// settings say otherwise.
     save: AtomicBool,
+    /// `assistant.engine`'s display name, stamped on each entry.
+    engine: Mutex<&'static str>,
+}
+
+/// Today's chat history file in `dir` (change `claude-and-opencode-engines`: one name for
+/// every engine; the `codex-chat-*.log` files of earlier builds are left alone).
+pub fn chat_file(dir: &Path, date: &str) -> PathBuf {
+    dir.join(format!("chat-{date}.log"))
 }
 
 impl ChatLog {
@@ -44,7 +55,13 @@ impl ChatLog {
             events,
             dir: logs_dir,
             save: AtomicBool::new(false),
+            engine: Mutex::new("Codex"),
         }
+    }
+
+    /// Follows `assistant.engine`; the next entries name this engine.
+    pub fn set_engine(&self, engine: &'static str) {
+        *self.engine.lock().expect("chat engine lock") = engine;
     }
 
     pub fn dir(&self) -> &Path {
@@ -57,7 +74,7 @@ impl ChatLog {
             log::info!(
                 "chat history {}",
                 if on {
-                    "saved to logs\\codex-chat-<date>.log from now on"
+                    "saved to logs\\chat-<date>.log from now on"
                 } else {
                     "not saved to disk"
                 }
@@ -93,6 +110,7 @@ impl ChatLog {
             kind,
             who: who.map(str::to_owned),
             text: text.to_owned(),
+            engine: *self.engine.lock().expect("chat engine lock"),
         };
         {
             let mut entries = self.entries.lock().expect("chat lock");
@@ -116,9 +134,7 @@ impl ChatLog {
             now.format("%Y-%m-%d %H:%M:%S"),
             text.replace('\n', "\n    ")
         );
-        let path = self
-            .dir
-            .join(format!("codex-chat-{}.log", now.format("%Y-%m-%d")));
+        let path = chat_file(&self.dir, &now.format("%Y-%m-%d").to_string());
         let written = std::fs::create_dir_all(&self.dir).and_then(|_| {
             use std::io::Write as _;
             std::fs::OpenOptions::new()
@@ -260,11 +276,35 @@ mod tests {
             .unwrap();
         let name = file.file_name().to_string_lossy().into_owned();
         assert!(
-            name.starts_with("codex-chat-") && name.ends_with(".log"),
+            name.starts_with("chat-") && name.ends_with(".log"),
             "{name}"
         );
         let text = std::fs::read_to_string(file.path()).unwrap();
         assert!(text.contains("[7] user Alex: hello"));
+    }
+
+    /// Change `claude-and-opencode-engines`: requirement "Where the log lives" (an older
+    /// `codex-chat-*.log` is left alone) and the engine on each entry.
+    #[test]
+    fn entries_name_the_engine_and_an_older_codex_file_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let older = logs.join("codex-chat-2026-11-18.log");
+        std::fs::write(&older, "old\n").unwrap();
+        let log = ChatLog::new(EventBus::new(16), logs.clone());
+        log.set_saving(true);
+        log.push(7, "agent", None, "from Codex");
+        log.set_engine("Claude");
+        log.push(7, "agent", None, "from Claude");
+        let entries = log.entries();
+        assert_eq!(entries[0].engine, "Codex");
+        assert_eq!(entries[1].engine, "Claude");
+        assert_eq!(std::fs::read_to_string(&older).unwrap(), "old\n");
+        let today = chat_file(&logs, &chrono::Local::now().format("%Y-%m-%d").to_string());
+        assert!(std::fs::read_to_string(today)
+            .unwrap()
+            .contains("from Claude"));
     }
 
     #[test]

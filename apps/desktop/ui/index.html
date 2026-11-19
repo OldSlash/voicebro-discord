@@ -11,7 +11,7 @@
     <div class="app-shell">
       <nav class="tab-bar" role="tablist" aria-label="Views">
         <button type="button" role="tab" class="tab-button active" data-tab="console">Console</button>
-        <button type="button" role="tab" class="tab-button" data-tab="chat">Codex chat</button>
+        <button type="button" role="tab" class="tab-button" data-tab="chat">Chat</button>
         <button type="button" role="tab" class="tab-button" data-tab="status">Status</button>
         <button type="button" role="tab" class="tab-button" data-tab="performance">Performance</button>
         <button type="button" role="tab" class="tab-button" data-tab="system">System</button>
@@ -43,11 +43,11 @@
               <button class="button" id="chat-open-folder">Open log folder</button>
             </div>
             <label class="checkbox compact"><input id="chat-filter-context" type="checkbox" checked><span>Names and notes</span></label>
-            <label class="checkbox compact"><input id="chat-filter-agent" type="checkbox" checked><span>Codex agent work</span></label>
+            <label class="checkbox compact"><input id="chat-filter-agent" type="checkbox" checked><span>Agent work</span></label>
             <label class="checkbox compact"><input id="chat-filter-system" type="checkbox" checked><span>Call events</span></label>
             <label class="checkbox compact"><input id="chat-autoscroll" type="checkbox" checked><span>Auto-scroll</span></label>
           </div>
-          <div id="chat-log" class="chat-log" role="log" aria-label="Codex chat"></div>
+          <div id="chat-log" class="chat-log" role="log" aria-label="Chat"></div>
         </section>
 
         <section class="tab-panel" data-panel="status" role="tabpanel">
@@ -71,9 +71,9 @@
                 <p data-whisper-only hidden><span class="detail-label">Whisper device</span><strong id="status-whisper-device">—</strong></p>
                 <p data-whisper-only hidden><span class="detail-label">Local voice</span><strong id="status-tts">—</strong></p>
                 <p><span class="detail-label">Mute</span><strong id="status-mute">not muted</strong></p>
-                <p><span class="detail-label">Codex account</span><strong id="status-codex">—</strong></p>
-                <p><span class="detail-label">Call</span><strong id="status-call">—</strong></p>
-                <p><span class="detail-label">Codex thread</span><strong id="status-thread">—</strong></p>
+                <p><span class="detail-label" id="status-account-label">Codex account</span><strong id="status-codex">—</strong></p>
+                <p data-engine-status="codex"><span class="detail-label">Call</span><strong id="status-call">—</strong></p>
+                <p><span class="detail-label" id="status-thread-label">Codex thread</span><strong id="status-thread">—</strong></p>
                 <p><span class="detail-label">Mute hotkey</span><strong id="status-hotkey">—</strong></p>
                 <p><span class="detail-label">Discord token</span><strong id="status-token">unknown</strong></p>
                 <p><span class="detail-label">Build</span><strong id="status-build">—</strong></p>
@@ -83,12 +83,27 @@
                 <ul id="codex-setup-ways"></ul>
                 <button type="button" class="button primary" id="codex-install">Install Codex</button>
               </div>
+              <!-- Change `claude-and-opencode-engines`: the same offer for the two other
+                   engines; OpenCode has no Sign in, only a hint where its providers are set up. -->
+              <div class="codex-setup" id="claude-setup" hidden>
+                <p id="claude-setup-text"></p>
+                <ul id="claude-setup-ways"></ul>
+                <button type="button" class="button primary" id="claude-install">Install Claude Code</button>
+              </div>
+              <div class="codex-setup" id="opencode-setup" hidden>
+                <p id="opencode-setup-text"></p>
+                <ul id="opencode-setup-ways"></ul>
+                <button type="button" class="button primary" id="opencode-install">Install OpenCode</button>
+              </div>
               <div class="status-actions">
-                <button type="button" class="button" id="mute-toggle">Mute GPT</button>
+                <button type="button" class="button" id="mute-toggle">Mute assistant</button>
                 <button type="button" class="button primary" id="discord-connect">Connect</button>
                 <button type="button" class="button" id="discord-disconnect">Disconnect</button>
-                <button type="button" class="button primary" id="codex-sign-in">Sign in to Codex</button>
-                <button type="button" class="button" id="codex-check">Check Codex</button>
+                <button type="button" class="button primary" id="codex-sign-in" data-engine-status="codex">Sign in to Codex</button>
+                <button type="button" class="button" id="codex-check" data-engine-status="codex">Check Codex</button>
+                <button type="button" class="button primary" id="claude-sign-in" data-engine-status="claude" hidden>Sign in to Claude Code</button>
+                <button type="button" class="button" id="claude-check" data-engine-status="claude" hidden>Check Claude Code</button>
+                <button type="button" class="button" id="opencode-check" data-engine-status="opencode" hidden>Check OpenCode</button>
                 <button type="button" class="button" id="status-refresh">Refresh</button>
               </div>
               <h3 class="subhead">Connection errors</h3>
@@ -167,12 +182,12 @@
                 <dl class="info-list">
                   <div><dt>Rust process</dt><dd id="memory-app">—</dd></div>
                   <div><dt>WebView2</dt><dd id="memory-webview">—</dd></div>
-                  <div><dt>Codex</dt><dd id="memory-codex">—</dd></div>
+                  <div><dt id="memory-engine-name">Codex</dt><dd id="memory-codex">—</dd></div>
                   <div><dt>Total</dt><dd id="memory-total">—</dd></div>
                 </dl>
-                <p class="muted system-help">Private working set, the memory Task Manager shows, read every 3 seconds. Codex runs only while the bot is in a voice channel.</p>
+                <p class="muted system-help">Private working set, the memory Task Manager shows, read every 3 seconds. The assistant engine runs only while the bot is in a voice channel.</p>
               </div>
-              <p class="muted system-help" id="memory-off">Memory measurement is off. Turn it on in the Diagnostics card of the Settings tab: the app then reads the private working set of its own process, its WebView2 processes and Codex every 3 seconds, which costs a scan of the process list each time.</p>
+              <p class="muted system-help" id="memory-off">Memory measurement is off. Turn it on in the Diagnostics card of the Settings tab: the app then reads the private working set of its own process, its WebView2 processes and the assistant engine every 3 seconds, which costs a scan of the process list each time.</p>
             </article>
             <article class="card">
               <h2>Files</h2>
@@ -309,6 +324,7 @@
               <div class="card-body" id="card-access-body">
               <div class="form-grid">
                 <label>Who the assistant hears<select id="access-mode" data-path="discord.access" data-kind="string"><option value="everyone">Everyone</option><option value="agreed">People who agreed (/optin)</option><option value="owner">Only my Discord account</option></select><small class="field-help">Everyone: every member in the bot's voice channel. People who agreed: your linked account and everyone who ran /optin in Discord and pressed "I agree"; /optout or Remove below takes them off. Only my Discord account: the linked account alone, for a subscription that is yours alone. Everyone can still use /join, /leave, /status and the Mute button, and everyone hears the answers. Applies at once. Default: Everyone.</small><small class="field-help warning-text" id="owner-note"></small><small class="field-message" data-for="access-mode"></small></label>
+                <div class="wide claude-notice" id="claude-notice-access" data-claude-notice hidden></div>
                 <label>Privacy policy URL<input id="privacy-url" type="url" data-path="discord.privacy_url" data-kind="string" placeholder="https://" spellcheck="false" autocomplete="off"><small class="field-help">Your bot's privacy policy, an https:// page you publish yourself (a template is in VoiceBro's repository: docs/PRIVACY-POLICY-TEMPLATE.md). /privacy shows it, the /optin text links to it, and /optin is refused while it is empty. Put the same URL in the Discord Developer Portal. Applies at once. Default: empty.</small><small class="field-help warning-text" id="consent-note"></small><small class="field-message" data-for="privacy-url"></small></label>
                 <div class="field owner-link" id="owner-link">
                   <span class="field-name">Linked Discord account</span>
@@ -324,7 +340,7 @@
                     <button type="button" class="button" id="owner-link-cancel" hidden>Cancel</button>
                     <button type="button" class="button" id="owner-unlink" hidden>Unlink</button>
                   </span>
-                  <small class="field-help">Link reads your Codex account and shows a one-time code for 10 minutes; send it with /link from your own Discord account. Five wrong codes end it. The link stays until you unlink, link another account, sign Codex into another account, or delete VoiceBro with its data. It is stored encrypted for your Windows user, never in settings.json.</small>
+                  <small class="field-help">Link reads the account of the engine in use (your ChatGPT account for Codex, your Claude account for Claude Code; OpenCode has none) and shows a one-time code for 10 minutes; send it with /link from your own Discord account. Five wrong codes end it. The link stays until you unlink, link another account, sign the engine into another account, or delete VoiceBro with its data; a change of the engine keeps it. It is stored encrypted for your Windows user, never in settings.json.</small>
                   <small class="field-help" id="owner-code-ended"></small>
                   <small class="field-message" id="owner-message"></small>
                 </div>
@@ -360,9 +376,10 @@
                    the mode decides which rows show (`data-mode`). The rows of the other mode are
                    hidden, not disabled; each row writes only its own setting path. -->
               <div class="form-grid">
-                <label class="wide">Assistant mode<select id="assistant-mode" data-path="assistant.mode" data-kind="string"><option value="realtime">Realtime voice (Codex voice call, Vosk wake word)</option><option value="whisper">Whisper (local recognition, Codex text answers, local voice)</option></select><small class="field-help">Realtime voice: Vosk spots the phrases on this PC; during a session what is said in the channel goes to OpenAI's realtime voice call as audio, and the call answers aloud. Whisper: Whisper writes down what is said on this PC and spots the phrases in it, Codex answers that text, and the Local voice card's voice reads the answer on this PC; only text goes to OpenAI. In the Whisper mode, Model and Reasoning in the Codex card set how fast each answer comes: a low reasoning level is the quick choice; Whisper's device and language are in Settings → Whisper. Applies at once, also in a voice channel the bot is in (a running session ends). Default: realtime voice.</small><small class="field-message" data-for="assistant-mode"></small></label>
+                <label class="wide">Assistant mode<select id="assistant-mode" data-path="assistant.mode" data-kind="string"><option value="realtime">Realtime voice (Codex voice call, Vosk wake word)</option><option value="whisper">Whisper (local recognition, text answers, local voice)</option></select><small class="field-help">Realtime voice: Vosk spots the phrases on this PC; during a session what is said in the channel goes to OpenAI's realtime voice call as audio, and the call answers aloud; Codex only. Whisper: Whisper writes down what is said on this PC and spots the phrases in it, the engine answers that text, and the Local voice card's voice reads the answer on this PC; only text goes to the engine's provider. In the Whisper mode the engine card's model sets how fast each answer comes (with Codex a low reasoning level is the quick choice); Whisper's device and language are in Settings → Whisper. Applies at once, also in a voice channel the bot is in (a running session ends). Default: realtime voice.</small><small class="field-help warning-text" id="assistant-mode-note"></small><small class="field-message" data-for="assistant-mode"></small></label>
                 <label>Recognition<input id="recognition-engine" class="read-only" type="text" readonly aria-readonly="true" value="Vosk"><small class="field-help">What spots the phrases on this PC. It follows the assistant mode and cannot be changed here: Vosk in the realtime voice mode, Whisper in the Whisper mode.</small></label>
-                <label>Engine<select id="assistant-engine" data-path="assistant.engine" data-kind="string"><option value="codex">Codex CLI (official app-server)</option></select><small class="field-help">Codex CLI through its app-server with your ChatGPT sign-in; no API key. The only engine today. Applies at once.</small><small class="field-message" data-for="assistant-engine"></small></label>
+                <label>Engine<select id="assistant-engine" data-path="assistant.engine" data-kind="string"><option value="codex">Codex (OpenAI, ChatGPT sign-in)</option><option value="claude">Claude Code (Anthropic; Whisper mode)</option><option value="opencode">OpenCode (your providers; Whisper mode)</option></select><small class="field-help">Who answers. Codex: the Codex CLI with your ChatGPT sign-in, no API key; the only engine with the realtime voice mode. Claude Code: Anthropic's Claude Code with your Claude sign-in or an API key; Whisper mode only. OpenCode: the open-source OpenCode with the AI providers you set up in it; Whisper mode only. Each is installed separately (Status tab) and may only search and fetch the web. Choosing Claude Code or OpenCode in the realtime voice mode switches to the Whisper mode. Applies at once, also in a voice channel the bot is in. Default: Codex.</small><small class="field-message" data-for="assistant-engine"></small></label>
+                <div class="wide claude-notice" id="claude-notice-assistant" data-claude-notice hidden></div>
                 <label class="wide" data-mode="realtime">Wake model<select id="wake-model" data-path="wake.model" data-kind="string"></select><small class="field-help">The Vosk model's language; the phrases below belong to the model chosen here, and each model keeps its own. A model that is not on this PC yet is downloaded only after you agree: choosing one asks first, and nothing is fetched until you press Download. Other languages: extract a small Vosk model from alphacephei.com/vosk/models into the models folder and restart VoiceBro; use the small models, the large ones load slowly and take gigabytes of memory. Applies at once. Default: English (US).</small><small class="field-message" data-for="wake-model"></small></label>
                 <div class="wide wake-model-tools" data-mode="realtime">
                   <div class="wake-download" id="wake-download" hidden>
@@ -410,7 +427,7 @@
               <div class="card-body" id="card-local-voice-body">
               <p class="muted card-lead mode-note" id="local-voice-note"></p>
               <div class="form-grid">
-                <label class="wide">Voice<select id="tts-voice" data-path="tts.voice" data-kind="string"></select><small class="field-help">The voice that reads Codex's answers into the voice channel in the Whisper mode, made on this PC. Supertonic 3 speaks 31 languages. Piper and Kokoro voices speak one language each and need the phonemizer piper-phonemize (GPL-3.0), a separate download. Windows voices are built into Windows and need no download. Nothing is downloaded until you press Download; in the Whisper mode a voice that is not on this PC asks first. Applies at once. Default: Supertonic 3 F1.</small><small class="field-help" id="tts-voice-info"></small><small class="field-message" data-for="tts-voice"></small></label>
+                <label class="wide">Voice<select id="tts-voice" data-path="tts.voice" data-kind="string"></select><small class="field-help">The voice that reads the assistant's answers into the voice channel in the Whisper mode, made on this PC. Supertonic 3 speaks 31 languages. Piper and Kokoro voices speak one language each and need the phonemizer piper-phonemize (GPL-3.0), a separate download. Windows voices are built into Windows and need no download. Nothing is downloaded until you press Download; in the Whisper mode a voice that is not on this PC asks first. Applies at once. Default: Supertonic 3 F1.</small><small class="field-help" id="tts-voice-info"></small><small class="field-message" data-for="tts-voice"></small></label>
                 <label>Speed <output id="tts-speed-label" for="tts-speed">1.00×</output><input id="tts-speed" type="range" min="0.5" max="2" step="0.05" data-path="tts.speed" data-kind="factor"><small class="field-help">How fast the voice speaks, 0.5 to 2 times its own pace. Saves when you release the slider. Applies from the next answer and to Preview. Default: 1.00×.</small><small class="field-message" data-for="tts-speed"></small></label>
                 <div class="field">
                   <span class="field-name">Preview</span>
@@ -435,23 +452,32 @@
               </div>
             </div>
 
+            <!-- Change `claude-and-opencode-engines`: the engine card, titled after the engine.
+                 Rows with `data-engine` show for that engine only; the others are shared. The
+                 card keeps its id `codex` for `ui.collapsed_cards`. -->
             <div class="card settings-section collapsible" data-card="codex">
-              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-codex-body"><span class="chevron" aria-hidden="true"></span>Codex</button></h2>
+              <h2 class="card-heading"><button type="button" class="card-toggle" aria-expanded="true" aria-controls="card-codex-body"><span class="chevron" aria-hidden="true"></span><span id="engine-card-title">Codex</span></button></h2>
               <div class="card-body" id="card-codex-body">
               <div class="form-grid">
-                <label>Refresh the lists at start <span class="switch-row"><input id="codex-refresh-lists" type="checkbox" role="switch" class="switch" data-path="codex.refresh_lists_at_start" data-kind="bool"><span class="switch-state" id="codex-refresh-lists-label">Off</span></span><small class="field-help">While on, every start of VoiceBro runs Codex for a moment to read the models, reasoning levels and voices of your account, and Codex stops again a minute later. While off, the lists saved from the last read are shown and Codex does not start with the app; the first /join of each run reads them again. Applies from the next start. Default: off.</small><small class="field-message" data-for="codex-refresh-lists"></small></label>
-                <div class="field"><span class="field-name">Lists</span><span class="lists-row"><button type="button" class="button" id="codex-lists-refresh">Refresh lists</button><span class="lists-read" id="codex-lists-read" role="status">Never read</span></span><small class="field-help">The Model, Reasoning and Voice lists below come from the last read, saved next to the app in codex-lists.json. Refresh lists reads them now: Codex starts and stops again a minute later unless the bot is in a voice channel. Check Codex and /join read them too.</small></div>
-                <label>Model<select id="codex-model-select" class="listed" data-for="codex-model"></select><input id="codex-model" type="text" spellcheck="false" list="codex-model-list" placeholder="account default" data-path="codex.model" data-kind="string"><datalist id="codex-model-list"></datalist><small class="field-help">For the work the voice assistant hands to Codex (searching, longer reasoning). The voice itself stays the realtime voice model. Applies from the next call, which opens a new thread. Default: the account's default model.</small><small class="field-message" data-for="codex-model"></small></label>
-                <label>Reasoning<select id="codex-effort-select" class="listed" data-for="codex-effort"></select><input id="codex-effort" type="text" spellcheck="false" list="codex-effort-list" placeholder="model default" data-path="codex.reasoning_effort" data-kind="string"><datalist id="codex-effort-list"></datalist><small class="field-help">How long Codex thinks about a handed-off task. Higher levels answer better but take longer. Applies from the next call, which opens a new thread. Default: the model's default.</small><small class="field-message" data-for="codex-effort"></small></label>
-                <label>Voice<select id="codex-voice-select" class="listed" data-for="codex-voice"></select><input id="codex-voice" type="text" spellcheck="false" list="codex-voice-list" placeholder="server default" data-path="codex.voice" data-kind="string"><datalist id="codex-voice-list"></datalist><small class="field-help">The voice the realtime call speaks with; realtime voice mode only (the Whisper mode's voice is in the Local voice card). Empty is the server's default voice. Applies from the next call.</small><small class="field-message" data-for="codex-voice"></small></label>
-                <label>Answer handoff<select id="codex-handoff" data-path="codex.handoff_mode" data-kind="string"><option value="items">Conversation items (recommended)</option><option value="commentary">Commentary</option><option value="bem_tags">Tagged channels</option><option value="thinking">Built-in (thinking)</option></select><small class="field-help" id="codex-handoff-hint"></small><small class="field-message" data-for="codex-handoff"></small></label>
-                <label>Speaker names<select id="speaker-labels" data-path="assistant.speaker_labels" data-kind="string"><option value="start">At call start (recommended)</option><option value="changes">At call start and when the speaker changes</option><option value="off">Off</option></select><small class="field-help">At call start the assistant gets the people in the voice channel and who said the activation phrase. With One speaker at a time on (Config → Assistant), both choices also name each person who takes their turn to speak; Off sends no names. Discord nicknames go to OpenAI. Applies from the next session. Default: at call start.</small><small class="field-message" data-for="speaker-labels"></small></label>
-                <label>Save chat history <span class="switch-row"><input id="save-chat-history" type="checkbox" role="switch" class="switch" data-path="assistant.save_chat_history" data-kind="bool"><span class="switch-state" id="save-chat-history-label">Off</span></span><small class="field-help">While on, every chat entry is appended to logs\codex-chat-&lt;date&gt;.log next to the app. While off, nothing of the chat is saved and the Codex chat tab still shows it. Files saved earlier stay. Applies at once. Default: off.</small><small class="field-message" data-for="save-chat-history"></small></label>
-                <label>Post answers to Discord<select id="post-answers" data-path="assistant.post_answers" data-kind="string"><option value="off">Off</option><option value="voice_channel">The voice channel's chat</option><option value="command_channel">The channel of /join</option><option value="channel">A chosen channel</option></select><small class="field-help">When the voice hands a question to the Codex agent, the agent's final answer is posted there as text, with its links and their previews, while the voice retells it. Its interim lines, what the voice says and what people say are not posted. The bot needs View Channel, Send Messages and Embed Links in that channel. A posted answer is public there and stays in the channel. Applies from the next answer. Default: off.</small><small class="field-message" data-for="post-answers"></small></label>
+                <label data-engine="claude" hidden>Claude Code executable<input id="claude-executable" type="text" spellcheck="false" placeholder="Automatic" data-path="claude.executable" data-kind="string"><small class="field-help">Empty finds claude.exe by itself: on the PATH, in winget's links folder, then in %USERPROFILE%\.local\bin, where Claude Code's own installer puts it. Applies from the next /join. Default: automatic.</small><small class="field-message" data-for="claude-executable"></small></label>
+                <label data-engine="claude" hidden>Model<select id="claude-model-select" class="listed" data-for="claude-model"></select><input id="claude-model" type="text" spellcheck="false" list="claude-model-list" placeholder="Claude Code's default" data-path="claude.model" data-kind="string"><datalist id="claude-model-list"></datalist><small class="field-help">The model that answers every question, from the list Check Claude Code read for your sign-in, or a name or alias Claude Code knows (sonnet, haiku, opus). Faster models answer sooner. Applies from the next /join. Default: Claude Code's default for your sign-in.</small><small class="field-message" data-for="claude-model"></small></label>
+                <label data-engine="opencode" hidden>OpenCode executable<input id="opencode-executable" type="text" spellcheck="false" placeholder="Automatic" data-path="opencode.executable" data-kind="string"><small class="field-help">Empty finds opencode.exe by itself: on the PATH, in winget's links folder, then the program inside npm's opencode-ai package. Applies from the next /join. Default: automatic.</small><small class="field-message" data-for="opencode-executable"></small></label>
+                <label data-engine="opencode" hidden>Model<select id="opencode-model-select" class="listed" data-for="opencode-model"></select><input id="opencode-model" type="text" spellcheck="false" list="opencode-model-list" placeholder="OpenCode's default" data-path="opencode.model" data-kind="string"><datalist id="opencode-model-list"></datalist><small class="field-help">provider/model, from the list Check OpenCode read. Providers and their keys are set up in OpenCode itself (opencode auth login in a terminal). OpenCode's own default can be one of its free models (provider opencode), whose use is limited, even when your provider is connected: pick one of your provider's models to be sure it answers. Applies from the next question. Default: OpenCode's own default model.</small><small class="field-message" data-for="opencode-model"></small></label>
+                <label data-engine="codex">Refresh the lists at start <span class="switch-row"><input id="codex-refresh-lists" type="checkbox" role="switch" class="switch" data-path="codex.refresh_lists_at_start" data-kind="bool"><span class="switch-state" id="codex-refresh-lists-label">Off</span></span><small class="field-help">While on, every start of VoiceBro runs Codex for a moment to read the models, reasoning levels and voices of your account, and Codex stops again a minute later. While off, the lists saved from the last read are shown and Codex does not start with the app; the first /join of each run reads them again. Applies from the next start. Default: off.</small><small class="field-message" data-for="codex-refresh-lists"></small></label>
+                <div class="field" data-engine="codex"><span class="field-name">Lists</span><span class="lists-row"><button type="button" class="button" id="codex-lists-refresh">Refresh lists</button><span class="lists-read" id="codex-lists-read" role="status">Never read</span></span><small class="field-help">The Model, Reasoning and Voice lists below come from the last read, saved next to the app in codex-lists.json. Refresh lists reads them now: Codex starts and stops again a minute later unless the bot is in a voice channel. Check Codex and /join read them too.</small></div>
+                <label data-engine="codex">Model<select id="codex-model-select" class="listed" data-for="codex-model"></select><input id="codex-model" type="text" spellcheck="false" list="codex-model-list" placeholder="account default" data-path="codex.model" data-kind="string"><datalist id="codex-model-list"></datalist><small class="field-help">For the work the voice assistant hands to Codex (searching, longer reasoning). The voice itself stays the realtime voice model. Applies from the next call, which opens a new thread. Default: the account's default model.</small><small class="field-message" data-for="codex-model"></small></label>
+                <label data-engine="codex">Reasoning<select id="codex-effort-select" class="listed" data-for="codex-effort"></select><input id="codex-effort" type="text" spellcheck="false" list="codex-effort-list" placeholder="model default" data-path="codex.reasoning_effort" data-kind="string"><datalist id="codex-effort-list"></datalist><small class="field-help">How long Codex thinks about a handed-off task. Higher levels answer better but take longer. Applies from the next call, which opens a new thread. Default: the model's default.</small><small class="field-message" data-for="codex-effort"></small></label>
+                <label data-engine="codex">Voice<select id="codex-voice-select" class="listed" data-for="codex-voice"></select><input id="codex-voice" type="text" spellcheck="false" list="codex-voice-list" placeholder="server default" data-path="codex.voice" data-kind="string"><datalist id="codex-voice-list"></datalist><small class="field-help">The voice the realtime call speaks with; realtime voice mode only (the Whisper mode's voice is in the Local voice card). Empty is the server's default voice. Applies from the next call.</small><small class="field-message" data-for="codex-voice"></small></label>
+                <label data-engine="codex">Answer handoff<select id="codex-handoff" data-path="codex.handoff_mode" data-kind="string"><option value="items">Conversation items (recommended)</option><option value="commentary">Commentary</option><option value="bem_tags">Tagged channels</option><option value="thinking">Built-in (thinking)</option></select><small class="field-help" id="codex-handoff-hint"></small><small class="field-message" data-for="codex-handoff"></small></label>
+                <label>Speaker names<select id="speaker-labels" data-path="assistant.speaker_labels" data-kind="string"><option value="start">At call start (recommended)</option><option value="changes">At call start and when the speaker changes</option><option value="off">Off</option></select><small class="field-help">At call start the assistant gets the people in the voice channel and who said the activation phrase. With One speaker at a time on (Config → Assistant), both choices also name each person who takes their turn to speak; Off sends no names. Discord nicknames go to the engine's provider. Applies from the next session. Default: at call start.</small><small class="field-message" data-for="speaker-labels"></small></label>
+                <label>Save chat history <span class="switch-row"><input id="save-chat-history" type="checkbox" role="switch" class="switch" data-path="assistant.save_chat_history" data-kind="bool"><span class="switch-state" id="save-chat-history-label">Off</span></span><small class="field-help">While on, every chat entry is appended to logs\chat-&lt;date&gt;.log next to the app, whichever engine answers. While off, nothing of the chat is saved and the Chat tab still shows it. Files saved earlier stay, the codex-chat files of older versions too. Applies at once. Default: off.</small><small class="field-message" data-for="save-chat-history"></small></label>
+                <label>Post answers to Discord<select id="post-answers" data-path="assistant.post_answers" data-kind="string"><option value="off">Off</option><option value="voice_channel">The voice channel's chat</option><option value="command_channel">The channel of /join</option><option value="channel">A chosen channel</option></select><small class="field-help">The final answer is posted there as text, with its links and their previews: in the realtime voice mode the Codex agent's answer to a question the voice handed it, while the voice retells it; in the Whisper mode every completed answer of the engine, while the local voice reads it. Interim lines, what the voice says and what people say are not posted. The bot needs View Channel, Send Messages and Embed Links in that channel. A posted answer is public there and stays in the channel. Applies from the next answer. Default: off.</small><small class="field-message" data-for="post-answers"></small></label>
                 <label id="answers-channel-field" hidden>Answers channel<select id="answers-channel"></select><small class="field-help warning-text" id="answers-channel-pick" hidden>Pick a channel: nothing is saved until you do.</small><small class="field-help" id="answers-channel-note"></small><small class="field-message" data-for="answers-channel"></small></label>
-                <label class="wide">Instructions<textarea id="codex-instructions" class="prompt-input" rows="5" data-path="codex.instructions" data-kind="string"></textarea><small class="field-help">Your instructions for the assistant: sent to the voice at every call start and to the Codex agent as its developer instructions. There is no built-in default. The voice follows a change from the next call, the agent from the next /join.</small><small class="field-message" data-for="codex-instructions"></small></label>
+                <label class="wide">Instructions<textarea id="codex-instructions" class="prompt-input" rows="5" data-path="assistant.instructions" data-kind="string"></textarea><small class="field-help">Your instructions for the assistant, one text for every engine: Codex gets them at every call start and as its agent's developer instructions, Claude Code after its own system prompt, OpenCode as its agent's prompt. There is no built-in default. Codex's voice follows a change from the next call, its agent and the other engines from the next /join.</small><small class="field-message" data-for="codex-instructions"></small></label>
               </div>
-              <p class="form-note">Threads are read-only and ephemeral, the shell tool is disabled, and VoiceBro declines every request to run commands or change files. The agent may search the web. Codex starts at /join and stops when the bot leaves its last voice channel.</p>
+              <p class="form-note" data-engine="codex">Threads are read-only and ephemeral, the shell tool is disabled, and VoiceBro declines every request to run commands or change files. The agent may search the web. Codex starts at /join and stops when the bot leaves its last voice channel.</p>
+              <p class="form-note" data-engine="claude" hidden>Claude Code runs headless with only its web search and web fetch tools; your own Claude Code settings, CLAUDE.md files, hooks and MCP servers are not loaded, and no conversation is saved to disk. It starts at /join and stops when the bot leaves the channel. Your sign-in stays Claude Code's own: VoiceBro reads only what kind it is.</p>
+              <p class="form-note" data-engine="opencode" hidden>OpenCode runs behind a local server that only this PC can reach, with an agent that may only fetch web pages and search the web; instruction files and skills of other agents are not loaded. Its web searches go to OpenCode's web search service, a company other than your model's provider. It starts at /join and stops when the bot leaves the channel; the conversations VoiceBro made are deleted then.</p>
               </div>
             </div>
 
@@ -463,7 +489,7 @@
               </div>
               </div>
             </div>
-            <div class="settings-actions"><span class="form-feedback" id="config-autosave-feedback" data-autosave="Access, Audio, Assistant, Local voice, Codex and Hotkey save each change automatically.">Access, Audio, Assistant, Local voice, Codex and Hotkey save each change automatically.</span></div>
+            <div class="settings-actions"><span class="form-feedback" id="config-autosave-feedback" data-autosave="Access, Audio, Assistant, Local voice, the engine's card and Hotkey save each change automatically.">Access, Audio, Assistant, Local voice, the engine's card and Hotkey save each change automatically.</span></div>
             <p class="muted settings-file">Settings file: <span class="path-value" id="config-path">—</span></p>
           </div>
         </section>
@@ -500,6 +526,18 @@
       <div class="install-actions">
         <button type="button" class="button" id="wake-install-secondary">Not now</button>
         <button type="button" class="button primary" id="wake-install-primary">Download</button>
+      </div>
+    </dialog>
+    <!-- Change `claude-and-opencode-engines`, design D6: asked once, the first time Claude
+         Code is chosen while its sign-in is a subscription (or not known yet) and more
+         voices than the owner's reach the assistant. Either answer is remembered. -->
+    <dialog class="install-dialog" id="claude-notice-dialog" aria-labelledby="claude-notice-title" aria-describedby="claude-notice-text">
+      <h2 id="claude-notice-title">A Claude subscription is for you alone</h2>
+      <div id="claude-notice-text"></div>
+      <p class="install-progress" id="claude-notice-progress" role="status" hidden></p>
+      <div class="install-actions">
+        <button type="button" class="button" id="claude-notice-later">Not now</button>
+        <button type="button" class="button primary" id="claude-notice-owner">Hear only me</button>
       </div>
     </dialog>
     <!-- The bot left a voice channel because the Opus codec failed (change

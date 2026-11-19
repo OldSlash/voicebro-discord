@@ -43,9 +43,10 @@ pub struct TurnReport {
     pub answer_to_playback_ms: u64,
     /// First speech to the playback of the answer.
     pub first_speech_to_playback_ms: Option<u64>,
-    /// The Whisper mode's four timings (change `whisper-mode`, design D15).
+    /// The Whisper mode's four timings (change `whisper-mode`, design D15), boxed so that a
+    /// report stays small in the latency events.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub whisper: Option<WhisperTiming>,
+    pub whisper: Option<Box<WhisperTiming>>,
 }
 
 /// One answer of the Whisper mode, from the end of the question's speech to the voice.
@@ -55,6 +56,9 @@ pub struct WhisperTiming {
     pub audio_seconds: f64,
     pub model: String,
     pub device: String,
+    /// The engine that answered (change `claude-and-opencode-engines`): Codex, Claude or
+    /// OpenCode.
+    pub engine: String,
     pub text_to_first_words_ms: u64,
     pub first_words_to_voice_ms: u64,
     pub speech_to_voice_ms: u64,
@@ -79,10 +83,17 @@ impl WhisperTiming {
             audio_seconds,
             model: model.to_owned(),
             device: device.to_owned(),
+            engine: "Codex".to_owned(),
             text_to_first_words_ms: millis(text_at, first_words_at),
             first_words_to_voice_ms: millis(first_words_at, voice_at),
             speech_to_voice_ms: millis(speech_end, voice_at),
         }
+    }
+
+    /// The same timings for answers of `engine` (its display name).
+    pub fn with_engine(mut self, engine: &str) -> Self {
+        self.engine = engine.to_owned();
+        self
     }
 
     /// The report the status keeps, with the Whisper timings in it.
@@ -95,7 +106,7 @@ impl WhisperTiming {
             last_speech_to_answer_ms: Some(self.speech_to_text_ms + self.text_to_first_words_ms),
             answer_to_playback_ms: self.first_words_to_voice_ms,
             first_speech_to_playback_ms: Some(self.speech_to_voice_ms),
-            whisper: Some(self),
+            whisper: Some(Box::new(self)),
         }
     }
 }
@@ -105,11 +116,12 @@ impl TurnReport {
     pub fn line(&self) -> String {
         if let (Some(turn), Some(whisper)) = (self.turn, self.whisper.as_ref()) {
             return format!(
-                "whisper turn {turn}: speech end -> text {} ms ({:.1} s of audio, {}, {}); text -> Codex first words {} ms; first words -> voice {} ms; speech end -> voice {} ms",
+                "whisper turn {turn}: speech end -> text {} ms ({:.1} s of audio, {}, {}); text -> {} first words {} ms; first words -> voice {} ms; speech end -> voice {} ms",
                 whisper.speech_to_text_ms,
                 whisper.audio_seconds,
                 whisper.model,
                 whisper.device,
+                whisper.engine,
                 whisper.text_to_first_words_ms,
                 whisper.first_words_to_voice_ms,
                 whisper.speech_to_voice_ms
@@ -357,6 +369,17 @@ mod whisper_tests {
         let mut tracker = LatencyTracker::default();
         tracker.push_report(report);
         assert_eq!(tracker.recent()[0].kind, "whisper");
+        // Change `claude-and-opencode-engines`: the line names the engine that answered.
+        let claude = WhisperTiming::new(
+            speech_end, speech_end, speech_end, speech_end, 1.0, "m", "cpu",
+        )
+        .with_engine("Claude")
+        .report(4, "12:00:01");
+        assert!(
+            claude.line().contains("text -> Claude first words"),
+            "{}",
+            claude.line()
+        );
         let json = serde_json::to_value(&tracker.recent()[0]).unwrap();
         assert_eq!(json["whisper"]["speech_to_voice_ms"], 2600);
     }

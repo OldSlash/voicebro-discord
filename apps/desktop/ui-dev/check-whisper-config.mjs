@@ -172,7 +172,8 @@ const scenarios = [
   ["no Whisper tab: the tab bar ends with Config", async () => {
     await load("?whisper");
     const r = await page(`return { tabs: [...document.querySelectorAll(".tab-button")].map((b) => b.textContent.trim()), panel: Boolean(document.querySelector('[data-panel="whisper"]')) };`);
-    expect(same(r.tabs, ["Console", "Codex chat", "Status", "Performance", "System", "Settings", "Config"]), `tabs: ${r.tabs}`);
+    // "Chat" since change `claude-and-opencode-engines` (it was "Codex chat").
+    expect(same(r.tabs, ["Console", "Chat", "Status", "Performance", "System", "Settings", "Config"]), `tabs: ${r.tabs}`);
     expect(!r.panel, "the Whisper tab's panel is still in the page");
   }],
   ["the cards: Config holds Access, Audio, Assistant, Local voice, Codex and Hotkey; Settings Appearance, Diagnostics and Whisper", async () => {
@@ -200,7 +201,9 @@ const scenarios = [
     expect(r.rec.value === "Vosk" && r.rec.readOnly && r.rec.grey, `Recognition: ${JSON.stringify(r.rec)}`);
     expect(!r.engine && !r.note, "the wake engine select or the old note is still there");
     expect(r.mode === "realtime" && same(r.options, ["realtime", "whisper"]), `mode: ${r.mode}`);
-    for (const part of ["Realtime voice", "OpenAI", "only text goes to OpenAI", "on this PC"]) {
+    // Change `claude-and-opencode-engines`: the Whisper mode's text goes to the engine's
+    // provider, OpenAI with Codex.
+    for (const part of ["Realtime voice", "OpenAI", "only text goes to the engine's provider", "on this PC"]) {
       expect(r.help.includes(part), `the mode help lacks «${part}»: ${r.help}`);
     }
   }],
@@ -329,7 +332,8 @@ const scenarios = [
     expect(r.texts.some((text) => text.startsWith("Downloading the Voice engine")), `no progress: ${JSON.stringify(r.texts)}`);
     expect(r.after.state === "off" && !r.after.notice && r.after.label === "Supertonic 3 F1 (female) · downloaded", `after: ${JSON.stringify(r.after)}`);
     expect(same(r.after.calls, [[{ voice: "supertonic3:F1" }], 0]) && r.after.dialogs === 0, `calls: ${JSON.stringify(r.after)}`);
-    expect(r.whisperNote === "This voice reads Codex's answers into the voice channel.", `Whisper note: ${r.whisperNote}`);
+    // Any engine answers in the Whisper mode (change `claude-and-opencode-engines`).
+    expect(r.whisperNote === "This voice reads the assistant's answers into the voice channel.", `Whisper note: ${r.whisperNote}`);
   }],
   ["a voice choice in the realtime mode saves at once and its card lists what it misses", async () => {
     await load();

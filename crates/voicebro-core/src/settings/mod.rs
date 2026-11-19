@@ -28,6 +28,10 @@ pub struct Settings {
     pub wake: WakeSettings,
     pub assistant: AssistantSettings,
     pub codex: CodexSettings,
+    /// Claude Code as the engine (change `claude-and-opencode-engines`).
+    pub claude: ClaudeSettings,
+    /// OpenCode as the engine (change `claude-and-opencode-engines`).
+    pub opencode: OpencodeSettings,
     pub hotkey: HotkeySettings,
     pub ui: UiSettings,
     pub diagnostics: DiagnosticsSettings,
@@ -50,6 +54,8 @@ impl Default for Settings {
             wake: WakeSettings::default(),
             assistant: AssistantSettings::default(),
             codex: CodexSettings::default(),
+            claude: ClaudeSettings::default(),
+            opencode: OpencodeSettings::default(),
             hotkey: HotkeySettings::default(),
             ui: UiSettings::default(),
             diagnostics: DiagnosticsSettings::default(),
@@ -95,6 +101,75 @@ impl TryFrom<String> for AssistantMode {
                     "assistant.mode: «{value}» is not an assistant mode; use one of realtime, whisper"
                 )
             })
+    }
+}
+
+/// Which engine answers (change `claude-and-opencode-engines`). Only Codex has the realtime
+/// voice mode; Claude Code and OpenCode answer in the Whisper mode only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", try_from = "String")]
+pub enum AssistantEngine {
+    #[default]
+    Codex,
+    /// Claude Code, Anthropic's command-line agent, run headless.
+    Claude,
+    /// OpenCode behind its local server.
+    Opencode,
+}
+
+impl AssistantEngine {
+    pub const ALL: [AssistantEngine; 3] = [
+        AssistantEngine::Codex,
+        AssistantEngine::Claude,
+        AssistantEngine::Opencode,
+    ];
+
+    /// The value in the settings file.
+    pub const fn name(self) -> &'static str {
+        match self {
+            AssistantEngine::Codex => "codex",
+            AssistantEngine::Claude => "claude",
+            AssistantEngine::Opencode => "opencode",
+        }
+    }
+
+    /// The short name people see in Discord, the chat and the log.
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            AssistantEngine::Codex => "Codex",
+            AssistantEngine::Claude => "Claude",
+            AssistantEngine::Opencode => "OpenCode",
+        }
+    }
+
+    /// The product's name, for the window and the replies that say what to install.
+    pub const fn product_name(self) -> &'static str {
+        match self {
+            AssistantEngine::Codex => "Codex",
+            AssistantEngine::Claude => "Claude Code",
+            AssistantEngine::Opencode => "OpenCode",
+        }
+    }
+
+    /// Whether the engine has the realtime voice mode.
+    pub const fn has_voice_mode(self) -> bool {
+        matches!(self, AssistantEngine::Codex)
+    }
+
+    pub fn parse(name: &str) -> Option<AssistantEngine> {
+        Self::ALL.into_iter().find(|engine| engine.name() == name)
+    }
+}
+
+impl TryFrom<String> for AssistantEngine {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value).ok_or_else(|| {
+            format!(
+                "assistant.engine: «{value}» is not an assistant engine; use one of codex, claude, opencode"
+            )
+        })
     }
 }
 
@@ -640,13 +715,19 @@ impl TryFrom<String> for PostAnswers {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AssistantSettings {
-    pub engine: String,
+    /// Codex, Claude Code or OpenCode (change `claude-and-opencode-engines`); its own part,
+    /// `engine`, in `changed_sections`.
+    pub engine: AssistantEngine,
     /// Realtime voice call or the Whisper mode (change `whisper-mode`); its own part,
     /// `mode`, in `changed_sections`.
     pub mode: AssistantMode,
     pub speaker_labels: SpeakerLabels,
-    /// Every chat entry is also appended to `logs\codex-chat-<date>.log`. Off by default:
-    /// nothing of the chat is written to disk.
+    /// The user's instruction for whichever engine runs; there is no default. Moved here
+    /// from `codex.instructions` (change `claude-and-opencode-engines`, design D11; see
+    /// [`store::migrate_codex_instructions`]). Its own part, `instructions`.
+    pub instructions: String,
+    /// Every chat entry is also appended to `logs\chat-<date>.log`. Off by default: nothing
+    /// of the chat is written to disk.
     pub save_chat_history: bool,
     /// Where the agent's final answers are posted in Discord; off by default, since a
     /// posted answer is public in that channel and stays there.
@@ -676,9 +757,10 @@ fn one_speaker_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
 impl Default for AssistantSettings {
     fn default() -> Self {
         Self {
-            engine: "codex".to_owned(),
+            engine: AssistantEngine::Codex,
             mode: AssistantMode::Realtime,
             speaker_labels: SpeakerLabels::Start,
+            instructions: String::new(),
             save_chat_history: false,
             post_answers: PostAnswers::Off,
             answers_channel: String::new(),
@@ -699,12 +781,14 @@ impl AssistantSettings {
     }
 
     /// The section without the parts that are their own parts in `changed_sections`: the
-    /// answer posting fields and the mode.
+    /// answer posting fields, the mode, the engine and the instruction.
     fn without_answer_posting(&self) -> AssistantSettings {
         AssistantSettings {
             post_answers: PostAnswers::Off,
             answers_channel: String::new(),
             mode: AssistantMode::Realtime,
+            engine: AssistantEngine::Codex,
+            instructions: String::new(),
             ..self.clone()
         }
     }
@@ -727,8 +811,6 @@ pub struct CodexSettings {
     pub reasoning_effort: String,
     /// Empty (the default) means the server's default voice.
     pub voice: String,
-    /// Instructions for the assistant. There is no default: the user writes their own.
-    pub instructions: String,
     /// One of [`HANDOFF_MODES`].
     pub handoff_mode: String,
     /// Every start reads the models, reasoning efforts and voices from Codex and saves them
@@ -744,11 +826,75 @@ impl Default for CodexSettings {
             model: String::new(),
             reasoning_effort: String::new(),
             voice: String::new(),
-            instructions: String::new(),
             handoff_mode: DEFAULT_HANDOFF_MODE.to_owned(),
             refresh_lists_at_start: false,
         }
     }
+}
+
+/// The longest model name `claude.model` and `opencode.model` take.
+pub const MAX_ENGINE_MODEL_LEN: usize = 200;
+
+/// Claude Code as the engine (change `claude-and-opencode-engines`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClaudeSettings {
+    /// Path to `claude.exe`; empty means found automatically.
+    pub executable: String,
+    /// A model name or alias Claude Code accepts; empty means Claude Code's default for the
+    /// sign-in. Applies from the guild's next Claude Code conversation.
+    pub model: String,
+    /// The window asked once, at the first choice of Claude Code with a subscription,
+    /// whether only the owner's voice should pass (design D6).
+    pub subscription_notice_shown: bool,
+}
+
+/// OpenCode as the engine (change `claude-and-opencode-engines`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpencodeSettings {
+    /// Path to `opencode.exe`; empty means found automatically.
+    pub executable: String,
+    /// `provider/model` (the model part may hold more `/`); empty means OpenCode's own
+    /// default model.
+    pub model: String,
+}
+
+impl OpencodeSettings {
+    /// The provider of `model`, when one is set: the part before the first `/`.
+    pub fn provider(&self) -> Option<&str> {
+        let model = self.model.trim();
+        model
+            .split_once('/')
+            .map(|(provider, _)| provider)
+            .filter(|provider| !provider.is_empty())
+    }
+}
+
+/// Why `model` is not a valid engine model name, if it is not.
+fn engine_model_problem(model: &str, provider_needed: bool) -> Option<String> {
+    if model.is_empty() {
+        return None;
+    }
+    if model.chars().any(char::is_whitespace) {
+        return Some(format!("«{model}» must not contain spaces"));
+    }
+    if model.chars().count() > MAX_ENGINE_MODEL_LEN {
+        return Some(format!(
+            "the model is longer than {MAX_ENGINE_MODEL_LEN} characters"
+        ));
+    }
+    if provider_needed {
+        match model.split_once('/') {
+            Some((provider, rest)) if !provider.is_empty() && !rest.is_empty() => {}
+            _ => {
+                return Some(format!(
+                    "«{model}» must be written as provider/model, for example openai/gpt-5"
+                ))
+            }
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -932,14 +1078,22 @@ impl Settings {
             ));
         }
 
-        if self.assistant.engine != "codex" {
+        // An unknown engine is refused while the document is read (`AssistantEngine`).
+        if !self.assistant.engine.has_voice_mode() && self.assistant.mode == AssistantMode::Realtime
+        {
             return Err(invalid(
-                "assistant.engine",
+                "assistant.mode",
                 format!(
-                    "«{}» is not a known assistant engine",
-                    self.assistant.engine
+                    "the voice mode works only with Codex; {} answers in the Whisper mode only",
+                    self.assistant.engine.product_name()
                 ),
             ));
+        }
+        if let Some(problem) = engine_model_problem(self.claude.model.trim(), false) {
+            return Err(invalid("claude.model", problem));
+        }
+        if let Some(problem) = engine_model_problem(self.opencode.model.trim(), true) {
+            return Err(invalid("opencode.model", problem));
         }
         let channel = self.assistant.answers_channel.trim();
         if !channel.chars().all(|c| c.is_ascii_digit()) {
@@ -1151,6 +1305,21 @@ impl Settings {
         }
         if self.codex != other.codex {
             changed.push("codex");
+        }
+        // Change `claude-and-opencode-engines`: the engine switches at once (D1); the
+        // instruction and the two engines' sections apply from the next conversation or
+        // question.
+        if self.assistant.engine != other.assistant.engine {
+            changed.push("engine");
+        }
+        if self.assistant.instructions != other.assistant.instructions {
+            changed.push("instructions");
+        }
+        if self.claude != other.claude {
+            changed.push("claude");
+        }
+        if self.opencode != other.opencode {
+            changed.push("opencode");
         }
         if self.hotkey != other.hotkey {
             changed.push("hotkey");
@@ -2225,7 +2394,7 @@ mod tests {
         assert_eq!(patched.session.idle_timeout_seconds, 90);
         assert!(patched.session.earcons);
         assert_eq!(patched.codex.voice, "maple");
-        assert_eq!(patched.codex.instructions, settings.codex.instructions);
+        assert_eq!(patched.codex.handoff_mode, settings.codex.handoff_mode);
         assert_eq!(
             settings.changed_sections(&patched),
             vec!["session", "codex"]
@@ -2275,5 +2444,91 @@ mod tests {
         assert!(settings
             .with_patch(&json!({ "session": { "idle_timeout_seconds": "soon" } }))
             .is_err());
+    }
+
+    /// Requirement "Assistant engine setting" (change `claude-and-opencode-engines`).
+    #[test]
+    fn an_unknown_engine_is_refused_naming_the_field_and_the_three_values() {
+        let error = Settings::default()
+            .with_patch(&json!({ "assistant": { "engine": "gemini" } }))
+            .unwrap_err()
+            .to_string();
+        for words in ["assistant.engine", "gemini", "codex, claude, opencode"] {
+            assert!(error.contains(words), "{words}: {error}");
+        }
+        assert_eq!(Settings::default().assistant.engine, AssistantEngine::Codex);
+    }
+
+    /// Requirements "Assistant engine setting" and "Assistant mode setting": the engine and
+    /// the mode change in one save, each its own part; the voice mode needs Codex.
+    #[test]
+    fn engine_and_mode_change_in_one_save_and_realtime_needs_codex() {
+        let settings = Settings::default();
+        let both = settings
+            .with_patch(&json!({ "assistant": { "engine": "opencode", "mode": "whisper" } }))
+            .unwrap();
+        both.validate().unwrap();
+        assert_eq!(settings.changed_sections(&both), vec!["engine", "mode"]);
+
+        let realtime = settings
+            .with_patch(&json!({ "assistant": { "engine": "claude" } }))
+            .unwrap();
+        let error = realtime.validate().unwrap_err();
+        assert_eq!(error.field, "assistant.mode");
+        assert!(
+            error.message.contains("voice mode works only with Codex"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("Claude Code"), "{}", error.message);
+    }
+
+    /// Requirement "Assistant instruction setting": its own part, which rebuilds no gate.
+    #[test]
+    fn an_instruction_change_is_its_own_part() {
+        let settings = Settings::default();
+        let patched = settings
+            .with_patch(&json!({ "assistant": { "instructions": "Answer briefly." } }))
+            .unwrap();
+        assert_eq!(patched.assistant.instructions, "Answer briefly.");
+        assert_eq!(settings.changed_sections(&patched), vec!["instructions"]);
+    }
+
+    /// Requirements "Claude Code settings" and "OpenCode settings".
+    #[test]
+    fn the_two_engine_sections_have_defaults_and_check_their_models() {
+        let defaults = Settings::default();
+        assert_eq!(defaults.claude, ClaudeSettings::default());
+        assert!(defaults.claude.executable.is_empty() && defaults.claude.model.is_empty());
+        assert!(!defaults.claude.subscription_notice_shown);
+        assert_eq!(defaults.opencode, OpencodeSettings::default());
+
+        let mut settings = Settings::default();
+        settings.claude.model = "sonnet 5".to_owned();
+        assert_eq!(settings.validate().unwrap_err().field, "claude.model");
+        settings.claude.model = "claude-sonnet-5-5".to_owned();
+        settings.validate().unwrap();
+
+        settings.opencode.model = "gpt-5".to_owned();
+        let error = settings.validate().unwrap_err();
+        assert_eq!(error.field, "opencode.model");
+        assert!(
+            error.message.contains("provider/model"),
+            "{}",
+            error.message
+        );
+        settings.opencode.model = "openrouter/anthropic/claude-sonnet-4.5".to_owned();
+        settings.validate().unwrap();
+        assert_eq!(settings.opencode.provider(), Some("openrouter"));
+        settings.opencode.model = "/gpt-5".to_owned();
+        assert_eq!(settings.validate().unwrap_err().field, "opencode.model");
+
+        let claude = Settings::default()
+            .with_patch(&json!({ "claude": { "subscription_notice_shown": true } }))
+            .unwrap();
+        assert_eq!(
+            Settings::default().changed_sections(&claude),
+            vec!["claude"]
+        );
     }
 }

@@ -19,8 +19,9 @@ speaker when known. Delegated tasks SHALL be shown unwrapped from their transpor
 ### Requirement: Where the log lives
 The log SHALL be kept in memory (bounded) and pushed to the UI as an event per entry. Only
 while `assistant.save_chat_history` is on SHALL each entry also be appended to a daily file
-`logs\codex-chat-YYYY-MM-DD.log` next to the executable; while it is off no chat file
-SHALL be created or appended. Files written earlier SHALL be left as they are.
+`logs\chat-YYYY-MM-DD.log` next to the executable, whichever engine runs; while it is off
+no chat file SHALL be created or appended. Files written earlier, `codex-chat-*.log`
+included, SHALL be left as they are.
 
 #### Scenario: Restart
 - **WHEN** saving chat history is on and the app is restarted
@@ -28,18 +29,23 @@ SHALL be created or appended. Files written earlier SHALL be left as they are.
 
 #### Scenario: Saving off
 - **WHEN** saving chat history is off and a call records transcripts and answers
-- **THEN** the Codex chat tab shows every entry and no `codex-chat-*.log` file is created or changed
+- **THEN** the Chat tab shows every entry and no `chat-*.log` file is created or changed
 
 #### Scenario: Turned on during a call
 - **WHEN** the user turns saving chat history on while a call runs
 - **THEN** the next chat entry is appended to the day's file, without a restart
 
+#### Scenario: Older file kept
+- **WHEN** the logs folder holds `codex-chat-2026-11-18.log` and saving chat history is on
+- **THEN** that file is left unchanged and new entries go to `chat-<today>.log`
+
 ### Requirement: Chat tab
-The Codex chat tab SHALL list the entries as they are recorded, one row each with time,
-source label and text, with filters for names and notes, agent work and call events,
-auto-scroll, a copy button and a button that opens the log folder. Source labels SHALL be the
-speaker's name for a user transcript, `GPT`, `Context → GPT`, `Task → Codex`, `Codex`,
-`Codex thinking`, `Codex tool`, `Call` and `Error`.
+The Chat tab SHALL list the entries as they are recorded, one row each with time, source
+label and text, with filters for names and notes, agent work and call events, auto-scroll,
+a copy button and a button that opens the log folder. Source labels SHALL be the speaker's
+name for a user transcript, `GPT`, `Context → GPT`, `Call` and `Error`, and for the engine
+that wrote the entry `Task → <engine>`, `Context → <engine>`, `<engine>`, `<engine>
+thinking` and `<engine> tool`, where `<engine>` is `Codex`, `Claude` or `OpenCode`.
 
 #### Scenario: Filter agent work
 - **WHEN** the agent-work filter is off
@@ -47,11 +53,15 @@ speaker's name for a user transcript, `GPT`, `Context → GPT`, `Task → Codex`
 
 #### Scenario: Live entries
 - **WHEN** a call records a user transcript and the assistant's answer
-- **THEN** both rows appear in the Codex chat tab within a second, labelled with the speaker's name and `GPT`, and nothing about them appears in the Console as raw data
+- **THEN** both rows appear in the Chat tab within a second, labelled with the speaker's name and `GPT`, and nothing about them appears in the Console as raw data
 
 #### Scenario: Delegated work
 - **WHEN** the voice model delegates a question and the agent searches the web
 - **THEN** the rows `Task → Codex`, `Codex tool` and `Codex` appear in that order
+
+#### Scenario: Claude Code answers after a search
+- **WHEN** the engine is Claude Code and Claude searches the web before answering
+- **THEN** the rows `Claude tool` and `Claude` appear in that order after the question
 
 ### Requirement: Event names do not collide
 Every event sent to the window SHALL carry its type in a field that no event payload uses for

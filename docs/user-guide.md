@@ -8,7 +8,7 @@ see the [README](../README.md).
 1. [Create the Discord bot](#1-create-the-discord-bot)
 2. [Install VoiceBro](#2-install-voicebro)
 3. [Connect the bot](#3-connect-the-bot)
-4. [Set up Codex](#4-set-up-codex)
+4. [Set up the engine](#4-set-up-the-engine)
 5. [Set the wake phrase](#5-set-the-wake-phrase)
 6. [Add another language](#6-add-another-language)
 7. [The Whisper mode](#7-the-whisper-mode)
@@ -89,7 +89,25 @@ Start VoiceBro and open the **Config** tab.
 
 The status bar turns green with **Connected**, and the **Status** tab lists your server.
 
-## 4. Set up Codex
+## 4. Set up the engine
+
+The engine is what writes the answers. Choose it in **Config → Assistant → Engine**:
+
+| Engine | Sign-in | Modes |
+|---|---|---|
+| **Codex** (the default) | Your ChatGPT account | Realtime voice and Whisper |
+| **Claude Code** | Your Claude account, or an Anthropic API key | Whisper only |
+| **OpenCode** | The AI providers you set up in OpenCode | Whisper only |
+
+Only Codex has the realtime voice mode. Choosing Claude Code or OpenCode while the realtime
+voice mode is on switches to the [Whisper mode](#7-the-whisper-mode), which may ask to
+download its files. You can switch the engine at any time, also while the bot is in a
+voice channel: the running session ends and the next question goes to the new engine.
+
+Each engine is installed separately and may only search and fetch the web: VoiceBro gives
+none of them a tool that reads, writes or runs anything on your PC.
+
+### Codex
 
 The assistant uses OpenAI's Codex CLI with your ChatGPT account. Open the **Status** tab.
 
@@ -111,6 +129,98 @@ Codex**, **Check Codex** or **Refresh lists**. **Check Codex** also reads the mo
 reasoning levels and voices of your account; VoiceBro saves them in `codex-lists.json`, so
 the lists in **Config → Codex** are there at the next start without starting Codex. The
 first start after installing reads them once on its own when Codex is installed.
+
+### Claude Code
+
+Choose **Claude Code** in **Config → Assistant → Engine**, then open the **Status** tab.
+
+**If Claude Code is not installed,** the tab offers **Install Claude Code**: winget, in a
+console window you can watch, installs the package `Anthropic.ClaudeCode` from Anthropic,
+about 330 MB. Without winget, use Claude Code's own installer
+([code.claude.com/docs/en/setup](https://code.claude.com/docs/en/setup)); VoiceBro finds
+`claude.exe` on the PATH, in winget's folder or in `%USERPROFILE%\.local\bin`, or set its
+path in **Config → Claude Code → Claude Code executable**.
+
+**Then sign in:** press **Sign in to Claude Code**. A console window runs Claude Code's own
+sign-in (`claude auth login`), which opens the Claude sign-in in your browser; when the
+window closes, VoiceBro reads what kind of sign-in it is. If you already use Claude Code on
+this PC, press **Check Claude Code** instead. VoiceBro never sees your password or token:
+it only reads whether Claude Code uses a Claude subscription (with its plan), an API key or
+a cloud provider. An `ANTHROPIC_API_KEY` in your Windows environment wins over a
+subscription, as it does in a terminal, and the **Claude Code sign-in** tile shows it.
+
+**Check Claude Code** also reads the models your sign-in offers, for **Config → Claude Code →
+Model**. A faster model answers sooner; empty is Claude Code's default.
+
+Claude Code runs only while the bot is in a voice channel, one process per channel. It
+runs without your own Claude Code settings, `CLAUDE.md` files, hooks and MCP servers, and
+saves no conversation to disk. A change of the model or of your instructions applies from
+the next `/join`.
+
+#### A Claude subscription is yours alone
+
+If you sign Claude Code in with a Claude subscription (Free, Pro, Max, Team, Enterprise or
+another plan of claude.ai), that subscription may be used only by you:
+[Anthropic's Consumer Terms](https://www.anthropic.com/legal/consumer-terms) do not let you
+make your account available to anyone else, and
+[Claude Code's legal page](https://code.claude.com/docs/en/legal-and-compliance) says that
+subscriptions are meant for ordinary, individual use. While everyone in the channel is
+heard, the others use your subscription.
+
+So VoiceBro shows a notice in **Config → Assistant** and **Config → Access** while Claude
+Code runs on a subscription and more voices than yours reach it. The first time you choose
+Claude Code, a window asks the same:
+
+- **Hear only me** chooses **Only my Discord account** in the Access card and, if your
+  Discord account is not linked yet, shows the link code right away
+  ([Only my Discord account](#only-my-discord-account)). Everyone still hears the answers
+  and can use the bot's commands.
+- **Not now** changes nothing; the notice stays in the two cards.
+
+The window does not come back after you answered it. VoiceBro does not enforce the choice:
+it is yours. With an Anthropic API key or a cloud provider (Amazon Bedrock, Google Vertex
+AI, Microsoft Foundry), [Anthropic's Commercial Terms](https://www.anthropic.com/legal/commercial-terms)
+apply instead and VoiceBro shows no notice. This is not legal advice; read the terms of
+your own account.
+
+### OpenCode
+
+Choose **OpenCode** in **Config → Assistant → Engine**, then open the **Status** tab.
+
+**If OpenCode is not installed,** the tab offers **Install OpenCode**: winget installs the
+package `Anomaly.OpenCode` from the OpenCode project, about 120 MB to download. Without
+winget, use Node.js (`npm install -g opencode-ai`) or download OpenCode from
+[its releases](https://github.com/anomalyco/opencode/releases) and set the path of
+`opencode.exe` in **Config → OpenCode → OpenCode executable**.
+
+**Then set up a provider in OpenCode itself.** VoiceBro has no sign-in button for OpenCode
+and never sees its keys: open a terminal, run `opencode auth login`, pick a provider (for
+example OpenAI or Anthropic) and sign in or paste its key
+([OpenCode's providers](https://opencode.ai/docs/providers)). Then press **Check OpenCode**:
+the **OpenCode providers** tile names them, and **Config → OpenCode → Model** lists every
+model OpenCode offers as `provider/model`, among them OpenCode's own models (provider
+`opencode`), some of which are free and need no provider of yours; their use is limited.
+Empty is OpenCode's own default model, which can be one of those free models even when your
+provider is connected: to be sure your provider answers, choose one of its models.
+`/join` is refused when OpenCode offers no model, or not the one you chose.
+
+OpenCode runs only while the bot is in a voice channel, behind a local server that only
+this PC can reach, with a password made for each start. It runs without the instruction
+files and skills of other agents (such as your `~\.claude\CLAUDE.md`), and the assistant
+may only search and fetch the web. OpenCode's own global setup still applies: if you keep
+instructions for OpenCode in `~\.config\opencode\AGENTS.md`, or settings and plugins in
+`~\.config\opencode\opencode.json`, OpenCode uses them for VoiceBro's assistant too, as it
+does for every session. The conversations VoiceBro made in OpenCode are deleted when the bot
+leaves the channel.
+
+**OpenCode's web search** is on. Unlike Codex and Claude Code, whose searches go to their
+own provider, OpenCode sends the search queries the model writes to a web search service,
+a company other than your model's provider. By default that is Exa, which answers without a
+key. If one of the variables `EXA_API_KEY`, `TAVILY_API_KEY`, `FIRECRAWL_API_KEY`,
+`PARALLEL_API_KEY` or `TINYFISH_API_KEY` is set in your Windows environment when VoiceBro
+starts OpenCode, the first of them in that order chooses the service (Exa, Tavily,
+Firecrawl, Parallel or TinyFish) and OpenCode uses that key. When a search fails, OpenCode
+answers without it.
 
 ## 5. Set the wake phrase
 
@@ -226,13 +336,13 @@ Assistant mode**:
 | | Realtime voice (the default) | Whisper |
 |---|---|---|
 | The wake phrase | Vosk listens for it on your PC. | Whisper writes down what is said on your PC and finds the phrase in that text. |
-| Your question | Goes to OpenAI's realtime voice call as audio. | Whisper writes it down on your PC; only the text goes to Codex. |
-| The answer | ChatGPT's voice from the call. | Codex answers in text, and a voice on your PC reads it into the channel. |
+| Your question | Goes to OpenAI's realtime voice call as audio. | Whisper writes it down on your PC; only the text goes to the engine. |
+| The answer | ChatGPT's voice from the call. | The engine answers in text, and a voice on your PC reads it into the channel. |
+| The engine | Codex only. | Codex, Claude Code or OpenCode ([section 4](#4-set-up-the-engine)). |
 | What it downloads | Vosk and a wake model, about 50 to 70 MB. | Whisper and a model, and a voice: about 230 MB on the CPU with the defaults, more with an NVIDIA GPU or a larger model. |
 
-Both modes use Codex with your ChatGPT sign-in. Your instructions, **Speaker names**,
-**Post answers to Discord**, **Who the assistant hears**, the mute, the tones and the
-auto-stop work in both.
+Your instructions, **Speaker names**, **Post answers to Discord**, **Who the assistant
+hears**, the mute, the tones and the auto-stop work in both modes and with every engine.
 
 > [!NOTE]
 > The Whisper mode is new. The timings below come from tests on one PC with recorded
@@ -242,7 +352,9 @@ auto-stop work in both.
 ### What leaves your PC
 
 In the Whisper mode, speech is recognized on your PC and the voice is made on your PC. Only
-text goes to OpenAI:
+text goes to the engine's provider: OpenAI with Codex, Anthropic with Claude Code, and with
+OpenCode the provider of the model you chose, plus OpenCode's web search service for the
+searches the model makes:
 
 - **between sessions, nothing**: what people say only reaches Whisper, which looks for the
   activation phrase;
@@ -250,12 +362,12 @@ text goes to OpenAI:
   unless **Speaker names** is off;
 - **the names of the people in the channel**, with the first question of a session, unless
   **Speaker names** is off;
-- **the earlier questions and answers of this run of VoiceBro**, as text, when Codex starts
-  a new conversation thread: at a `/join` after the bot had left every channel, or after
-  you changed the Codex model or reasoning.
+- **the earlier questions and answers of this run of VoiceBro**, as text, when the engine
+  starts a new conversation: at a `/join` after the bot had left the channel, or with Codex
+  after you changed its model or reasoning.
 
-With **Always listening**, everything said in the channel goes to Codex as text, the whole
-time the bot is in it.
+With **Always listening**, everything said in the channel goes to the engine as text, the
+whole time the bot is in it.
 
 ### Where the settings are
 
@@ -472,18 +584,18 @@ that `/join` posts shows the same under **Mode**.
 
 | In Discord | What happens |
 |---|---|
-| `/join` | The bot joins your voice channel and replies with a panel that shows its state and a **Mute GPT** button. |
+| `/join` | The bot joins your voice channel and replies with a panel that shows the engine, its state and a **Mute assistant** button. |
 | Say the activation phrase and a question | A session starts and the assistant answers in the channel. |
 | Say the deactivation phrase, or stay quiet | The session ends, at once or after the auto-stop time. |
 | `/status` | Shows what VoiceBro is doing, and the mode: realtime voice or Whisper. |
 | `/leave` | The bot leaves the channel. |
 
 **Mute** ends the current session at once and sends nothing until you unmute. Use the
-**Mute GPT** button in Discord, the button on the **Status** tab, or the hotkey
+**Mute assistant** button in Discord, the button on the **Status** tab, or the hotkey
 **Ctrl+Alt+M**, which works system-wide (change it in **Config → Hotkey**).
 
-In the window, **Codex chat** shows what the assistant heard, said and looked up, and
-**Console** shows what the app is doing.
+In the window, **Chat** shows what the assistant heard, said and looked up, each line
+labelled with the engine that wrote it, and **Console** shows what the app is doing.
 
 ### When two people talk at once
 
@@ -498,8 +610,10 @@ Turn on **One speaker at a time** (**Config → Assistant**, off by default) to 
   telling the assistant who is speaking now, so it can answer each person by name; nobody
   is mixed in. **Speaker names** set to off (Config → Codex) sends no note. Speech kept
   for someone who waits never cuts an answer that is playing: it follows the answer.
-- **Whisper:** a question asked while Codex works on an answer is added to that answer, and
-  one asked while the answer is being read waits and is answered after it. Talking over the
+- **Whisper:** a question asked while the engine works on an answer is handed to it
+  without stopping it. Codex adds it to that answer, OpenCode takes it up as soon as it can,
+  and Claude Code, which answers one question at a time, answers it right after. A question
+  asked while the answer is being read waits and is answered after it. Talking over the
   voice no longer stops it; the deactivation phrase or **Mute** does.
 
 In both modes VoiceBro tells people apart by their own Discord stream: two voices that
@@ -516,11 +630,12 @@ is posted: not its "I'll look that up", not what the voice says and not what peo
 A long answer comes as several messages; a table comes as a block of fixed-width text so
 its columns line up. Nobody is pinged, even if the answer contains `@everyone` or a name.
 
-In the [Whisper mode](#7-the-whisper-mode) Codex answers every question itself, so every
-answer it finishes is posted, with the question as its first line. An answer cut off by a
-new question or by the deactivation phrase is not posted.
+In the [Whisper mode](#7-the-whisper-mode) the engine answers every question itself, so
+every answer it finishes is posted, with the engine and the question as its first line. An
+answer cut off by a new question or by the deactivation phrase is not posted.
 
-Turn it on in **Config → Codex → Post answers to Discord**. It is off by default, because a
+Turn it on in **Post answers to Discord** in the engine's card (**Config → Codex**,
+**Claude Code** or **OpenCode**). It is off by default, because a
 posted answer is public in that channel and stays there. Choose where the answers go:
 
 - **The voice channel's chat.** Every voice channel has its own text chat, opened with the
@@ -560,16 +675,19 @@ which one you use is up to you.
   in Discord and pressed **I agree**. Nobody else's voice starts a session or gets into a
   question, and neither does a music bot's.
 - **Only my Discord account**: the account you linked, nobody else. The assistant runs on
-  your own ChatGPT subscription, and a subscription is meant for one person.
+  your own subscription, and a subscription is meant for one person; with a Claude
+  subscription VoiceBro asks you to choose this
+  ([A Claude subscription is yours alone](#a-claude-subscription-is-yours-alone)).
 
 Everything else stays open in every mode: anyone can use `/join`, `/leave`, `/status` and
-the **Mute GPT** button, everyone in the channel hears the answers, and posted answers are
+the **Mute assistant** button, everyone in the channel hears the answers, and posted answers are
 posted as before. A change applies at once, also while the bot is in a channel.
 
 The bot is yours, so Discord's rules for bots are yours to keep: Discord's developer terms
 ask every bot for a privacy policy that people can reach, and for a person's own consent
-before their speech is shared with someone else (here, OpenAI). VoiceBro gives you the
-tools for both:
+before their speech is shared with someone else (here, the engine's provider: OpenAI,
+Anthropic, or with OpenCode the provider you chose and its search service). VoiceBro gives
+you the tools for both:
 
 1. Write your bot's privacy policy from the template `docs/PRIVACY-POLICY-TEMPLATE.md` in
    VoiceBro's repository, publish it at a public `https://` address (a GitHub Gist works),
@@ -586,8 +704,9 @@ tools for both:
 
 Without a privacy policy URL, `/optin` is refused and the card warns you. The records are
 kept in `consents.bin`, encrypted for your Windows user. If VoiceBro changes the consent
-text in an update, the old records are removed and people run `/optin` again, since they
-agreed to the old text. The filter works on each person's own Discord stream: a voice that
+text in an update, or you switch to another engine (or, with OpenCode, to a model of
+another provider), the old records are removed and people run `/optin` again, since they
+agreed to send their speech to someone else. The filter works on each person's own Discord stream: a voice that
 someone else's microphone picks up (a friend sitting next to them, or speakers without
 headphones) passes with theirs.
 
@@ -598,9 +717,10 @@ messages; in the server set as **Discord guild ID** they appear at once.
 
 To link your account:
 
-1. Sign in to Codex (section 4).
-2. In **Config → Access**, press **Link my Discord account**. VoiceBro reads your Codex
-   account and shows a code, for example `K7QF-2M9X`, for 10 minutes.
+1. Sign in to the engine ([section 4](#4-set-up-the-engine)); OpenCode needs none here.
+2. In **Config → Access**, press **Link my Discord account**. VoiceBro reads the engine's
+   account (your ChatGPT account with Codex, your Claude account with Claude Code) and shows
+   a code, for example `K7QF-2M9X`, for 10 minutes.
 3. In Discord, from your own account, send `/link` with that code, in any server the bot is
    in or in a direct message to the bot. Only you see the bot's reply. Upper or lower case
    and the dash do not matter.
@@ -611,9 +731,10 @@ The code works once. Five wrong codes, from anyone, end it; press **Link** for a
 After a first install, `/link` can take up to an hour to appear in direct messages; in the
 server set as **Discord guild ID** it appears at once.
 
-The link stays until you press **Unlink**, link another Discord account, sign Codex into
-another ChatGPT account, or delete VoiceBro with its data. When Codex is signed into another
-account, the card shows "Not linked: the Codex account changed"; link again. While **Only my
+The link stays until you press **Unlink**, link another Discord account, sign the engine
+into another account, or delete VoiceBro with its data. When Codex or Claude Code is signed
+into another account, the card shows "Not linked: the Codex account changed" (or "the
+Claude account changed"); link again. Switching the engine keeps the link. While **Only my
 Discord account** is chosen and no account is linked, the assistant hears nobody.
 
 ## 9. Settings
@@ -633,9 +754,9 @@ remembers which cards are folded.
 | Config → Discord and Codex | The Discord bot token, the server ID, the path of `codex.exe` when it is not found on its own. Press **Save changes**. |
 | Config → Access | **Who the assistant hears** (Everyone by default, People who agreed, Only my Discord account), **Privacy policy URL**, the link to your Discord account and the people who agreed with `/optin` ([section 8](#who-the-assistant-hears)). |
 | Config → Audio | How loud the assistant hears the channel and how loud it speaks; the short tones at session start and end. |
-| Config → Assistant | **Assistant mode** (realtime voice, the default, or Whisper) and the grey **Recognition** field; wake word or always listening, the phrases, the auto-stop time, and the model with its download: the wake model in the realtime mode, the Whisper model in the Whisper mode, each with its own phrases; **One speaker at a time** (off by default, [section 8](#when-two-people-talk-at-once)). |
+| Config → Assistant | **Assistant mode** (realtime voice, the default, or Whisper), the grey **Recognition** field and the **Engine** (Codex, Claude Code or OpenCode, [section 4](#4-set-up-the-engine)); wake word or always listening, the phrases, the auto-stop time, and the model with its download: the wake model in the realtime mode, the Whisper model in the Whisper mode, each with its own phrases; **One speaker at a time** (off by default, [section 8](#when-two-people-talk-at-once)). |
 | Config → Local voice | The voice that reads the answers in the Whisper mode, its speed, **Preview**, and its download. Not used in the realtime mode. |
-| Config → Codex | The model and reasoning effort for looked-up answers (in the Whisper mode, for every answer), the voice of the realtime call, your instructions for the assistant, whether it gets the names of the people in the channel, **Save chat history**, **Post answers to Discord** and the channel for it ([section 8](#posting-the-answers-to-discord)). The model, reasoning and voice lists come from the last time VoiceBro read them from Codex; the card says when that was. **Refresh lists** reads them now, and **Refresh the lists at start** (off by default) reads them at every start of VoiceBro. |
+| Config → Codex, Claude Code or OpenCode | The card of the engine in use, titled after it. **Codex:** the model and reasoning effort for looked-up answers (in the Whisper mode, for every answer), the voice of the realtime call; the model, reasoning and voice lists come from the last time VoiceBro read them from Codex, the card says when that was, **Refresh lists** reads them now, and **Refresh the lists at start** (off by default) reads them at every start of VoiceBro. **Claude Code** and **OpenCode:** the program's path when it is not found on its own, and the model. **Every engine:** your instructions for the assistant (one text for all three), whether it gets the names of the people in the channel, **Save chat history**, **Post answers to Discord** and the channel for it ([section 8](#posting-the-answers-to-discord)). |
 | Config → Hotkey | The mute hotkey. |
 
 The bottom of the **Config** tab shows where `settings.json` is.
@@ -648,15 +769,22 @@ What leaves your PC:
   Whisper mode, by Whisper.
 - **During a session,** the channel's audio goes to OpenAI through Codex, and the
   assistant's answer is played in the channel. In the Whisper mode only the text of the
-  questions goes, and the answer is read by a voice on your PC
+  questions goes, to the engine's provider (OpenAI with Codex, Anthropic with Claude Code,
+  the provider you chose with OpenCode), and the answer is read by a voice on your PC
   ([section 7](#what-leaves-your-pc)). With **Always listening**, a session runs the whole
   time the bot is in the channel.
-- **The names of the people in the channel** go to OpenAI at the start of a call, unless
-  you turn this off in **Config → Codex → Speaker names**.
-- **Questions the assistant looks up** go to Codex, which may search the web.
-- **Codex's answers to those questions** are posted in Discord, if you turned on **Post
-  answers to Discord**. Everyone who can read that channel sees them, and they stay in its
-  history until someone deletes them.
+- **The names of the people in the channel** go to the engine's provider at the start of a
+  session, unless you turn this off in **Speaker names** in the engine's card.
+- **Questions the assistant looks up** may lead to web searches: Codex's and Claude Code's
+  go through their own provider, OpenCode's to its web search service, another company.
+- **The engine's answers** are posted in Discord, if you turned on **Post answers to
+  Discord**. Everyone who can read that channel sees them, and they stay in its history
+  until someone deletes them.
+- **The engine's own working folder.** Codex and Claude Code put the path of the folder
+  they run in (`codex-workspace\` or `claude-workspace\` inside VoiceBro's folder) into
+  their own instructions to the model, and OpenCode does the same with
+  `opencode-workspace\`. When VoiceBro is installed under your user folder, that path holds
+  your Windows user name, and the model may say it if someone asks where it runs.
 
 Everything VoiceBro stores is in its own folder, next to `voicebro.exe`:
 
@@ -666,15 +794,23 @@ Everything VoiceBro stores is in its own folder, next to `voicebro.exe`:
 | `owner-link.bin` | The Discord account you linked, encrypted so that only your Windows user on this PC can read it. Only if you linked one. |
 | `consents.bin` | The people who agreed with `/optin`: their Discord account, name and the time they agreed, encrypted so that only your Windows user on this PC can read it. Only while someone has agreed. |
 | `codex-lists.json` | The Codex models, reasoning levels and voices of your account, from the last time VoiceBro read them. |
-| `logs\` | The app log, at most about 2 MB, without what people said. The chat history too, if you turned on **Save chat history**. |
+| `logs\` | The app log, at most about 2 MB, without what people said. The chat history too (`chat-<date>.log`), if you turned on **Save chat history**; files called `codex-chat-<date>.log` come from versions before 1.3.0. |
 | `assets\` | What VoiceBro downloaded: the Vosk recognizer and its models, and for the Whisper mode the Whisper runtime and models and the voices. |
 | `models\` | Vosk models you added yourself. |
 | `whisper-models\` | Whisper models you added yourself. |
 | `webview-data\` | The window's browser data. |
 | `codex-workspace\` | An empty folder Codex works in. |
+| `claude-workspace\`, `claude\` | An empty folder Claude Code works in, and what VoiceBro hands it: your instructions and an empty list of MCP servers. Only after Claude Code ran. |
+| `opencode-workspace\`, `opencode\` | An empty folder OpenCode works in, and the configuration VoiceBro gives it. Only after OpenCode ran. |
 
 Outside that folder are only the Discord token in the Windows Credential Manager (entry
-`VoiceBro/discord_token`) and your Codex installation with its sign-in in `~\.codex`.
+`VoiceBro/discord_token`), and the engines' own data, which they write themselves: Codex
+with its sign-in in `~\.codex`; Claude Code with its sign-in in `~\.claude` and
+`~\.claude.json` (Claude Code rewrites `~\.claude.json` each time it runs and makes an
+empty folder for VoiceBro's working folder under `~\.claude\projects`; VoiceBro's
+conversations are not saved there); OpenCode with its providers, keys and conversation
+database under `~\.local\share\opencode` (VoiceBro deletes its own conversations there when
+the bot leaves the channel; after a crash some may stay).
 
 ## 11. Updating
 
@@ -689,25 +825,35 @@ well, check **Delete the application data** in the uninstaller;
 leave it unchecked to keep them for a later install. An installed copy and a portable copy
 share the stored token, so deleting the data of one removes the token of both.
 
-Codex stays installed. Remove it with `winget uninstall OpenAI.Codex` if you no longer
-need it.
+The engines stay installed. Remove them with `winget uninstall OpenAI.Codex`,
+`winget uninstall Anthropic.ClaudeCode` or `winget uninstall Anomaly.OpenCode` if you no
+longer need them.
 
 ## 13. Troubleshooting
 
 | Problem | What to do |
 |---|---|
 | The commands do not show up in Discord | Put your server's ID into **Config → Discord guild ID**, or wait up to an hour. |
-| `/join` replies "Codex CLI is not installed" or "not signed in" | Do [step 4](#4-set-up-codex); the **Status** tab shows what is missing. |
+| `/join` replies "Codex CLI is not installed" or "not signed in" | Do [step 4](#4-set-up-the-engine); the **Status** tab shows what is missing. |
+| `/join` replies "Claude Code is not installed" or "Claude Code is not signed in" | Press **Install Claude Code** or **Sign in to Claude Code** on the **Status** tab ([section 4](#claude-code)), then `/join` again. |
+| `/join` replies "Claude Code did not start" | The reason follows in the reply and in the **Console**. Run `claude --version` in a terminal to see that Claude Code itself starts, then `/join` again. |
+| `/join` replies "Claude Code answers in the Whisper mode only" or "OpenCode answers in the Whisper mode only" | Choose **Whisper** as the **Assistant mode** in **Config → Assistant**, then `/join` again. |
+| `/join` replies "OpenCode is not installed" | Press **Install OpenCode** on the **Status** tab ([section 4](#opencode)), or set the path of `opencode.exe` in **Config → OpenCode → OpenCode executable**, then `/join` again. |
+| `/join` replies "OpenCode did not start" | The reason follows in the reply and in the **Console**. Run `opencode --version` in a terminal to see that OpenCode itself starts, then `/join` again. |
+| `/join` replies that OpenCode has no provider or no usable model | Set up a provider in OpenCode: `opencode auth login` in a terminal ([section 4](#opencode)), press **Check OpenCode**, then `/join` again. |
+| With OpenCode the bot says nothing, and the **Chat** tab shows "OpenCode: the answer failed: Request failed: 401." | The provider no longer accepts OpenCode's stored sign-in, although `opencode auth list` still says "stored". Connect it again in a terminal, for example `opencode auth login openai`, then ask again. |
+| With OpenCode the **Chat** tab shows "Free usage limit reached" | The answer went to one of OpenCode's own free models, whose use is limited. OpenCode picks one of them as its default even when your provider is connected: choose a model of your provider in **Config → OpenCode → Model**. |
+| The notice "A Claude subscription is for you alone" | Claude Code runs on your Claude subscription while other voices reach it. Choose **Only my Discord account** in **Config → Access**, or sign Claude Code in with an API key ([section 4](#a-claude-subscription-is-yours-alone)). |
 | The wake phrase does nothing | Look at **Wake word** on the **Status** tab: it says when the model still waits for its download (press **Download** under **Wake model** in **Config → Assistant**, or put the files there yourself as section 5 describes), when no phrases are set, or which words the model does not know. The **Console** shows a "heard:" line for everything the recognizer understood, so you can pick phrases it hears correctly. |
 | The bot joins but does not hear or speak | Check that the bot has **Connect** and **Speak** in that channel, and look for errors in the **Console**. |
-| The answers are not posted in Discord | Check **Config → Codex → Post answers to Discord**. In the realtime mode only answers Codex looked up are posted, not what the voice answers on its own. With **A chosen channel**, only answers from that channel's server go there. Look for an `answers` error on the **Status** tab: it names the channel and what Discord refused, usually a missing **Send Messages** or **Embed Links** ([section 8](#posting-the-answers-to-discord)). |
+| The answers are not posted in Discord | Check **Post answers to Discord** in the engine's card. In the realtime mode only answers Codex looked up are posted, not what the voice answers on its own. With **A chosen channel**, only answers from that channel's server go there. Look for an `answers` error on the **Status** tab: it names the channel and what Discord refused, usually a missing **Send Messages** or **Embed Links** ([section 8](#posting-the-answers-to-discord)). |
 | `/join` replies "The Whisper mode needs downloads" | The Whisper model, its runtime or the voice is not on this PC yet. Press **Download** in the window that opens in VoiceBro, or in the notices of **Config → Assistant** and **Config → Local voice**, or put the files there yourself ([section 7](#downloads)). Then `/join` again. |
 | Whisper runs on the CPU although you chose the NVIDIA GPU | The line on **Settings → Whisper** and the **Whisper device** tile on the **Status** tab say why: no NVIDIA graphics card or driver, the GPU runtime not downloaded yet, or the CPU runtime was already in use since VoiceBro started, in which case restart VoiceBro. |
-| Answers in the Whisper mode come slowly | Look at the last answer's timings on **Settings → Whisper**. A long time from the end of speech to the text means the Whisper model is too slow for this PC: choose a smaller model in **Config → Assistant**, or the NVIDIA GPU. A long time from the text to Codex's first words is Codex: choose a lower **Reasoning** in **Config → Codex**. |
+| Answers in the Whisper mode come slowly | Look at the last answer's timings on **Settings → Whisper**. A long time from the end of speech to the text means the Whisper model is too slow for this PC: choose a smaller model in **Config → Assistant**, or the NVIDIA GPU. A long time from the text to the engine's first words is the engine: with Codex choose a lower **Reasoning** in **Config → Codex**, with Claude Code or OpenCode a faster **Model** in its card. |
 | In the Whisper mode, side talk cuts off the answers | During a session everything said is a question, and a new question replaces the one being answered. End the session with the deactivation phrase before you talk among yourselves, or use **Mute**. |
 | The wake phrase does nothing in the Whisper mode | Look at **Whisper** on the **Status** tab: the model must be loaded. The **Console** shows a "heard" line for everything Whisper wrote down; if it writes your phrase differently, use its spelling, or pick a two-word phrase. Choose your language in **Settings → Whisper → Language** instead of **Automatic** if Whisper mixes languages up. |
 | A link in a posted answer has no preview | Discord shows no preview for a link the answer puts in parentheses, as in "(source: link)". The link itself works. |
 | The assistant's voice stutters in places | The ping from the PC that runs VoiceBro to the channel's Discord voice server is probably too high: at around 300 ms or more the voice can break up. Set the channel's **Region Override** (**Edit Channel → Overview**) to a region close to that PC. See [Limitations](../README.md#limitations). |
 | A window says "The bot left the voice channel" and "opus-rs failed while …" | The Opus codec opus-rs, which you chose in **Settings → Diagnostics → Opus codec (experiment)**, failed, so the bot left that channel instead of playing broken sound. The window names the server, the channel and the error. Run `/join` to bring it back, or choose libopus there to go back to the default codec. Please attach `logs\voicebro.log` (**Open log folder** in that window) to a [GitHub issue](https://github.com/OldSlash/voicebro-discord/issues). |
 | VoiceBro does not start and names a folder | Install or extract it into a folder you can write to, such as `%LOCALAPPDATA%\VoiceBro`. |
-| Something else | Turn on **Settings → Diagnostics → Verbose log**, repeat the problem, and attach `logs\voicebro.log` (**Codex chat → Open log folder**) to a [GitHub issue](https://github.com/OldSlash/voicebro-discord/issues). With the verbose log on, the file contains what people said, so read it before you share it. |
+| Something else | Turn on **Settings → Diagnostics → Verbose log**, repeat the problem, and attach `logs\voicebro.log` (**Chat → Open log folder**) to a [GitHub issue](https://github.com/OldSlash/voicebro-discord/issues). With the verbose log on, the file contains what people said, so read it before you share it. |

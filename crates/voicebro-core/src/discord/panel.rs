@@ -1,5 +1,6 @@
-//! The member panel: one message per guild with the assistant's state and a Mute GPT
-//! button. Edits are coalesced to one per second by the refresher task.
+//! The member panel: one message per guild with the assistant's state and a Mute assistant
+//! button (named for no engine since change `claude-and-opencode-engines`). Edits are
+//! coalesced to one per second by the refresher task.
 
 use super::{AssistantState, Shared};
 use serenity::all::{
@@ -33,6 +34,8 @@ pub struct PanelView<'a> {
     pub assistant: AssistantState,
     /// The assistant mode (change `whisper-mode`).
     pub mode: &'static str,
+    /// The engine in use (change `claude-and-opencode-engines`).
+    pub engine: &'static str,
     pub muted: bool,
 }
 
@@ -44,7 +47,7 @@ pub fn embed(view: &PanelView<'_>) -> CreateEmbed {
     };
     CreateEmbed::new()
         .title("VoiceBro")
-        .field("Engine", "Codex", true)
+        .field("Engine", view.engine, true)
         .field("Assistant", view.assistant.label(), true)
         .field("Mode", view.mode, true)
         .field("Voice channel", view.channel_name, false)
@@ -53,7 +56,11 @@ pub fn embed(view: &PanelView<'_>) -> CreateEmbed {
 
 pub fn components(guild: GuildId, muted: bool) -> Vec<CreateActionRow> {
     let button = CreateButton::new(mute_button_id(guild))
-        .label(if muted { "Unmute GPT" } else { "Mute GPT" })
+        .label(if muted {
+            "Unmute assistant"
+        } else {
+            "Mute assistant"
+        })
         .style(if muted {
             ButtonStyle::Danger
         } else {
@@ -83,6 +90,7 @@ async fn refresh_one(shared: &Shared, http: &Http, guild: GuildId) {
         participants: &participants,
         assistant: shared.host.assistant_state(guild.get()),
         mode: shared.host.assistant_mode(),
+        engine: shared.host.engine_name(),
         muted: shared.host.is_muted(),
     };
     let edit = EditMessage::new()
@@ -136,7 +144,7 @@ mod tests {
         let guild = GuildId::new(1);
         let unmuted = serde_json::to_value(components(guild, false)).unwrap();
         let muted = serde_json::to_value(components(guild, true)).unwrap();
-        assert_eq!(unmuted[0]["components"][0]["label"], "Mute GPT");
-        assert_eq!(muted[0]["components"][0]["label"], "Unmute GPT");
+        assert_eq!(unmuted[0]["components"][0]["label"], "Mute assistant");
+        assert_eq!(muted[0]["components"][0]["label"], "Unmute assistant");
     }
 }

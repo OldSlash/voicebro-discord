@@ -78,11 +78,17 @@ VoiceBro into a folder the user can write to, and SHALL exit without creating an
 ### Requirement: Files stay in the app's folder
 The app SHALL create files only inside its own folder. Outside it, only the stored Discord
 token in the Windows Credential Manager SHALL be written by the app; the user's Codex keeps
-its own data in `~\.codex`, and Codex installed through winget lives where winget puts it.
+its own data in `~\.codex`, Claude Code its own in `~\.claude` and `~\.claude.json`, and
+OpenCode its own under `~\.local\share\opencode`, and an engine installed through winget
+lives where winget puts it.
 
 #### Scenario: A run leaves nothing outside
 - **WHEN** the app runs for a minute, connects to Discord, downloads the wake model after the OK and is closed
 - **THEN** no file or folder created by the app is found in `%TEMP%`, `%APPDATA%` or `%LOCALAPPDATA%` outside the app's folder
+
+#### Scenario: OpenCode's configuration
+- **WHEN** the bot joins a channel with OpenCode as the engine
+- **THEN** the configuration the app gives OpenCode is in the app's folder, and nothing the app wrote is in `~\.config\opencode`
 
 ### Requirement: Release artifacts
 A release SHALL be built from `main` at the tag `v<version>`, where the version is the one
@@ -103,7 +109,8 @@ The installer and the zip SHALL include `THIRD-PARTY-NOTICES.txt` naming, with l
 license text, every crate built into `voicebro.exe`, the native libraries compiled or linked
 into it from inside those crates, and the installer's own components. It SHALL name Vosk
 and every model of the wake catalog, which the app downloads with the user's OK, and the
-Codex CLI, which the app needs but does not ship, with their licenses.
+Codex CLI, Claude Code and OpenCode, which the app can use but does not ship, with their
+licenses.
 
 #### Scenario: Notices complete
 - **WHEN** the notices file of a release is compared with the crates of the release build
@@ -129,13 +136,18 @@ Codex CLI, which the app needs but does not ship, with their licenses.
 - **WHEN** the wake catalog has a model the notices script does not list, or the script lists one the catalog does not have
 - **THEN** the notices script stops with an error that names the model and writes no notices file
 
+#### Scenario: The engines named
+- **WHEN** the notices of a release are read
+- **THEN** they name the Codex CLI (Apache-2.0), Claude Code (proprietary, under Anthropic's terms) and OpenCode (MIT) as installed separately by the user
+
 ### Requirement: User guide
 `README.md` SHALL say what VoiceBro does, what it needs, where to download it, a quick
 start of at most five steps, its limitations, how to build it from source, what it is
 built on and its license. `docs/user-guide.md` SHALL take a new user from nothing to a
-first answer in detail: the Discord bot, installing, connecting, Codex and the ChatGPT
-sign-in, wake phrases and other languages, daily use, settings, privacy and files,
-updating, uninstalling and troubleshooting.
+first answer in detail: the Discord bot, installing, connecting, the engine (Codex with the
+ChatGPT sign-in, Claude Code with its sign-in, or OpenCode with a provider), wake phrases
+and other languages, daily use, settings, privacy and files, updating, uninstalling and
+troubleshooting.
 
 #### Scenario: A new user follows the guide
 - **WHEN** a person without Codex, a Discord bot or VoiceBro follows the README's quick start and the user guide it links to
@@ -147,11 +159,19 @@ updating, uninstalling and troubleshooting.
 
 #### Scenario: Limitations before installing
 - **WHEN** a person reads the README before downloading VoiceBro
-- **THEN** they learn that the voice works only through OpenAI's Codex with a ChatGPT account, and that a high ping from their PC to the Discord voice server can make the voice stutter, with what to do about it
+- **THEN** they learn that the realtime voice works only through OpenAI's Codex with a ChatGPT account, that Claude Code and OpenCode answer only in the Whisper mode, and that a high ping from their PC to the Discord voice server can make the voice stutter, with what to do about it
 
 #### Scenario: What it is built on
 - **WHEN** a reader wants to know which third-party software VoiceBro is made of
 - **THEN** the README names its main components with links and licenses and says where the full list with every license text is
+
+#### Scenario: A Claude subscription is personal
+- **WHEN** a person reads the README or the user guide before choosing Claude Code
+- **THEN** they learn that a Claude subscription may be used only by its holder, with links to Anthropic's Consumer Terms and Claude Code's legal page, that VoiceBro's "Only my Discord account" mode lets only the holder's voice through, and that an API key or a cloud provider falls under Anthropic's Commercial Terms instead
+
+#### Scenario: OpenCode's web search
+- **WHEN** a person reads the privacy part of the user guide
+- **THEN** they learn that with OpenCode the web searches the model makes go to OpenCode's search service, a company other than the model's provider
 
 ### Requirement: Release artifacts carry no wake files
 The installer and the portable zip SHALL contain no Vosk library, no wake model, no Whisper

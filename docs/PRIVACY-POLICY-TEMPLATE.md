@@ -21,14 +21,18 @@ first of all on **Config → Access → Who the assistant hears**. To use it:
    shows it and the `/optin` text links to it. `/optin` is refused while that field is
    empty.
 5. Update the policy and its date whenever you change a setting it describes. A change of
-   the AI provider or of the consent text also cancels the consents given so far: people
-   run `/optin` again.
+   the engine (Config → Assistant → Engine), of OpenCode's model to another provider, or of
+   the consent text also cancels the consents given so far: people run `/optin` again.
+6. With Claude Code on a Claude subscription, the subscription is yours alone (see the
+   README's "A Claude subscription is yours alone"): use the *[Access: Only my Discord
+   account]* paragraphs.
 
-What people agree to with `/optin` (consent text version 1, shown with your policy URL):
+What people agree to with `/optin` (consent text version 1, shown with your policy URL).
+The recipient in its first point follows the engine you use:
 
 > This bot runs an AI assistant. If you agree:
 > - After someone in the channel says the activation phrase, what you say is sent to
->   OpenAI, through Codex so that the assistant can answer: your voice in the voice mode,
+>   (the recipient) so that the assistant can answer: your voice in the voice mode,
 >   or, in the Whisper mode, the text of your speech written down on the operator's PC.
 > - Your Discord id, your name and the time you agreed are kept on the operator's PC until
 >   you withdraw.
@@ -36,6 +40,12 @@ What people agree to with `/optin` (consent text version 1, shown with your poli
 >   back.
 >
 > Privacy policy: (your URL)
+
+| If you use | The recipient the text names |
+|---|---|
+| Codex | "OpenAI, through Codex" |
+| Claude Code | "Anthropic, through Claude Code" |
+| OpenCode | The company of the model's provider (for example "Anthropic"), then "through OpenCode, and, for the web searches the assistant makes, OpenCode's web search service" |
 
 This template is not legal advice. The laws where you and the people in your channel live
 may ask for more.
@@ -46,8 +56,10 @@ may ask for more.
 | `{{OPERATOR}}` | Your name or nickname |
 | `{{CONTACT_EMAIL}}` | An email address you read |
 | `{{EFFECTIVE_DATE}}` | The date this version takes effect |
-| `{{AI_PROVIDER}}` | The company behind the assistant: OpenAI (Codex), Anthropic (Claude) or Google (Gemini) |
+| `{{AI_PROVIDER}}` | The company behind the assistant: OpenAI if you use Codex, Anthropic if you use Claude Code, and if you use OpenCode the company of the model's provider (for example OpenAI, Anthropic or Google) |
 | `{{AI_PROVIDER_PRIVACY_URL}}` | OpenAI: https://openai.com/policies/privacy-policy/ · Anthropic: https://www.anthropic.com/legal/privacy · Google: https://policies.google.com/privacy |
+| `{{SEARCH_SERVICE}}` | Only if you use OpenCode: the web search service OpenCode uses for you (Exa, or the service you set up in OpenCode) |
+| `{{SEARCH_SERVICE_PRIVACY_URL}}` | Only if you use OpenCode: that service's privacy policy |
 | `{{ANSWERS_CHANNEL}}` | Only with answer posting on: where answers are posted |
 | `{{MINIMUM_AGE}}` | At least 13 (Discord's minimum). Use 18 with Google's Gemini API, whose terms bar apps likely to be used by people under 18; check your provider's terms |
 
@@ -140,6 +152,10 @@ turned this off. / This is on.
   provider or the consent text, when everyone is asked to agree again.
 - **The conversation:** held in memory only while the app runs, and gone when it closes.
   VoiceBro asks the assistant not to save the conversation.
+- *[Optional: keep if you use OpenCode]* **OpenCode's copy of the conversation:** OpenCode,
+  the program that talks to {{AI_PROVIDER}} for the bot, keeps the conversation in its
+  database on my computer while the bot is in the channel; VoiceBro deletes it when the bot
+  leaves.
 - **The app's log:** technical events such as joins, errors and timings, which can include
   your display name. It does not contain what you said. Log files stay on my computer until
   I delete them.
@@ -153,6 +169,10 @@ turned this off. / This is on.
 Only {{AI_PROVIDER}}, as described above, and Discord, which carries the bot's voice and
 messages as it does for any member. I do not sell your data, share it for advertising, or
 use it to train AI models.
+
+*[Optional: keep if you use OpenCode]* When a question needs the web, the assistant writes
+search queries from it, and those queries go to {{SEARCH_SERVICE}}, a web search service,
+under its own terms and privacy policy: {{SEARCH_SERVICE_PRIVACY_URL}}.
 
 ## Your choices and rights
 

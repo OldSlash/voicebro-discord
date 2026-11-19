@@ -4,7 +4,11 @@
 //! never panics. See `docs/ARCHITECTURE.md` 4.5.
 
 pub mod chat_log;
+pub mod claude;
 pub mod codex;
+pub mod opencode;
+pub mod switch;
+pub mod text;
 
 use crate::audio::AudioPorts;
 use crate::settings::Settings;
@@ -27,6 +31,9 @@ pub struct AgentAnswer {
     /// The task the voice delegated, when the engine knows it.
     pub task: Option<String>,
     pub text: String,
+    /// The engine that answered, as people see it: "Codex", "Claude", "OpenCode" (change
+    /// `claude-and-opencode-engines`); the posted answer's label names it.
+    pub engine: &'static str,
 }
 
 /// Answers waiting for the runtime's handler. Sixteen waiting means Discord has been
@@ -169,6 +176,11 @@ pub struct AssistantStatus {
     pub account_type: Option<String>,
     pub email: Option<String>,
     pub plan: Option<String>,
+    /// Claude Code's kind of sign-in (change `claude-and-opencode-engines`, design D5):
+    /// `subscription`, `api_key`, `cloud`, `none` or `unknown`; `None` for other engines.
+    /// The window's subscription notice follows it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sign_in_kind: Option<String>,
     pub executable: Option<String>,
     pub version: Option<String>,
     /// The engine's process is running.
