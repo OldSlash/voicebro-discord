@@ -3,7 +3,8 @@
 # its version, license, repository and the license and notice files it ships; the native
 # libraries that crates compile or link into voicebro.exe under licenses of their own; the
 # installer's components; the components the app downloads only after the user's OK (Vosk
-# and its models); and what the app needs but does not ship (the Codex CLI). License texts
+# and its models); and what the app can use but does not ship (the Codex CLI, Claude Code
+# and OpenCode, the three assistant engines). License texts
 # that no crate ships are kept in scripts\notices\. The script stops and writes nothing when
 # one of those texts is missing, a crate with a native library changed its version, or its
 # list of wake models and the catalog in wake\catalog.rs differ.
@@ -289,6 +290,21 @@ Add-Heading "5. Needed but not shipped"
 [void]$text.AppendLine("Source: https://github.com/openai/codex")
 [void]$text.AppendLine("You install it yourself, or from VoiceBro's Status tab through winget (package")
 [void]$text.AppendLine("OpenAI.Codex). VoiceBro starts it and talks to it; it does not ship or change it.")
+[void]$text.AppendLine("")
+[void]$text.AppendLine("Claude Code (Anthropic)")
+[void]$text.AppendLine("License: proprietary; its use is governed by Anthropic's terms:")
+[void]$text.AppendLine("https://code.claude.com/docs/en/legal-and-compliance")
+[void]$text.AppendLine("Source: https://code.claude.com")
+[void]$text.AppendLine("An engine for the Whisper mode. You install it yourself, or from VoiceBro's Status tab")
+[void]$text.AppendLine("through winget (package Anthropic.ClaudeCode), and sign it in yourself. VoiceBro starts")
+[void]$text.AppendLine("it and talks to it; it does not ship or change it.")
+[void]$text.AppendLine("")
+[void]$text.AppendLine("OpenCode (the OpenCode project)")
+[void]$text.AppendLine("License: MIT")
+[void]$text.AppendLine("Source: https://github.com/anomalyco/opencode")
+[void]$text.AppendLine("An engine for the Whisper mode. You install it yourself, or from VoiceBro's Status tab")
+[void]$text.AppendLine("through winget (package Anomaly.OpenCode), and set up its providers yourself. VoiceBro")
+[void]$text.AppendLine("starts it and talks to it; it does not ship or change it.")
 
 if ($problems.Count -gt 0) {
     foreach ($problem in $problems) { Write-Error "third-party-notices: $problem" -ErrorAction Continue }

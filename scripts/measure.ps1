@@ -1,6 +1,6 @@
-# Measures what VoiceBro costs while it runs, per process (voicebro.exe, its codex.exe child
-# and that child's helpers, the WebView2 processes it owns) and the CPU share of voicebro.exe
-# over a sampling window.
+# Measures what VoiceBro costs while it runs, per process (voicebro.exe, its engine's process
+# (codex.exe, claude.exe or opencode.exe) and that process's helpers, the WebView2 processes it
+# owns) and the CPU share of voicebro.exe over a sampling window.
 #
 # The headline is the private working set: what Task Manager shows as "Memory". Private
 # bytes (the commit charge, which counts memory the process reserved but never touches) and
@@ -42,7 +42,8 @@ $log = Get-ChildItem (Join-Path $dataDir "logs") -Filter "voicebro*.log" -ErrorA
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $build = if ($log) { (Get-Content $log.FullName -TotalCount 1) -replace "^.*\]\s*", "" } else { "unknown (no log in $dataDir)" }
 
-# Children of voicebro.exe (codex.exe, the WebView2 browser process) and their children.
+# Children of voicebro.exe (the engine's process, the WebView2 browser process) and their
+# children.
 $all = Get-CimInstance Win32_Process
 function Descendants($parentId) {
     $children = $all | Where-Object { $_.ParentProcessId -eq $parentId }
@@ -86,6 +87,8 @@ Write-Output "build: $build ($exe)"
 Write-Output "voicebro.exe CPU over $([math]::Round($elapsed, 1)) s: $cpuPercentOneCore % of one core ($cpuPercentMachine % of $cores cores)"
 $rows | Format-Table -AutoSize | Out-String | Write-Output
 function Sum($filter, $column) { [math]::Round((($rows | Where-Object { $_.Process -like $filter } | Measure-Object -Property $column -Sum).Sum), 1) }
+# The engine: Codex, Claude Code or OpenCode (change `claude-and-opencode-engines`).
+function EngineSum($column) { [math]::Round((Sum "codex*" $column) + (Sum "claude*" $column) + (Sum "opencode*" $column), 1) }
 foreach ($column in "PrivateWorkingSetMB", "PrivateBytesMB") {
-    Write-Output ("{0}: voicebro {1}; codex {2}; webview2 {3}; total {4}" -f $column, (Sum "voicebro*" $column), (Sum "codex*" $column), (Sum "msedgewebview2*" $column), (Sum "*" $column))
+    Write-Output ("{0}: voicebro {1}; engine {2}; webview2 {3}; total {4}" -f $column, (Sum "voicebro*" $column), (EngineSum $column), (Sum "msedgewebview2*" $column), (Sum "*" $column))
 }

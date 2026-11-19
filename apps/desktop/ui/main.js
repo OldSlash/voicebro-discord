@@ -182,6 +182,13 @@
     }
   }
 
+  // The engines' names (change `claude-and-opencode-engines`): the product for the window,
+  // the short name the chat labels use.
+  const ENGINE_PRODUCTS = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode" };
+  const engineProduct = (engine) => ENGINE_PRODUCTS[engine] || "Codex";
+  // The stored engine; Codex for a document without it.
+  const engineOf = () => stored?.assistant?.engine || "codex";
+
   // ---------- Form state ----------
   let stored = null; // the stored settings document
   const fieldState = new Map(); // id → clean | dirty | saving | error
@@ -285,6 +292,7 @@
     applyDiagnostics();
     renderAnswersChannel();
     applyAssistantMode();
+    applyEngine();
     showVoiceInfo();
   }
 
@@ -367,8 +375,12 @@
       if (control.id === "codex-model") applyEffortList();
       if (control.dataset.path.startsWith("diagnostics.")) applyDiagnostics();
       if (control.dataset.path === "assistant.mode") applyAssistantMode();
-      // The access mode's warnings follow a saved mode or URL at once.
-      if (control.dataset.path.startsWith("discord.")) renderAccessNotes();
+      // The access mode's warnings follow a saved mode or URL at once, and so does the
+      // Claude subscription notice.
+      if (control.dataset.path.startsWith("discord.")) {
+        renderAccessNotes();
+        renderClaudeNotice();
+      }
       // The CUDA runtime's notice follows the chosen device at once.
       if (control.id === "whisper-device" && lastStatus) renderWhisperNotices(lastStatus);
     } catch (error) {
@@ -399,6 +411,12 @@
       // A chosen channel for the answers saves together with its channel.
       if (control.id === "post-answers") {
         choosePostAnswers();
+        return;
+      }
+      // Another engine (change `claude-and-opencode-engines`): the Whisper mode with it
+      // when it has no voice mode, and the Claude subscription dialog the first time.
+      if (control.id === "assistant-engine") {
+        chooseEngine(control);
         return;
       }
       // A Whisper model, device or voice whose files are missing asks in the install dialog
@@ -532,7 +550,33 @@
       .concat(efforts.map((effort) => ({ value: effort, label: effort })));
     fillListed("codex-effort", efforts.length ? options : []);
   }
+  // The model list of Claude Code or OpenCode, from what the engine reported at its last
+  // Check (change `claude-and-opencode-engines`); the free entry takes any other name.
+  function buildEngineLists(engine) {
+    const id = `${engine}-model`;
+    if (busyLists.has(`${id}-select`)) {
+      pendingRebuilds.add("codex");
+      return;
+    }
+    const models = capabilities.models || [];
+    const first = engine === "claude" ? "(Claude Code's default)" : "(OpenCode's default)";
+    fillListed(
+      id,
+      models.length
+        ? [{ value: "", label: first }].concat(
+            models
+              .filter((model) => model.id !== "default")
+              .map((model) => ({ value: model.id, label: model.display_name === model.id ? model.id : `${model.display_name} (${model.id})` })),
+          )
+        : [],
+    );
+  }
   function buildCodexLists() {
+    // The capabilities are the selected engine's: Claude Code and OpenCode fill their own.
+    if (engineOf() !== "codex") {
+      buildEngineLists(engineOf());
+      return;
+    }
     if (["codex-model-select", "codex-effort-select", "codex-voice-select"].some((id) => busyLists.has(id))) {
       pendingRebuilds.add("codex");
       return;
@@ -709,7 +753,7 @@
       const next = await invoke("capabilities");
       capabilities.lists_read_at_ms = next.lists_read_at_ms;
       renderListsRead();
-      const key = JSON.stringify({ models: next.models, voices: next.voices, default_voice: next.default_voice });
+      const key = JSON.stringify({ engine: engineOf(), models: next.models, voices: next.voices, default_voice: next.default_voice });
       if (key === capabilitiesKey) return;
       capabilitiesKey = key;
       capabilities = next;
@@ -805,19 +849,24 @@
     await refresh();
   });
 
-  // ---------- Codex chat ----------
+  // ---------- Chat ----------
   const chatLog = $("chat-log");
   const CHAT_LIMIT = 600;
-  const CHAT_KIND_LABELS = {
-    assistant: "GPT",
-    context: "Context → GPT",
-    task: "Task → Codex",
-    agent: "Codex",
-    reasoning: "Codex thinking",
-    tool: "Codex tool",
-    system: "Call",
-    error: "Error",
-  };
+  // The labels name the engine that wrote the entry (change `claude-and-opencode-engines`):
+  // `GPT` is the realtime voice, which only Codex has.
+  function chatKindLabel(kind, engine) {
+    const labels = {
+      assistant: "GPT",
+      context: engine === "Codex" ? "Context → GPT" : `Context → ${engine}`,
+      task: `Task → ${engine}`,
+      agent: engine,
+      reasoning: `${engine} thinking`,
+      tool: `${engine} tool`,
+      system: "Call",
+      error: "Error",
+    };
+    return labels[kind];
+  }
   let chatEntries = [];
   function chatVisible(entry) {
     if (entry.kind === "context") return $("chat-filter-context").checked;
@@ -827,7 +876,7 @@
   }
   function chatWho(entry) {
     if (entry.kind === "user") return entry.who || "Voice channel";
-    return CHAT_KIND_LABELS[entry.kind] || entry.kind;
+    return chatKindLabel(entry.kind, entry.engine || "Codex") || entry.kind;
   }
   function chatElement(entry) {
     const row = document.createElement("div");
@@ -853,7 +902,7 @@
     if (!visible.length) {
       const empty = document.createElement("div");
       empty.className = "empty-state";
-      empty.textContent = "Nothing yet. Everything heard and said in voice calls appears here, together with what Codex does for handed-off tasks.";
+      empty.textContent = "Nothing yet. Everything heard and said in voice sessions appears here, together with what the assistant's engine does for each answer.";
       chatLog.replaceChildren(empty);
       return;
     }
@@ -1441,7 +1490,7 @@
     });
     $("recognition-engine").value = mode === "whisper" ? "Whisper" : "Vosk";
     $("local-voice-note").textContent = mode === "whisper"
-      ? "This voice reads Codex's answers into the voice channel."
+      ? "This voice reads the assistant's answers into the voice channel."
       : "Not used in the realtime voice mode: the Codex call speaks with its own voice (Codex → Voice). You can download a voice now for the Whisper mode.";
     $("whisper-onoff").classList.toggle("is-on", mode === "whisper");
     $("whisper-onoff-flag").textContent = mode === "whisper" ? "On" : "Off";
@@ -1450,6 +1499,175 @@
       : ": turn it on in Config → Assistant → Assistant mode.";
     if (lastStatus) renderWhisperNotices(lastStatus);
   }
+
+  // ---------- The engine (change `claude-and-opencode-engines`) ----------
+  // The engine card's title and rows, the Status tab's engine buttons, and the realtime
+  // voice mode, which only Codex has.
+  function applyEngine() {
+    const engine = engineOf();
+    $("engine-card-title").textContent = engineProduct(engine);
+    document.querySelectorAll("#card-codex-body [data-engine]").forEach((row) => {
+      row.hidden = row.dataset.engine !== engine;
+    });
+    document.querySelectorAll("[data-engine-status]").forEach((node) => {
+      node.hidden = node.dataset.engineStatus !== engine;
+    });
+    const realtime = $("assistant-mode").querySelector('option[value="realtime"]');
+    realtime.disabled = engine !== "codex";
+    realtime.textContent = engine === "codex"
+      ? "Realtime voice (Codex voice call, Vosk wake word)"
+      : "Realtime voice (works only with Codex)";
+    $("assistant-mode-note").textContent = engine === "codex"
+      ? ""
+      : `The voice mode works only with Codex; ${engineProduct(engine)} answers in the Whisper mode.`;
+    renderClaudeNotice();
+  }
+
+  // The engine list: Claude Code and OpenCode take the Whisper mode in the same save; a
+  // first choice of Claude Code with a subscription (or a sign-in not known yet) asks
+  // whether only the owner's voice should pass (design D6).
+  async function chooseEngine(select) {
+    const engine = select.value;
+    const previous = engineOf();
+    if (!invoke || engine === previous) return;
+    if (installDialog.open || claudeDialog.open) {
+      select.value = previous;
+      setState(select.id, "clean");
+      return;
+    }
+    setState(select.id, "saving");
+    // The kind of sign-in decides the dialog: read it first (Check, no model call).
+    let kind = "unknown";
+    if (engine === "claude") {
+      try {
+        kind = (await invoke("claude_check"))?.kind || "unknown";
+      } catch (error) {
+        appendLog(`claude_check failed: ${error}`);
+      }
+      claudeNotice.kind = kind;
+    }
+    const patch = { assistant: { engine } };
+    const toWhisper = engine !== "codex" && readByPath(stored, "assistant.mode") !== "whisper";
+    if (toWhisper) patch.assistant.mode = "whisper";
+    try {
+      stored = await invoke("save_settings", { patch });
+    } catch (error) {
+      select.value = previous;
+      setState(select.id, "error");
+      fieldMessage(select.id, String(error));
+      return;
+    }
+    setState(select.id, "clean");
+    fieldMessage(select.id, "");
+    fillForm();
+    markSaved(select);
+    capabilitiesKey = "";
+    await loadCapabilities();
+    if (engine === "claude" && noticeApplies(kind) && !stored?.claude?.subscription_notice_shown) {
+      claudeNotice.whisperNext = toWhisper;
+      openClaudeDialog();
+    }
+    refresh();
+  }
+
+  // ---------- The Claude subscription notice (design D6) ----------
+  const ANTHROPIC_TERMS = "https://www.anthropic.com/legal/consumer-terms";
+  const CLAUDE_CODE_LEGAL = "https://code.claude.com/docs/en/legal-and-compliance";
+  const claudeDialog = $("claude-notice-dialog");
+  const claudeNotice = { kind: null, whisperNext: false, busy: false };
+  // A subscription, or a sign-in not known yet (not read, not signed in): the notice
+  // applies. An API key or a cloud provider: it does not.
+  const noticeApplies = (kind) => !["api_key", "cloud"].includes(kind || "unknown");
+  function noticeParagraphs(container, withButton) {
+    container.replaceChildren();
+    const text = document.createElement("p");
+    text.textContent = "A Claude subscription (Free, Pro, Max, Team, Enterprise or another claude.ai plan) may be used only by you. Anthropic's Consumer Terms do not let you make your account available to anyone else, and Claude Code's terms say a subscription is meant for ordinary, individual use. While other people's voices reach the assistant, they use your subscription.";
+    const advice = document.createElement("p");
+    advice.textContent = "Let only your own voice through with \"Only my Discord account\" in the Access card (everyone still hears the answers), or sign Claude Code in with an API key, which Anthropic's Commercial Terms cover. VoiceBro does not enforce this: the choice is yours.";
+    const links = document.createElement("p");
+    links.className = "notice-links";
+    const link = (href, label) => {
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.target = "_blank";
+      anchor.rel = "noopener";
+      anchor.textContent = label;
+      return anchor;
+    };
+    links.append(link(ANTHROPIC_TERMS, "Anthropic's Consumer Terms"), " · ", link(CLAUDE_CODE_LEGAL, "Claude Code: legal and compliance"));
+    container.append(text, advice, links);
+    if (withButton) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "button primary";
+      button.textContent = "Hear only me";
+      button.addEventListener("click", () => hearOnlyMe(false));
+      container.append(button);
+    }
+  }
+  // Shown in the Assistant and Access cards while the engine is Claude Code, its sign-in is
+  // a subscription or not known, and more voices than the owner's pass.
+  function renderClaudeNotice() {
+    // The kind of the last status of Claude Code, or of the Check the engine choice ran.
+    const show = engineOf() === "claude" && noticeApplies(claudeNotice.kind) && (stored?.discord?.access || "everyone") !== "owner";
+    document.querySelectorAll("[data-claude-notice]").forEach((box) => {
+      if (show && !box.childElementCount) noticeParagraphs(box, true);
+      box.hidden = !show;
+    });
+  }
+  function openClaudeDialog() {
+    noticeParagraphs($("claude-notice-text"), false);
+    $("claude-notice-progress").hidden = true;
+    claudeDialog.showModal();
+    // A stray Enter must not change the access mode: the focus starts on Not now.
+    $("claude-notice-later").focus();
+  }
+  // Remembers that the dialog was answered; then the Whisper files dialog may follow.
+  async function closeClaudeDialog() {
+    if (claudeDialog.open) claudeDialog.close();
+    try {
+      stored = await invoke("save_settings", { patch: { claude: { subscription_notice_shown: true } } });
+    } catch (error) {
+      appendLog(`saving the notice failed: ${error}`);
+    }
+    if (claudeNotice.whisperNext) {
+      claudeNotice.whisperNext = false;
+      whisperInstall.modeSince = Date.now();
+    }
+    refresh();
+  }
+  // "Hear only me": the owner-only access mode, and a link code when nobody is linked.
+  async function hearOnlyMe(fromDialog) {
+    if (!invoke || claudeNotice.busy) return;
+    claudeNotice.busy = true;
+    try {
+      stored = await invoke("save_settings", { patch: { discord: { access: "owner" } } });
+      fillField($("access-mode"), true);
+      renderAccessNotes();
+      renderClaudeNotice();
+      if (fromDialog) await closeClaudeDialog();
+      if (!ownerStatus.linked) {
+        // Open the Access card and show the code there.
+        if (collapsedCards.has("access")) {
+          collapsedCards.delete("access");
+          showCollapsed();
+        }
+        $("owner-link").scrollIntoView({ block: "center" });
+        await ownerAction("owner_link_start", ownerBusyText());
+      }
+    } catch (error) {
+      appendLog(`Hear only me failed: ${error}`);
+    } finally {
+      claudeNotice.busy = false;
+    }
+  }
+  $("claude-notice-owner").addEventListener("click", () => hearOnlyMe(true));
+  $("claude-notice-later").addEventListener("click", () => closeClaudeDialog());
+  // Escape is "Not now".
+  claudeDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeClaudeDialog();
+  });
 
   // ---- A model, device or voice that needs files: the dialog asks before it is saved.
   const whisperSelection = (change = {}) => ({
@@ -1645,7 +1863,8 @@
     if (mode === "whisper" && whisperInstall.lastMode === "realtime") whisperInstall.modeSince = Date.now();
     if (mode !== "whisper") whisperInstall.modeSince = 0;
     const recent = (since, ms) => since > 0 && Date.now() - since < ms;
-    if (install.armed && !installDialog.open && mode === "whisper" && items.length) {
+    // The Claude subscription dialog comes first; this one waits until it is answered.
+    if (install.armed && !installDialog.open && !claudeDialog.open && mode === "whisper" && items.length) {
       const reason = recent(whisperInstall.joinRefusedAt, 5000) ? "join"
         : recent(whisperInstall.modeSince, 10000) ? "mode" : "";
       if (reason) {
@@ -2034,7 +2253,8 @@
     setText("status-voice", channels.length ? channels.map((c) => `${c.guild_name} / ${c.channel_name}`).join("; ") : "none");
     const people = channels.flatMap((c) => c.participants || []);
     setText("status-people", people.length ? people.join(", ") : "—");
-    setText("status-engine", `${assistant.engine || "—"}${assistant.version ? ` (${assistant.version})` : ""}`);
+    const engine = assistant.engine || engineOf();
+    setText("status-engine", `${engineProduct(engine)}${assistant.version ? ` (${assistant.version})` : ""}`);
     const gates = Object.values(status.gates || {});
     setText("status-gates", gates.length ? gates.map(gateText).join("; ") : "not in a voice channel");
     // The Whisper mode (change `whisper-mode`): Vosk is off and Whisper spots the phrases.
@@ -2042,16 +2262,25 @@
     setText("status-wake", whisperOn ? "off: the Whisper mode spots the phrases" : wakeText(status.wake || {}));
     renderWhisperTiles(status, whisperOn);
     setText("status-mute", status.muted ? "muted" : "not muted");
-    $("mute-toggle").textContent = status.muted ? "Unmute GPT" : "Mute GPT";
+    $("mute-toggle").textContent = status.muted ? "Unmute assistant" : "Mute assistant";
+    // The engine's account (change `claude-and-opencode-engines`): Codex's ChatGPT account,
+    // Claude Code's kind of sign-in, OpenCode's providers.
+    setText("status-account-label", engine === "claude" ? "Claude Code sign-in" : engine === "opencode" ? "OpenCode providers" : "Codex account");
     setText("status-codex", assistant.summary || "—");
-    renderCodexSetup(assistant);
+    renderCodexSetup(engine === "codex" ? assistant : { signed_in: true, executable: "-" });
+    renderClaudeSetup(engine === "claude" ? assistant : null);
+    renderOpencodeSetup(engine === "opencode" ? assistant : null);
     const calls = assistant.calls || [];
     setText("status-call", calls.length
       ? calls.map((call) => `${call.state}${call.connected ? ", connected" : ""}${call.last_error ? `, error: ${call.last_error}` : ""}`).join("; ")
       : "no call");
-    setText("status-thread", assistant.model_in_use != null
-      ? `${assistant.model_in_use || "default model"}, reasoning ${assistant.reasoning_effort_in_use || "default"}`
-      : "—");
+    setText("status-thread-label", engine === "codex" ? "Codex thread" : "Model");
+    setText("status-thread", engine !== "codex"
+      ? assistant.model_in_use || "the engine's default"
+      : assistant.model_in_use != null
+        ? `${assistant.model_in_use || "default model"}, reasoning ${assistant.reasoning_effort_in_use || "default"}`
+        : "—");
+    renderClaudeNotice();
     const hotkey = status.hotkey || {};
     setText("status-hotkey", !hotkey.shortcut
       ? "none configured"
@@ -2160,7 +2389,14 @@
       await refresh();
     }
   }
-  $("owner-link-start").addEventListener("click", () => ownerAction("owner_link_start", "Reading the Codex account…"));
+  // The engine in use reads its account first; OpenCode has none.
+  function ownerBusyText() {
+    const engine = engineOf();
+    if (engine === "claude") return "Reading the Claude account…";
+    if (engine === "opencode") return "Making a code…";
+    return "Reading the Codex account…";
+  }
+  $("owner-link-start").addEventListener("click", () => ownerAction("owner_link_start", ownerBusyText()));
   $("owner-link-cancel").addEventListener("click", () => ownerAction("owner_link_cancel"));
   $("owner-unlink").addEventListener("click", () => ownerAction("owner_unlink"));
 
@@ -2540,12 +2776,15 @@
       setText("system-memory", `${mb(memory.total_mb)} (${memory.metric})`);
       setText("memory-app", mb(memory.app_mb));
       setText("memory-webview", `${mb(memory.webview_mb)} in ${memory.webview_processes} processes`);
-      setText("memory-codex", memory.codex_mb == null ? "not running" : mb(memory.codex_mb));
+      // The engine's share (change `claude-and-opencode-engines`): Codex, Claude Code or
+      // OpenCode, whichever is selected.
+      setText("memory-engine-name", engineProduct(stored?.assistant?.engine));
+      setText("memory-codex", memory.engine_mb == null ? "not running" : mb(memory.engine_mb));
       setText("memory-total", mb(memory.total_mb));
       const share = (value) => `${memory.total_mb > 0 ? (100 * (value || 0)) / memory.total_mb : 0}%`;
       $("memory-meter-app").style.width = share(memory.app_mb);
       $("memory-meter-webview").style.width = share(memory.webview_mb);
-      $("memory-meter-codex").style.width = share(memory.codex_mb);
+      $("memory-meter-codex").style.width = share(memory.engine_mb);
     } catch (error) {
       appendLog(`memory_status failed: ${error}`);
     }
@@ -2670,6 +2909,121 @@
     await loadCodexInstall();
     await refresh();
   });
+  // ---------- Claude Code and OpenCode setup (change `claude-and-opencode-engines`) ----------
+  // The same install offer as Codex's; then Claude Code's own sign-in, or where OpenCode's
+  // providers are set up. `null` hides the box (another engine is selected).
+  let claudeInstall = null; // claude_install_info
+  let opencodeInstall = null; // opencode_install_info
+  async function loadEngineInstalls() {
+    if (!invoke) return;
+    claudeInstall = await invokeOr("claude_install_info", null);
+    opencodeInstall = await invokeOr("opencode_install_info", null);
+  }
+  function setupBox(prefix, lines, text, button) {
+    $(`${prefix}-setup-text`).textContent = text;
+    const ways = $(`${prefix}-setup-ways`);
+    ways.replaceChildren(...lines.map((line) => {
+      const item = document.createElement("li");
+      item.textContent = line;
+      return item;
+    }));
+    $(`${prefix}-install`).hidden = !button;
+    $(`${prefix}-setup`).hidden = false;
+  }
+  // While the engine is missing: winget's offer, or the other ways without winget.
+  function installOffer(prefix, info, product, otherWays) {
+    const state = info.state || { kind: "idle" };
+    if (!info.winget) {
+      setupBox(prefix, otherWays, `${product} is not installed, and winget (the Windows Package Manager) is not on this PC. Install it another way, then come back:`, false);
+      return;
+    }
+    $(`${prefix}-install`).disabled = state.kind === "running";
+    if (state.kind === "running") {
+      setupBox(prefix, [], `Installing ${product} in the console window… Answer winget there if it asks; the window closes after you press a key.`, true);
+    } else if (state.kind === "finished" && state.code !== 0) {
+      setupBox(prefix, [], `winget ended with code ${state.code}; the console window showed why. ${product} is still not installed.`, true);
+    } else if (state.kind === "failed") {
+      setupBox(prefix, [], `The install did not start: ${state.message}`, true);
+    } else {
+      setupBox(prefix, [], `${product} is not installed; the assistant needs it with this engine. Install ${product} runs winget in a console window you can see: package ${info.package} from ${info.source}, about ${info.download_mb} MB to download and ${info.disk_mb} MB on disk. Nothing is installed until you press the button.`, true);
+    }
+  }
+  function renderClaudeSetup(assistant) {
+    if (!assistant) {
+      $("claude-setup").hidden = true;
+      return;
+    }
+    claudeNotice.kind = assistant.sign_in_kind || null;
+    if (!assistant.executable) {
+      if (!claudeInstall) {
+        $("claude-setup").hidden = true;
+        return;
+      }
+      installOffer("claude", claudeInstall, "Claude Code", [
+        "Claude Code's own installer: see code.claude.com/docs/en/setup",
+        "Then set the path of claude.exe in Config → Claude Code executable if VoiceBro does not find it by itself",
+      ]);
+      return;
+    }
+    if (assistant.sign_in_kind === "none") {
+      setupBox("claude", [], `Claude Code is installed${assistant.version ? ` (${assistant.version})` : ""}. Next: Sign in to Claude Code, which opens Claude Code's own sign-in in a console window; VoiceBro never sees your credentials. A Claude subscription is yours alone: see the notice in Config → Assistant.`, false);
+      return;
+    }
+    $("claude-setup").hidden = true;
+  }
+  function renderOpencodeSetup(assistant) {
+    if (!assistant) {
+      $("opencode-setup").hidden = true;
+      return;
+    }
+    if (!assistant.executable) {
+      if (!opencodeInstall) {
+        $("opencode-setup").hidden = true;
+        return;
+      }
+      installOffer("opencode", opencodeInstall, "OpenCode", [
+        "With Node.js: npm install -g opencode-ai",
+        "Or download OpenCode from github.com/anomalyco/opencode/releases and set the path of opencode.exe in Config → OpenCode executable",
+      ]);
+      return;
+    }
+    if (!assistant.signed_in) {
+      setupBox("opencode", [
+        "In a terminal: opencode auth login, then pick a provider and sign in or paste its key",
+        "The providers and their keys: opencode.ai/docs/providers",
+      ], `OpenCode is installed${assistant.version ? ` (${assistant.version})` : ""}, and no provider is set up yet. Providers and keys are set up in OpenCode itself; VoiceBro never sees them. Then press Check OpenCode.`, false);
+      return;
+    }
+    $("opencode-setup").hidden = true;
+  }
+  const engineAction = (command, done) => async () => {
+    if (!invoke) return;
+    try {
+      const result = await invoke(command);
+      if (done) $("status-feedback").textContent = done(result);
+    } catch (error) {
+      $("status-feedback").textContent = `${command.replace(/_/g, " ")}: ${error}`;
+    }
+    await loadEngineInstalls();
+    capabilitiesKey = "";
+    await loadCapabilities();
+    await refresh();
+  };
+  $("claude-install").addEventListener("click", engineAction("claude_install"));
+  $("opencode-install").addEventListener("click", engineAction("opencode_install"));
+  $("claude-sign-in").addEventListener("click", engineAction(
+    "claude_sign_in",
+    () => "Claude Code's sign-in opened in a console window. Finish it there; VoiceBro reads the sign-in again when the window closes.",
+  ));
+  $("claude-check").addEventListener("click", engineAction(
+    "claude_check",
+    (signIn) => `Claude Code: ${signIn?.kind === "none" ? "not signed in; press Sign in to Claude Code" : `signed in (${(signIn?.kind || "unknown").replace("_", " ")})`}.`,
+  ));
+  $("opencode-check").addEventListener("click", engineAction(
+    "opencode_check",
+    (result) => `OpenCode: ${result?.providers?.length ? `providers ${result.providers.join(", ")}` : "no provider set up yet"}.`,
+  ));
+
   $("status-refresh").addEventListener("click", () => {
     refresh();
     refreshSystem();
@@ -2722,6 +3076,17 @@
             if (payload.state?.kind === "finished" && payload.state.code === 0) justInstalled = true;
             refresh();
             break;
+          // Change `claude-and-opencode-engines`: the same for the other engines; Claude
+          // Code's sign-in console closed and its sign-in was read again.
+          case "claude_install":
+          case "opencode_install":
+          case "claude_sign_in":
+            loadEngineInstalls().then(() => {
+              capabilitiesKey = "";
+              loadCapabilities();
+              refresh();
+            });
+            break;
           case "codec_failure":
             showCodecFailure(payload);
             refresh();
@@ -2733,6 +3098,7 @@
     }
     await refreshSystem();
     await loadCodexInstall();
+    await loadEngineInstalls();
     try {
       wakeModels = await invoke("wake_models");
     } catch (error) {

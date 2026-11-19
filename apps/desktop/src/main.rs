@@ -16,9 +16,13 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
 use voicebro_core::assistant::chat_log::ChatEntry;
+use voicebro_core::assistant::claude::ClaudeAssistant;
 use voicebro_core::assistant::codex::CodexAssistant;
-use voicebro_core::assistant::{Assistant, Capabilities, StubAssistant};
+use voicebro_core::assistant::opencode::OpencodeAssistant;
+use voicebro_core::assistant::switch::EngineSwitch;
+use voicebro_core::assistant::{Assistant, Capabilities};
 use voicebro_core::settings::store::SettingsStore;
+use voicebro_core::settings::AssistantEngine;
 use voicebro_core::status::{ConnectionErrors, HotkeyStatus};
 use voicebro_core::{paths, secrets, AppEvent, EventBus, Runtime, Settings, Status};
 
@@ -87,6 +91,16 @@ struct AppState {
     memory_reader: Mutex<Option<memory::Reader>>,
     /// The Codex install offered on the Status tab when Codex is missing.
     installer: codex_install::Installer,
+    /// Claude Code (change `claude-and-opencode-engines`), for its own commands.
+    claude: Option<ClaudeAssistant>,
+    /// The Claude Code install offered on the Status tab.
+    claude_installer: codex_install::Installer,
+    /// Claude Code's own sign-in, run in a console window the user sees.
+    claude_console: codex_install::Installer,
+    /// OpenCode (change `claude-and-opencode-engines`), for its own commands.
+    opencode: Option<OpencodeAssistant>,
+    /// The OpenCode install offered on the Status tab.
+    opencode_installer: codex_install::Installer,
 }
 
 /// Follows `diagnostics.verbose_log`: the file filter reads the flag on every record.
@@ -171,6 +185,99 @@ fn codex_install(app: AppHandle, state: State<'_, AppState>) -> Result<(), Strin
     })
 }
 
+fn claude(state: &AppState) -> Result<ClaudeAssistant, String> {
+    state
+        .claude
+        .clone()
+        .ok_or_else(|| "Claude Code is not available in this build".to_owned())
+}
+
+/// Check for Claude Code: the version, the kind of sign-in and the models (change
+/// `claude-and-opencode-engines`). The window also calls it when Claude Code is chosen, so
+/// the subscription notice knows the sign-in.
+#[tauri::command]
+async fn claude_check(state: State<'_, AppState>) -> Result<Value, String> {
+    let sign_in = claude(&state)?.check().await?;
+    serde_json::to_value(sign_in).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn claude_install_info(state: State<'_, AppState>) -> codex_install::InstallInfo {
+    state.claude_installer.info()
+}
+
+/// winget for Claude Code in a console window the user sees; the window gets an
+/// `app-event` of kind `claude_install` when it ends.
+#[tauri::command]
+fn claude_install(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    log::info!("Claude Code install: winget started in its own console window");
+    state.claude_installer.start_winget(move |finished| {
+        log::info!("Claude Code install: {finished:?}");
+        let event = json!({ "event": "claude_install", "state": finished });
+        if let Err(error) = app.emit("app-event", &event) {
+            log::warn!("event bridge: {error}");
+        }
+    })
+}
+
+/// Claude Code's own sign-in (`claude auth login`) in a console window the user sees; the
+/// app never sees a credential. When the window closes, the sign-in kind is read again
+/// and the window gets an `app-event` of kind `claude_sign_in`.
+#[tauri::command]
+fn claude_sign_in(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let assistant = claude(&state)?;
+    let executable = assistant
+        .executable()
+        .ok_or_else(|| "Claude Code is not installed".to_owned())?;
+    log::info!("Claude Code: its sign-in started in its own console window");
+    state
+        .claude_console
+        .start_program(&executable, "auth login", move |finished| {
+            log::info!("Claude Code sign-in console: {finished:?}");
+            tauri::async_runtime::spawn(async move {
+                let _ = assistant.check().await;
+                let event = json!({ "event": "claude_sign_in", "state": finished });
+                if let Err(error) = app.emit("app-event", &event) {
+                    log::warn!("event bridge: {error}");
+                }
+            });
+        })
+}
+
+fn opencode(state: &AppState) -> Result<OpencodeAssistant, String> {
+    state
+        .opencode
+        .clone()
+        .ok_or_else(|| "OpenCode is not available in this build".to_owned())
+}
+
+/// Check for OpenCode: the providers set up and the models, read from a server started for
+/// the check when the bot is in no channel (change `claude-and-opencode-engines`).
+#[tauri::command]
+async fn opencode_check(state: State<'_, AppState>) -> Result<Value, String> {
+    let check = opencode(&state)?.check().await?;
+    serde_json::to_value(check).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn opencode_install_info(state: State<'_, AppState>) -> codex_install::InstallInfo {
+    state.opencode_installer.info()
+}
+
+/// winget for OpenCode in a console window the user sees; the window gets an `app-event`
+/// of kind `opencode_install` when it ends.
+#[tauri::command]
+fn opencode_install(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    log::info!("OpenCode install: winget started in its own console window");
+    state.opencode_installer.start_winget(move |finished| {
+        log::info!("OpenCode install: {finished:?}");
+        let event = json!({ "event": "opencode_install", "state": finished });
+        if let Err(error) = app.emit("app-event", &event) {
+            log::warn!("event bridge: {error}");
+        }
+    })
+}
+
 #[tauri::command]
 async fn codex_check(state: State<'_, AppState>) -> Result<Value, String> {
     let account = codex(&state)?.check().await?;
@@ -189,7 +296,17 @@ async fn codex_check(state: State<'_, AppState>) -> Result<Value, String> {
 async fn owner_link_start(
     state: State<'_, AppState>,
 ) -> Result<voicebro_core::owner::PendingCode, String> {
-    codex(&state)?.check().await?;
+    // The selected engine reads its account (change `claude-and-opencode-engines`, D9);
+    // OpenCode has none.
+    match state.runtime.settings().assistant.engine {
+        AssistantEngine::Codex => {
+            codex(&state)?.check().await?;
+        }
+        AssistantEngine::Claude => {
+            claude(&state)?.check().await?;
+        }
+        AssistantEngine::Opencode => {}
+    }
     state.runtime.start_link()
 }
 
@@ -693,19 +810,45 @@ fn main() {
     // The engine is chosen from the settings file before the runtime loads it, so the
     // runtime can own it as a trait object from the start.
     let initial_settings = store.load().ok().flatten().unwrap_or_default();
-    let codex = (initial_settings.assistant.engine == "codex").then(|| {
-        CodexAssistant::new(
+    let codex = Some(CodexAssistant::new(
+        handle.clone(),
+        events.clone(),
+        Arc::clone(&errors),
+        &data_dir,
+        &initial_settings,
+    ));
+    // Change `claude-and-opencode-engines`, D1: every engine is built here and starts
+    // nothing until used; the switch forwards to the one `assistant.engine` names.
+    let mut engines: Vec<(AssistantEngine, Arc<dyn Assistant>)> = Vec::new();
+    let mut claude = None;
+    let mut opencode = None;
+    if let Some(codex) = codex.clone() {
+        let assistant = ClaudeAssistant::new(
             handle.clone(),
             events.clone(),
             Arc::clone(&errors),
+            codex.chat(),
             &data_dir,
             &initial_settings,
-        )
-    });
-    let assistant: Arc<dyn Assistant> = match codex.clone() {
-        Some(codex) => Arc::new(codex),
-        None => Arc::new(StubAssistant::default()),
-    };
+        );
+        engines.push((AssistantEngine::Claude, Arc::new(assistant.clone())));
+        claude = Some(assistant);
+        let assistant = OpencodeAssistant::new(
+            handle.clone(),
+            events.clone(),
+            Arc::clone(&errors),
+            codex.chat(),
+            &data_dir,
+            &initial_settings,
+        );
+        engines.push((AssistantEngine::Opencode, Arc::new(assistant.clone())));
+        opencode = Some(assistant);
+        engines.push((AssistantEngine::Codex, Arc::new(codex)));
+    }
+    let assistant: Arc<dyn Assistant> = Arc::new(EngineSwitch::new(
+        engines,
+        initial_settings.assistant.engine,
+    ));
     let runtime = Arc::new(Runtime::with_assistant(
         BUILD_STAMP,
         data_dir.clone(),
@@ -742,6 +885,11 @@ fn main() {
             memory: Arc::new(Mutex::new(None)),
             memory_reader: Mutex::new(None),
             installer: codex_install::Installer::default(),
+            claude,
+            claude_installer: codex_install::Installer::new(codex_install::CLAUDE_CODE),
+            claude_console: codex_install::Installer::new(codex_install::CLAUDE_CODE),
+            opencode,
+            opencode_installer: codex_install::Installer::new(codex_install::OPENCODE),
         })
         .setup(move |app| {
             log.attach(app.handle().clone());
@@ -761,9 +909,14 @@ fn main() {
                 runtime.set_connection_error("runtime", Some(error.to_string()));
             }
             // The Codex lists at start (change `config-tab-and-codex-lists`): read when the
-            // setting is on or none were saved yet, and only when Codex is installed.
-            if let Some(codex) = app.state::<AppState>().codex.as_ref() {
-                codex.read_lists_at_start(runtime.settings().codex.refresh_lists_at_start);
+            // setting is on or none were saved yet, and only when Codex is installed. Only
+            // while Codex is the engine: nothing of another engine runs at start (change
+            // `claude-and-opencode-engines`, requirement "Three assistant engines").
+            let settings = runtime.settings();
+            if settings.assistant.engine == AssistantEngine::Codex {
+                if let Some(codex) = app.state::<AppState>().codex.as_ref() {
+                    codex.read_lists_at_start(settings.codex.refresh_lists_at_start);
+                }
             }
             // Debug builds only: a panic in a background task after start, to check the
             // panic hook in the real app (design D11). A release build has no such switch.
@@ -827,6 +980,13 @@ fn main() {
             codex_install_info,
             codex_install,
             codex_models,
+            claude_check,
+            claude_install_info,
+            claude_install,
+            claude_sign_in,
+            opencode_check,
+            opencode_install_info,
+            opencode_install,
             owner_link_start,
             owner_link_cancel,
             owner_unlink,

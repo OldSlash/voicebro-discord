@@ -52,12 +52,15 @@
     },
     // `post_answers` and `answers_channel` as the app fills them for a file without them;
     // `mode`, `whisper` and `tts` likewise (change `whisper-mode`).
-    assistant: { engine: "codex", mode: "realtime", speaker_labels: "start", save_chat_history: false, post_answers: "off", answers_channel: "", one_speaker_at_a_time: false },
+    // `instructions` moved here from `codex` (change `claude-and-opencode-engines`).
+    assistant: { engine: "codex", mode: "realtime", speaker_labels: "start", instructions: "Answer briefly.", save_chat_history: false, post_answers: "off", answers_channel: "", one_speaker_at_a_time: false },
     whisper: { model: "whisper-base-q8_0", device: "cpu", threads: 0, language: "auto", phrases: {} },
     tts: { voice: "supertonic3:F1", speed: 1.0 },
     // `handoff_mode` and `refresh_lists_at_start` as the app fills them for a file without
     // the fields: the defaults.
-    codex: { executable: "", model: "", reasoning_effort: "", voice: "", instructions: "Answer briefly.", handoff_mode: "items", refresh_lists_at_start: false },
+    codex: { executable: "", model: "", reasoning_effort: "", voice: "", handoff_mode: "items", refresh_lists_at_start: false },
+    claude: { executable: "", model: "", subscription_notice_shown: false },
+    opencode: { executable: "", model: "" },
     hotkey: { mute: "Ctrl+Alt+M" },
     ui: { theme: "dark", font_size: 13, collapsed_cards: [] },
     // All off and libopus, as the app fills them for a file without the section.
@@ -184,6 +187,42 @@
     },
   ];
   const POST_ANSWERS = ["off", "voice_channel", "command_channel", "channel"];
+  // The engines (change `claude-and-opencode-engines`): `?engine=claude|opencode` is the
+  // stored engine (in the Whisper mode, which they need); `?claude_signin=subscription|
+  // api_key|cloud|none|unknown` is Claude Code's sign-in (a Max subscription by default);
+  // `?claude_missing` and `?opencode_missing` start without the engine installed;
+  // `?notice_shown` with the subscription dialog answered before; `?opencode_providers=
+  // openai,anthropic` the providers OpenCode has (none by default). `__mock.setClaudeSignIn
+  // (kind)` changes the sign-in as Claude Code's own sign-in would.
+  const ENGINE_PARAM = new URLSearchParams(location.search).get("engine");
+  if (ENGINE_PARAM) {
+    settings.assistant.engine = ENGINE_PARAM;
+    if (ENGINE_PARAM !== "codex") settings.assistant.mode = "whisper";
+  }
+  if (new URLSearchParams(location.search).has("notice_shown")) settings.claude.subscription_notice_shown = true;
+  const claude = {
+    installed: !new URLSearchParams(location.search).has("claude_missing"),
+    signIn: new URLSearchParams(location.search).get("claude_signin") || "subscription",
+    read: false,
+  };
+  const opencode = {
+    installed: !new URLSearchParams(location.search).has("opencode_missing"),
+    providers: (new URLSearchParams(location.search).get("opencode_providers") || "").split(",").filter(Boolean),
+  };
+  const CLAUDE_MODELS = [
+    { id: "default", display_name: "Default (recommended)", description: "", reasoning_efforts: [], default_reasoning_effort: null, is_default: true },
+    { id: "sonnet", display_name: "Sonnet 5.5", description: "", reasoning_efforts: [], default_reasoning_effort: null, is_default: false },
+    { id: "haiku", display_name: "Haiku 5.5", description: "", reasoning_efforts: [], default_reasoning_effort: null, is_default: false },
+  ];
+  const OPENCODE_MODELS = ["openai/gpt-5.4-mini", "anthropic/claude-sonnet-4-5", "opencode/big-pickle"].map((id) => ({
+    id, display_name: id, description: "", reasoning_efforts: [], default_reasoning_effort: null, is_default: false,
+  }));
+  const claudeSummary = () => ({
+    subscription: "Claude subscription (Max)", api_key: "API key", cloud: "Amazon Bedrock",
+    none: "not signed in", unknown: "sign-in not known",
+  })[claude.signIn];
+  let claudeInstallState = { kind: "idle" };
+  let opencodeInstallState = { kind: "idle" };
   // `?collapsed=audio,hotkey`: the stored `ui.collapsed_cards`, as after a restart.
   const collapsedParam = new URLSearchParams(location.search).get("collapsed");
   if (collapsedParam) settings.ui.collapsed_cards = collapsedParam.split(",").filter(Boolean);
@@ -743,6 +782,21 @@
     if (!["realtime", "whisper"].includes(doc.assistant.mode)) {
       throw `the patch is not a settings document: assistant.mode: «${doc.assistant.mode}» is not an assistant mode; use one of realtime, whisper`;
     }
+    // Change `claude-and-opencode-engines`, with the app's messages.
+    const PRODUCTS = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode" };
+    if (!(doc.assistant.engine in PRODUCTS)) {
+      throw `the patch is not a settings document: assistant.engine: «${doc.assistant.engine}» is not an assistant engine; use one of codex, claude, opencode`;
+    }
+    if (doc.assistant.engine !== "codex" && doc.assistant.mode === "realtime") {
+      throw `assistant.mode: the voice mode works only with Codex; ${PRODUCTS[doc.assistant.engine]} answers in the Whisper mode only`;
+    }
+    const claudeModel = String(doc.claude.model).trim();
+    if (/\s/.test(claudeModel)) throw `claude.model: «${claudeModel}» must not contain spaces`;
+    const opencodeModel = String(doc.opencode.model).trim();
+    if (/\s/.test(opencodeModel)) throw `opencode.model: «${opencodeModel}» must not contain spaces`;
+    if (opencodeModel && !/^[^/]+\/.+$/.test(opencodeModel)) {
+      throw `opencode.model: «${opencodeModel}» must be written as provider/model, for example openai/gpt-5`;
+    }
     const model = String(doc.whisper.model);
     if (!whisperCatalog.some((entry) => entry.id === model && entry.group !== "local")) {
       const file = model.startsWith("local:") ? model.slice(6) : null;
@@ -787,6 +841,60 @@
 
   function emit(name, payload) {
     for (const handler of listeners[name] || []) handler({ payload });
+  }
+
+  // Claude Code and OpenCode as the app's status shows them (change
+  // `claude-and-opencode-engines`).
+  function claudeStatus() {
+    const signedIn = claude.installed && ["subscription", "api_key", "cloud"].includes(claude.signIn);
+    return {
+      engine: "claude",
+      summary: !claude.installed ? "Claude Code not found" : claude.read ? claudeSummary() : "sign-in not read yet: press Check",
+      signed_in: claude.read && signedIn,
+      account_type: claude.signIn === "subscription" ? "claude.ai" : claude.signIn === "api_key" ? "api_key" : null,
+      email: claude.signIn === "subscription" ? "alex@example.com" : null,
+      plan: claude.signIn === "subscription" ? "Max" : null,
+      sign_in_kind: claude.installed && claude.read ? claude.signIn : "unknown",
+      executable: claude.installed ? "C:\\Users\\me\\.local\\bin\\claude.exe" : null,
+      version: claude.installed ? "2.1.318 (Claude Code)" : null,
+      running: claude.installed && inVoice, error: null, model_in_use: settings.claude.model || null,
+      reasoning_effort_in_use: null, calls: [],
+    };
+  }
+  function opencodeStatus() {
+    return {
+      engine: "opencode",
+      summary: !opencode.installed ? "OpenCode not found"
+        : opencode.providers.length ? `providers: ${opencode.providers.join(", ")}` : "no provider set up",
+      signed_in: opencode.installed && opencode.providers.length > 0,
+      account_type: null, email: null, plan: null,
+      executable: opencode.installed ? "C:\\Users\\me\\AppData\\Local\\Microsoft\\WinGet\\Links\\opencode.exe" : null,
+      version: opencode.installed ? "2.3.2" : null,
+      running: opencode.installed && inVoice, error: null, model_in_use: settings.opencode.model || null,
+      reasoning_effort_in_use: null, calls: [],
+    };
+  }
+  // What `capabilities` answers: the selected engine's lists.
+  function engineCapabilities() {
+    if (settings.assistant.engine === "claude") {
+      return { models: claude.read && claude.installed ? clone(CLAUDE_MODELS) : [], voices: [], default_voice: null,
+        signed_in: claude.read, lists_read_at_ms: claude.read ? Date.now() : null };
+    }
+    if (settings.assistant.engine === "opencode") {
+      return { models: opencode.installed ? clone(OPENCODE_MODELS) : [], voices: [], default_voice: null,
+        signed_in: opencode.providers.length > 0, lists_read_at_ms: null };
+    }
+    return clone(capabilities);
+  }
+  // The console of an install, ended after 1.5 s with code 0.
+  function engineInstall(event, state, done) {
+    if (state.kind === "running") throw "an install is already running in its console window";
+    state.kind = "running";
+    setTimeout(() => {
+      Object.assign(state, { kind: "finished", code: 0 });
+      done();
+      emit("app-event", { event, state: clone(state) });
+    }, 1500);
   }
 
   function status() {
@@ -846,7 +954,8 @@
         input: { gain: settings.audio.input_gain, peak: 0.12, clips: 0 },
         output: { gain: settings.audio.output_gain, peak: 0, clips: 0 },
       },
-      assistant: {
+      assistant: settings.assistant.engine === "claude" ? claudeStatus()
+        : settings.assistant.engine === "opencode" ? opencodeStatus() : {
         engine: "codex",
         summary: !codex.installed
           ? "codex not found: press Install Codex on the Status tab, or set the path of codex.exe in Config"
@@ -943,7 +1052,35 @@
     },
     open_whisper_models_folder: () => "C:\\VoiceBro\\whisper-models",
     open_assets_folder: () => "C:\\VoiceBro\\assets",
-    capabilities: () => clone(capabilities),
+    capabilities: () => engineCapabilities(),
+    // Change `claude-and-opencode-engines`: Claude Code's Check reads the sign-in (and the
+    // models) after 200 ms; its sign-in console ends after 1 s with the sign-in a
+    // subscription; the installs as Codex's.
+    claude_check: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      if (!claude.installed) throw "Claude Code is not installed";
+      claude.read = true;
+      setTimeout(() => emit("app-event", { event: "assistant" }), 0);
+      return { kind: claude.signIn, method: claude.signIn === "subscription" ? "claude.ai" : null, plan: claude.signIn === "subscription" ? "Max" : null };
+    },
+    claude_install_info: () => ({ winget: codex.winget, package: "Anthropic.ClaudeCode", source: "Anthropic (downloads.claude.ai)", download_mb: 327, disk_mb: 327, state: clone(claudeInstallState) }),
+    claude_install: () => engineInstall("claude_install", claudeInstallState, () => { claude.installed = true; }),
+    claude_sign_in: () => {
+      if (!claude.installed) throw "Claude Code is not installed";
+      setTimeout(() => {
+        claude.signIn = "subscription";
+        claude.read = true;
+        emit("app-event", { event: "claude_sign_in", state: { kind: "finished", code: 0 } });
+      }, 1000);
+    },
+    opencode_install_info: () => ({ winget: codex.winget, package: "Anomaly.OpenCode", source: "the OpenCode project (opencode.ai, github.com/anomalyco/opencode)", download_mb: 120, disk_mb: 250, state: clone(opencodeInstallState) }),
+    opencode_install: () => engineInstall("opencode_install", opencodeInstallState, () => { opencode.installed = true; }),
+    opencode_check: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      if (!opencode.installed) throw "OpenCode is not installed";
+      setTimeout(() => emit("app-event", { event: "assistant" }), 0);
+      return { providers: clone(opencode.providers), models: OPENCODE_MODELS.map((model) => model.id) };
+    },
     // The text channels of the bot's servers, none while not connected, as the app answers.
     discord_text_channels: () => (tokenSet && connected ? clone(TEXT_CHANNELS) : []),
     // `?sample` in the page's address: a sample session for the screenshots in docs/images.
@@ -1002,9 +1139,19 @@
     // Like the app: Check's account read (300 ms), then a code for 10 minutes.
     owner_link_start: async () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
-      codex.accountRead = true;
-      if (!(codex.installed && codex.signedIn)) {
-        throw "Codex is not signed in: use Sign in on the Status tab first, then press Link again";
+      // The engine in use reads its account; OpenCode has none (change
+      // `claude-and-opencode-engines`).
+      const engine = settings.assistant.engine;
+      if (engine === "claude") {
+        claude.read = true;
+        if (!(claude.installed && ["subscription", "api_key", "cloud"].includes(claude.signIn))) {
+          throw "Claude Code is not signed in: use Sign in on the Status tab first, then press Link again";
+        }
+      } else if (engine === "codex") {
+        codex.accountRead = true;
+        if (!(codex.installed && codex.signedIn)) {
+          throw "Codex is not signed in: use Sign in on the Status tab first, then press Link again";
+        }
       }
       owner.pending = { code: "K7QF-2M9X", expires_at_ms: Date.now() + 10 * 60 * 1000, wrong_tries: 0 };
       owner.code_ended = null;
@@ -1040,7 +1187,7 @@
     // `null` while the switch is off, as the app answers when its reader is not running.
     memory_status: () => (settings.diagnostics.memory
       ? {
-          total_mb: 172.4, app_mb: 61.2, webview_mb: 111.2, webview_processes: 5, codex_mb: null,
+          total_mb: 172.4, app_mb: 61.2, webview_mb: 111.2, webview_processes: 5, engine_mb: null,
           metric: "private working set",
         }
       : null),
@@ -1083,6 +1230,17 @@
     calls,
     settings: () => clone(settings),
     emit,
+    // Change `claude-and-opencode-engines`: Claude Code's sign-in kind as its own sign-in
+    // or an API key in the environment would change it; OpenCode's providers.
+    setClaudeSignIn: (kind) => {
+      claude.signIn = kind;
+      claude.read = true;
+      emit("app-event", { event: "assistant" });
+    },
+    setOpencodeProviders: (providers) => {
+      opencode.providers = providers;
+      emit("app-event", { event: "assistant" });
+    },
     // How many times a command was called since the page loaded, or since `sinceIndex`
     // (a previous `calls.length`), for checking how often the page polls.
     callsOf: (name, sinceIndex = 0) => calls.slice(sinceIndex).filter((call) => call.name === name).length,

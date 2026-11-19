@@ -413,14 +413,15 @@ const scenarios = [
     await load();
     const r = await page(`
       const body = $("card-codex-body");
+      // Change \`claude-and-opencode-engines\`: the rows of the other engines are hidden.
       const fields = [...body.querySelectorAll("input, select, textarea, button")]
-        .filter((node) => !node.classList.contains("listed"))
+        .filter((node) => !node.classList.contains("listed") && !node.closest("[data-engine][hidden]"))
         .map((node) => node.dataset.path || node.id);
       return { fields, values: { post: $("post-answers").value, history: $("save-chat-history").checked } };`);
     expect(same(r.fields, [
       "codex.refresh_lists_at_start", "codex-lists-refresh", "codex.model", "codex.reasoning_effort", "codex.voice",
       "codex.handoff_mode", "assistant.speaker_labels", "assistant.save_chat_history", "assistant.post_answers",
-      "answers-channel", "codex.instructions",
+      "answers-channel", "assistant.instructions",
     ]), `fields: ${r.fields}`);
     expect(r.values.post === "off" && r.values.history === false, `values: ${JSON.stringify(r.values)}`);
   }],

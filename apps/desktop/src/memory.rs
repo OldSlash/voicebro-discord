@@ -1,6 +1,7 @@
 //! The memory of the app's processes as Task Manager shows it: the private working set of
-//! `voicebro.exe`, of the WebView2 processes it started and of its Codex process (with that
-//! process's helpers). Read every 3 s on a thread of its own while the `diagnostics.memory`
+//! `voicebro.exe`, of the WebView2 processes it started and of its assistant engine's
+//! process: Codex, Claude Code or OpenCode, with that process's helpers (change
+//! `claude-and-opencode-engines`). Read every 3 s on a thread of its own while the `diagnostics.memory`
 //! setting is on; the window asks for the latest reading, which is `None` while it is off.
 
 use serde::Serialize;
@@ -28,10 +29,13 @@ pub struct ProcessInfo {
 pub enum Role {
     App,
     WebView,
-    Codex,
+    Engine,
 }
 
-/// The app's process and its descendants that count: WebView2 processes and the Codex
+/// The engines' executables, by the start of their file names.
+const ENGINE_PROCESSES: [&str; 3] = ["codex", "claude", "opencode"];
+
+/// The app's process and its descendants that count: WebView2 processes and the engine's
 /// process with everything it started. Other descendants are not counted.
 pub fn app_tree(root: u32, all: &[ProcessInfo]) -> Vec<(u32, Role)> {
     let mut found = vec![(root, Role::App)];
@@ -46,8 +50,12 @@ pub fn app_tree(root: u32, all: &[ProcessInfo]) -> Vec<(u32, Role)> {
                 continue;
             }
             let name = child.name.to_ascii_lowercase();
-            let role = if parent_role == Role::Codex || name.starts_with("codex") {
-                Some(Role::Codex)
+            let role = if parent_role == Role::Engine
+                || ENGINE_PROCESSES
+                    .iter()
+                    .any(|engine| name.starts_with(engine))
+            {
+                Some(Role::Engine)
             } else if name == "msedgewebview2.exe" {
                 Some(Role::WebView)
             } else {
@@ -69,8 +77,8 @@ pub struct MemoryReading {
     pub app_mb: f64,
     pub webview_mb: f64,
     pub webview_processes: usize,
-    /// `None` while Codex is not running.
-    pub codex_mb: Option<f64>,
+    /// The engine's process tree; `None` while no engine process runs.
+    pub engine_mb: Option<f64>,
     /// "private working set", the metric Task Manager's Memory column shows.
     pub metric: &'static str,
 }
@@ -82,7 +90,7 @@ pub fn reading(tree: &[(u32, Role)], read: impl Fn(u32) -> Option<u64>) -> Memor
         metric: "private working set",
         ..MemoryReading::default()
     };
-    let mut codex = None::<u64>;
+    let mut engine = None::<u64>;
     let (mut app, mut webview) = (0u64, 0u64);
     for (pid, role) in tree {
         let Some(bytes) = read(*pid) else {
@@ -94,13 +102,13 @@ pub fn reading(tree: &[(u32, Role)], read: impl Fn(u32) -> Option<u64>) -> Memor
                 webview += bytes;
                 result.webview_processes += 1;
             }
-            Role::Codex => codex = Some(codex.unwrap_or(0) + bytes),
+            Role::Engine => engine = Some(engine.unwrap_or(0) + bytes),
         }
     }
     result.app_mb = mb(app);
     result.webview_mb = mb(webview);
-    result.codex_mb = codex.map(mb);
-    result.total_mb = mb(app + webview + codex.unwrap_or(0));
+    result.engine_mb = engine.map(mb);
+    result.total_mb = mb(app + webview + engine.unwrap_or(0));
     result
 }
 
@@ -257,10 +265,10 @@ mod tests {
             vec![
                 (10, Role::App),
                 (11, Role::WebView),
-                (13, Role::Codex),
+                (13, Role::Engine),
                 (12, Role::WebView),
-                (14, Role::Codex),
-                (15, Role::Codex),
+                (14, Role::Engine),
+                (15, Role::Engine),
             ],
             "another app's WebView2 and Codex are not counted"
         );
@@ -268,7 +276,7 @@ mod tests {
         assert_eq!(reading.app_mb, 10.0);
         assert_eq!(reading.webview_mb, 23.0);
         assert_eq!(reading.webview_processes, 2);
-        assert_eq!(reading.codex_mb, Some(42.0));
+        assert_eq!(reading.engine_mb, Some(42.0));
         assert_eq!(reading.total_mb, 75.0);
     }
 
@@ -279,9 +287,28 @@ mod tests {
             process(11, 10, "msedgewebview2.exe"),
         ];
         let reading = reading(&app_tree(10, &all), |_| Some(5 * 1024 * 1024));
-        assert_eq!(reading.codex_mb, None);
+        assert_eq!(reading.engine_mb, None);
         assert_eq!(reading.total_mb, 10.0);
         assert_eq!(reading.metric, "private working set");
+    }
+
+    /// Change `claude-and-opencode-engines`, task 4.3: Claude Code and OpenCode count as
+    /// the engine's share, with their helpers.
+    #[test]
+    fn claude_code_and_opencode_count_as_the_engine() {
+        for engine in ["claude.exe", "opencode.exe"] {
+            let all = vec![
+                process(10, 1, "voicebro.exe"),
+                process(11, 10, engine),
+                process(12, 11, "conhost.exe"),
+            ];
+            let tree = app_tree(10, &all);
+            assert_eq!(
+                tree,
+                vec![(10, Role::App), (11, Role::Engine), (12, Role::Engine)],
+                "{engine}"
+            );
+        }
     }
 
     #[test]

@@ -17,9 +17,10 @@ use self::account::{next_cursor, parse_account, parse_models, AccountInfo, Voice
 use self::app_server::{codex_version, find_codex, AppServer};
 use self::conversation::Conversation;
 use self::session::{CodexSession, SessionParts};
-use self::text_session::{CodexTextSession, TextParts};
+use self::text_session::CodexTurns;
 use self::thread::{open_thread, ThreadSettings};
 use super::chat_log::ChatLog;
+use super::text::{TextOptions, TextParts, TextSession};
 use super::{
     Assistant, AssistantError, AssistantSession, AssistantStatus, Capabilities, ModelInfo,
     PrepareFuture,
@@ -94,7 +95,7 @@ impl CodexConfig {
             model: settings.codex.model.clone(),
             reasoning_effort: settings.codex.reasoning_effort.clone(),
             voice: settings.codex.voice.clone(),
-            instructions: settings.codex.instructions.clone(),
+            instructions: settings.assistant.instructions.clone(),
             speaker_labels: settings.assistant.speaker_labels,
             handoff_mode: settings.codex.handoff_mode.clone(),
             opus_codec: settings.diagnostics.codec(),
@@ -153,7 +154,7 @@ struct Inner {
 #[derive(Clone)]
 enum Attached {
     Realtime(Arc<CodexSession>),
-    Text(Arc<CodexTextSession>),
+    Text(Arc<TextSession>),
 }
 
 impl Attached {
@@ -435,6 +436,12 @@ impl CodexAssistant {
 
     pub fn chat_log(&self) -> &ChatLog {
         &self.inner.chat
+    }
+
+    /// The chat log, shared with the other engines (change `claude-and-opencode-engines`):
+    /// the Chat tab shows one log whichever engine answers.
+    pub fn chat(&self) -> Arc<ChatLog> {
+        Arc::clone(&self.inner.chat)
     }
 
     fn config(&self) -> CodexConfig {
@@ -772,12 +779,29 @@ impl Assistant for CodexAssistant {
                 .ok_or_else(|| {
                     AssistantError::Unavailable("the Whisper mode's voice is not set up".to_owned())
                 })?;
-            let session = CodexTextSession::new(TextParts {
+            let conversation = self.conversation(guild);
+            let thread_id = conversation
+                .lock()
+                .expect("conversation lock")
+                .thread
+                .as_ref()
+                .filter(|thread| thread.generation == server.generation)
+                .map(|thread| thread.id.clone())
+                .unwrap_or_default();
+            let backend = CodexTurns::new(guild, server, thread_id, self.inner.events.clone());
+            let config = Arc::clone(&self.inner.config);
+            let session = TextSession::new(TextParts {
                 guild,
                 handle: self.inner.handle.clone(),
-                server,
-                config: Arc::clone(&self.inner.config),
-                conversation: self.conversation(guild),
+                backend,
+                options: Arc::new(move || {
+                    let config = config.read().expect("codex config lock");
+                    TextOptions {
+                        speaker_labels: config.speaker_labels,
+                        one_speaker_at_a_time: config.one_speaker_at_a_time,
+                    }
+                }),
+                conversation,
                 ports,
                 chat: Arc::clone(&self.inner.chat),
                 events: self.inner.events.clone(),
@@ -910,6 +934,7 @@ impl Assistant for CodexAssistant {
             account_type: account.as_ref().and_then(|account| account.kind.clone()),
             email: account.as_ref().and_then(|account| account.email.clone()),
             plan: account.as_ref().and_then(|account| account.plan.clone()),
+            sign_in_kind: None,
             executable: executable.map(|path| path.display().to_string()),
             version,
             running: server.is_some(),
@@ -924,6 +949,10 @@ impl Assistant for CodexAssistant {
         self.inner
             .chat
             .set_saving(settings.assistant.save_chat_history);
+        // The chat log is shared by every engine (change `claude-and-opencode-engines`).
+        self.inner
+            .chat
+            .set_engine(settings.assistant.engine.display_name());
         let next = CodexConfig::from_settings(settings);
         let mut config = self.inner.config.write().expect("codex config lock");
         if *config != next {
@@ -1652,7 +1681,7 @@ mod tests {
                     let mut window = events.subscribe();
                     let errors = Arc::new(ConnectionErrors::new(events.clone()));
                     let mut settings = Settings::default();
-                    settings.codex.instructions = "You are a voice assistant in a Discord voice channel with several people. Answer briefly; when more than one person asked something, answer each of them by name.".to_owned();
+                    settings.assistant.instructions = "You are a voice assistant in a Discord voice channel with several people. Answer briefly; when more than one person asked something, answer each of them by name.".to_owned();
                     // The note goes out only with labels at `changes`.
                     settings.assistant.speaker_labels = crate::settings::SpeakerLabels::Changes;
                     let assistant = CodexAssistant::new(
@@ -1866,7 +1895,7 @@ mod tests {
                 let events = EventBus::new(4096);
                 let errors = Arc::new(ConnectionErrors::new(events.clone()));
                 let mut settings = Settings::default();
-                settings.codex.instructions = "You are a voice assistant in a Discord voice channel with several people. Answer briefly; when more than one person asked something, answer each of them by name.".to_owned();
+                settings.assistant.instructions = "You are a voice assistant in a Discord voice channel with several people. Answer briefly; when more than one person asked something, answer each of them by name.".to_owned();
                 settings.session.mode = crate::settings::SessionMode::Always;
                 settings.assistant.one_speaker_at_a_time = *floor;
                 // `VOICEBRO_CODEX_FLOOR_LABELS=changes` sends the note at every floor change.
@@ -2040,7 +2069,7 @@ mod tests {
         let mut window = events.subscribe();
         let errors = Arc::new(ConnectionErrors::new(events.clone()));
         let mut settings = Settings::default();
-        settings.codex.instructions = "You are a voice assistant in a Discord voice channel. Answer briefly, in one or two sentences, in the speaker's language. Start every reply with the English word Banana.".to_owned();
+        settings.assistant.instructions = "You are a voice assistant in a Discord voice channel. Answer briefly, in one or two sentences, in the speaker's language. Start every reply with the English word Banana.".to_owned();
         // The answer handoff mode under test; the settings default otherwise.
         if let Ok(mode) = std::env::var("VOICEBRO_CODEX_HANDOFF_MODE") {
             settings.codex.handoff_mode = mode;

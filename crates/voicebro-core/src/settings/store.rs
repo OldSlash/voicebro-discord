@@ -82,6 +82,7 @@ impl SettingsStore {
         if stored_version < 2 {
             migrate_v1(&mut value);
         }
+        migrate_codex_instructions(&mut value);
         let mut settings: Settings =
             serde_json::from_value(value).map_err(|source| StoreError::Parse {
                 path: self.path.clone(),
@@ -174,6 +175,35 @@ pub fn migrate_v1(document: &mut Value) {
         }
     }
     log::info!("settings: the wake phrases moved under the model they were set for");
+}
+
+/// Builds up to 1.2.0 kept the user's instruction in `codex.instructions`; it now lives in
+/// `assistant.instructions` for every engine (change `claude-and-opencode-engines`, design
+/// D11). Moves the old field's text there when the new one is missing; a file with both
+/// keeps the new one. The old field is removed either way, so the next save writes only
+/// the new one.
+pub fn migrate_codex_instructions(document: &mut Value) {
+    let Some(root) = document.as_object_mut() else {
+        return;
+    };
+    let Some(old) = root
+        .get_mut("codex")
+        .and_then(Value::as_object_mut)
+        .and_then(|codex| codex.remove("instructions"))
+    else {
+        return;
+    };
+    let assistant = root
+        .entry("assistant")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if let Some(assistant) = assistant.as_object_mut() {
+        if !assistant.contains_key("instructions") && old.is_string() {
+            assistant.insert("instructions".to_owned(), old);
+            log::info!(
+                "settings: the assistant instruction moved from codex.instructions to assistant.instructions"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -272,9 +302,12 @@ mod tests {
         assert_eq!(loaded.session.idle_timeout_seconds, 60);
         assert!(loaded.session.earcons);
         assert_eq!(loaded.session.earcon_volume, 0.18);
-        assert_eq!(loaded.assistant.engine, "codex");
+        assert_eq!(
+            loaded.assistant.engine,
+            crate::settings::AssistantEngine::Codex
+        );
         assert_eq!(loaded.codex.voice, "juniper");
-        assert!(loaded.codex.instructions.is_empty());
+        assert!(loaded.assistant.instructions.is_empty());
         assert_eq!(loaded.hotkey.mute, "Ctrl+Alt+M");
         assert!(loaded.validate().is_ok(), "{:?}", loaded.validate());
     }
@@ -387,5 +420,36 @@ mod tests {
             store.load().unwrap().unwrap().session.idle_timeout_seconds,
             300
         );
+    }
+
+    /// Requirement "The Codex instruction of older files" (change
+    /// `claude-and-opencode-engines`, D11).
+    #[test]
+    fn the_codex_instruction_of_a_1_2_0_file_moves_to_the_assistant() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(&dir);
+        std::fs::write(
+            store.path(),
+            r#"{ "version": 2, "codex": { "voice": "maple", "instructions": "Answer in two sentences." } }"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap().unwrap();
+        assert_eq!(loaded.assistant.instructions, "Answer in two sentences.");
+        assert_eq!(loaded.codex.voice, "maple");
+        store.save(&loaded).unwrap();
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(store.path()).unwrap()).unwrap();
+        assert_eq!(
+            written["assistant"]["instructions"],
+            "Answer in two sentences."
+        );
+        assert!(written["codex"].get("instructions").is_none(), "{written}");
+
+        std::fs::write(
+            store.path(),
+            r#"{ "codex": { "instructions": "old" }, "assistant": { "instructions": "new" } }"#,
+        )
+        .unwrap();
+        assert_eq!(store.load().unwrap().unwrap().assistant.instructions, "new");
     }
 }

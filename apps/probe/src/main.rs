@@ -7,11 +7,13 @@
 //! This binary is a development tool and is not shipped.
 
 mod answers;
+mod claude;
 mod codex;
 mod compare;
 mod credential;
 mod discord;
 mod hotkey;
+mod opencode;
 mod opus;
 mod rtc;
 mod seed;
@@ -98,6 +100,18 @@ const PROBES: &[Probe] = &[
         summary: "initialize, account/read, model/list, open and close a read-only thread",
         needs: "codex on PATH (or CODEX_EXECUTABLE)",
         run: codex::smoke,
+    },
+    Probe {
+        name: "claude-smoke",
+        summary: "Claude Code as the app runs it: version, sign-in kind, initialize's models, two stream-json turns with the lockdown flags and an appended canary, no session file; args: [model, default haiku]",
+        needs: "Claude Code installed and signed in (a subscription or an API key); two small model calls",
+        run: claude::smoke,
+    },
+    Probe {
+        name: "opencode-smoke",
+        summary: "OpenCode 2.x as the app runs it: its server with the app's config and a password, providers and models, four turns on one session with a canary in the agent's instruction (memory, a file it must not read, a web search), an interrupt, the session deleted, every event kind seen; args: [provider/model, default OpenCode's]",
+        needs: "OpenCode 2.x installed with a provider set up by `opencode auth login` (or its free models); a few small model calls",
+        run: opencode::smoke,
     },
     Probe {
         name: "opus-roundtrip",

@@ -16,8 +16,13 @@ Related files:
 A Windows desktop app that runs a Discord voice bot. The people in a voice channel talk to an
 AI assistant: an offline wake phrase opens a session, the assistant answers with voice, a
 deactivation phrase or an idle timeout closes it. The app runs in the background on the same
-PC the user is gaming on. The assistant is Codex through the Codex CLI app-server with the
-user's ChatGPT sign-in; no API key is involved.
+PC the user is gaming on. The assistant is one of three engines (`assistant.engine`,
+change `claude-and-opencode-engines`), each installed and signed in by the user and never
+shipped: Codex through the Codex CLI app-server with the user's ChatGPT sign-in (the
+default; no API key is involved), Claude Code run headless with the user's Claude sign-in
+or API key, or OpenCode with the providers the user set up in it. Only Codex has the
+realtime voice mode; Claude Code and OpenCode answer in the Whisper mode. The app never
+reads or stores an engine's credentials.
 
 Two assistant modes (`assistant.mode`, change `whisper-mode`):
 
@@ -25,8 +30,9 @@ Two assistant modes (`assistant.mode`, change `whisper-mode`):
   channel's audio goes to a ChatGPT realtime voice call that Codex opens; the call answers
   aloud.
 - **Whisper**: whisper.cpp turns each speaker's speech into text on the PC and spots the
-  phrases in that text; the questions go to Codex as text turns on the same thread; a local
-  voice reads the answer into the channel (4.12). Only text goes to OpenAI.
+  phrases in that text; the questions go to the engine as text turns (with Codex on the
+  same thread); a local voice reads the answer into the channel (4.12). Only text goes to
+  the engine's provider.
 
 Fixed constraints that shape the architecture:
 
@@ -36,7 +42,7 @@ Fixed constraints that shape the architecture:
 | Low CPU and memory while idle | Heavy things (speech model, Whisper model, voice, assistant process, call transport) are loaded only while their feature is on, and unloaded when it is off. |
 | Steady 20 ms audio | Pacing loops run on dedicated OS threads with `std::thread::sleep`. Tokio timers are never used for pacing. |
 | Users install nothing but the app | No Node, Python or build tools at runtime. Native libraries and models are downloaded on first use with pinned SHA-256, and only after the user agrees in the window to what, from where and how much. |
-| Replaceable engines | Wake-word recognition, speech to text, the local voice and the assistant sit behind traits (`WakeEngine`, `SpeechToText`, `Synth`, `Assistant`). Vosk, whisper.cpp and the Codex app-server are the one implementation of each of the first, second and last; the voice has sherpa-onnx and the Windows voices. |
+| Replaceable engines | Wake-word recognition, speech to text, the local voice and the assistant sit behind traits (`WakeEngine`, `SpeechToText`, `Synth`, `Assistant`). Vosk and whisper.cpp are the one implementation of each of the first two; the assistant has Codex, Claude Code and OpenCode behind one `EngineSwitch` (4.7); the voice has sherpa-onnx and the Windows voices. |
 | Diagnosable in the field | A file log in every build, including release: small (about 2 MB) and without what people said unless the user turns on the verbose log; the window shows everything, the recognizer's own results included. The status shows measured values only. |
 | Secrets stay out of files | The Discord token lives in the Windows Credential Manager, never in the settings file or the UI snapshot. |
 
@@ -92,6 +98,8 @@ Tauri commands and events.
 | `voicebro.exe` (Rust + Tauri) | Always, while the app runs. Closing the main window exits the app. |
 | WebView2 process group (settings UI) | While the main window exists. The core never assumes a window exists, so a tray mode can be added later without touching it. |
 | `codex app-server` (child process, JSON-RPC over stdio) | Started when the bot connects; stopped with the app. Exiting the app always stops it. |
+| `claude.exe -p` (child process per guild, stream-json over stdio; change `claude-and-opencode-engines`) | Only with Claude Code as the engine: started at a join's preparation, stopped 0.5 s after the last leave, at an engine switch and with the app. |
+| `opencode.exe serve` (child process, HTTP and SSE on 127.0.0.1; change `claude-and-opencode-engines`) | Only with OpenCode as the engine: as Claude Code. |
 
 The realtime call (WebRTC) lives inside the Rust process, and so do Whisper and the local
 voice of the Whisper mode (4.12): whisper.cpp with ggml (and CUDA), sherpa-onnx with
@@ -881,12 +889,40 @@ calls `attach`, and gives the session to the gate; `on_leave` calls `detach`. In
 mode the gate pushes nothing into `input` and hands the session questions in words instead
 (`user_text`, 4.3); the session attaches its own `FrameProvider` to `output`.
 
+**The shared text session** (`assistant/text.rs`; change `claude-and-opencode-engines`,
+design D2). The Whisper mode's session is one `TextSession` for every engine. It holds
+what any engine needs: the speaker prefix, the `SentenceSplitter` into the `SpeechPlayer`,
+barge-in, the one-speaker-at-a-time queue, the channel facts and history
+(`TurnContext`), the chat entries, the answer posting and the Whisper latency line. It
+talks to the engine only through `TurnBackend`:
+
+```rust
+#[async_trait]
+pub trait TurnBackend: Send + Sync {
+    fn engine(&self) -> AssistantEngine;               // name in the chat, log and errors
+    fn bind(&self, sink: Weak<dyn TurnSink>);          // where TurnEvents go
+    fn conversation_id(&self) -> Option<String>;       // the history goes once per conversation
+    fn ready(&self) -> bool;
+    async fn start(&self, text: String, context: TurnContext) -> Result<Option<String>, String>;
+    async fn add(&self, turn: &str, text: String) -> Result<(), String>;  // refused: the question waits
+    async fn interrupt(&self, turn: &str);
+    fn detach(&self);
+}
+pub enum TurnEvent { Delta { turn, text }, Message { turn, text }, Chat { turn, kind, text },
+                     Completed { turn, ok, detail }, Exited { message } }
+```
+
+Events of a turn the session no longer runs (interrupted, replaced) are ignored; the
+first event of a turn whose `start` has not returned yet adopts its id. An engine with no
+context field of its own puts the `TurnContext` before the question as text
+(`TurnContext::prefixed`).
+
 **Two kinds of Codex session** (change `whisper-mode`, design D6). `CodexAssistant::attach`
 reads `assistant.mode` from its config (`CodexConfig.mode`) at each attach and builds a
-`CodexSession` (the realtime call) or a `CodexTextSession` (`text_session.rs`, below); its
-map of sessions holds an `Attached` enum of the two. Both get their thread's notifications
-through `app_server::ThreadListener` (`on_notification`, `on_declined`, `on_server_exit`),
-which `AppServer::map_thread` maps by thread id. The runtime hands the assistant its
+`CodexSession` (the realtime call) or a `TextSession` over `CodexTurns`
+(`text_session.rs`, below); its map of sessions holds an `Attached` enum of the two. Both
+get their thread's notifications through `app_server::ThreadListener` (`on_notification`,
+`on_declined`, `on_server_exit`), which `AppServer::map_thread` maps by thread id. The runtime hands the assistant its
 `TtsManager` once (`Assistant::use_tts`, a no-op by default); an attach in the Whisper mode
 without one fails. The join's preparation, the thread, the sign-in, the lists, the chat log,
 the instructions and the answer posting are the same in both modes.
@@ -1058,7 +1094,9 @@ assistant is given, so the app never panics on an unknown engine setting.
   transcripts are never answers. The turns are forgotten at `shutdown`. The `phase` field of
   an `agentMessage` (`commentary`, `final_answer`) is not used: the schema says it is not
   always sent. Checked against the Codex CLI 0.167.0 schema.
-- `text_session.rs` (change `whisper-mode`, design D6): the Whisper mode's session. It opens
+- `text_session.rs` (change `whisper-mode`, design D6): Codex's text turns, `CodexTurns`, the
+  `TurnBackend` of the shared `TextSession` (above); what follows is the two together for
+  Codex. It opens
   no call. `ready()` is true while the guild's thread exists and the app-server is alive,
   which is right after the join's preparation. It attaches a `SpeechPlayer` (4.12) to the
   output as its `FrameProvider` and detaches it at `shutdown`.
@@ -1186,6 +1224,124 @@ In the realtime mode the thread's `model` and reasoning effort affect only work 
 model delegates to the Codex agent; the voice itself is the realtime model. In the Whisper
 mode they answer every question. The UI says so next to the settings.
 
+**Claude Code implementation** (`assistant/claude/`, change `claude-and-opencode-engines`,
+designs D4 and D5; checked against Claude Code 2.1.317). The Whisper mode only; the app runs
+the user's unmodified `claude.exe` and never reads, stores or passes a Claude credential.
+
+- *Finding it* (`find_claude_in`): `claude.executable` when set, and only that file; else
+  `claude.exe` on the PATH, winget's `%LOCALAPPDATA%\Microsoft\WinGet\Links`, then
+  `%USERPROFILE%\.local\bin` (Claude Code's own installer). `claude --version` is cached per
+  file by size and time.
+- *The sign-in* (`read_sign_in`, `parse_auth_status`): `claude auth status` prints JSON
+  without a model call (`loggedIn`, `authMethod`, `apiProvider`, `subscriptionType`, and for
+  claude.ai `email`, `orgId`, `orgName`). `claude.ai` (or an OAuth method) is a
+  subscription with its plan, Team and Enterprise included; `api_key` an API key; a
+  `bedrock`, `vertex` or `foundry` provider a cloud provider; `loggedIn: false` none;
+  anything else unknown. It is read at Check, at a join's preparation and when the window
+  picks Claude Code, with the turns' environment, so an `ANTHROPIC_API_KEY` that wins over
+  the subscription shows as the key. `AssistantStatus.sign_in_kind` carries the kind
+  (`subscription`, `api_key`, `cloud`, `none`, `unknown`) for the window's notice.
+- *The process* (`process.rs`): one per guild, started at `prepare` in the empty
+  `claude-workspace\` with `claude_args`: `-p --input-format stream-json --output-format
+  stream-json --verbose --include-partial-messages --permission-mode dontAsk
+  --strict-mcp-config --setting-sources "" --no-session-persistence --tools
+  WebSearch,WebFetch --mcp-config claude\mcp.json [--model m]
+  [--append-system-prompt-file claude\instructions.txt]`. The instruction file holds
+  `assistant.instructions` (none when empty); `mcp.json` is `{"mcpServers":{}}`. `--bare`
+  is never used: it accepts only an API key. When the app itself runs inside a Claude Code
+  session (`CLAUDECODE` set, development only), every `CLAUDE*`, `ANTHROPIC*` and `OTEL_*`
+  variable is removed for the child. The `initialize` control request, answered without a
+  model call, gives the models. A `control_request` from Claude Code is refused. The
+  process stops 0.5 s after the guild's leave (a per-guild epoch lets a new join cancel
+  it), at an engine switch (detach) and at `stop`. A model or instruction change applies
+  from the next process, which is the next join.
+- *Turns* (`turns.rs`, `ClaudeTurns`, the `TurnBackend`): a question is one `user` line
+  with the `TurnContext` before it as text. Claude Code has no turn ids and answers the
+  lines in order, so the backend numbers its turns and gives every message to the oldest
+  turn without a `result`: `stream_event` `text_delta` → `Delta`, each `assistant` text
+  block → `Message` and an `agent` chat line, a `tool_use` → a `tool` chat line ("Web
+  search: …", "Web fetch: …"), `result` → `Completed` (`success` and not `is_error`;
+  `aborted_streaming` reads "interrupted"). `interrupt` is a `control_request` with subtype
+  `interrupt`, sent only for the running turn. `add` is refused ("Claude Code answers one
+  question at a time"), so with one speaker at a time the question waits and starts the
+  next turn. The process ending is `Exited` ("Claude Code stopped; run /join again", the
+  `claude` connection error). The conversation id is the process's number, so a new
+  process gets the guild's history in its first question.
+- Tests: `testdata/fake-claude` (Node) answers `--version`, `auth status` (`--kind=api_key`,
+  `--kind=none`), stream-json turns with deltas, a web search and a `result`, a queue, and
+  the control requests `initialize`, `interrupt` and its own `fake_delay`,
+  `fake_last_user` and `fake_exit`; `--fake-log` records the arguments and every stdin
+  line. Live: `VOICEBRO_CLAUDE_LIVE=1 cargo test -p voicebro-core
+  claude_text_turn_when_enabled -- --nocapture` (Claude Code of this PC, `haiku` unless
+  `VOICEBRO_CLAUDE_MODEL`), and `probe claude-smoke`.
+
+**OpenCode implementation** (`assistant/opencode/`, change `claude-and-opencode-engines`,
+designs D7 and D8). The Whisper mode only, against the V2 server API of OpenCode 2.x as read
+from its source at tag v2.3.2; `probe opencode-smoke` checks it live. The app runs the
+user's `opencode.exe`; OpenCode keeps its own providers and keys, which the app never reads.
+
+- *Finding it* (`find_opencode_in`): `opencode.executable` when set, and only that file;
+  else `opencode.exe` on the PATH, winget's `%LOCALAPPDATA%\Microsoft\WinGet\Links`,
+  winget's own folder of the package (`WinGet\Packages\Anomaly.OpenCode_*`: the 2.3.2
+  package adds that folder to the user's PATH and makes no link, so an app started before
+  the install would not find it on its PATH), then npm's native program under `%APPDATA%\npm\node_modules\opencode-ai\node_modules\
+  opencode-windows-x64[-baseline]\bin` (never npm's `opencode.cmd` shim, which would leave
+  the server running when the app ends it).
+- *The configuration* (`config_document`, `server_env`): the app writes
+  `opencode\opencode.json` next to its executable at every server start: an agent
+  `voicebro` (`mode: primary`, the default agent) whose permissions deny every action but
+  `webfetch` and `websearch`, its `system` the user's `assistant.instructions` (none when
+  empty), `share: disabled`, `update: disable`, and `websearch.provider` set, so a search
+  never waits on a question: the first provider whose key variable is set (`EXA_API_KEY`,
+  `TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `PARALLEL_API_KEY`, `TINYFISH_API_KEY`), else `exa`
+  without a key. The server gets `OPENCODE_CONFIG` (that file),
+  `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_PROJECT_CONFIG` and
+  `OPENCODE_DISABLE_AUTOUPDATE`, so no other agent's instructions or skills and no project
+  file reach the model.
+- *The server* (`server.rs`, `OpencodeServer`): `opencode serve --hostname 127.0.0.1 --port
+  <a free port>` in the empty `opencode-workspace\`, with `OPENCODE_PASSWORD` a random
+  password made for that start; every call is HTTP Basic with the user `opencode`. Ready is
+  `GET /api/info` answering within 20 s; a start that does not become ready is tried once
+  more on another port. `GET /api/event` (server-sent events `{id, created, type, data}`) is
+  read while the server runs and opened again a second after it ends; each event goes to
+  the listener of its `data.sessionID` (`*` hears every event whole, for the probe). One
+  server serves every guild: it starts at the first join's preparation (or at Check, which
+  stops it after reading when no guild uses it), and stops 0.5 s after the last leave (an
+  epoch lets a new join cancel that), at an engine switch and at `stop`.
+- *Preparing a join* (`prepare_guild`): the providers (`GET /api/provider`, by id, a
+  disabled one left out; `/api/integration` lists only integrations from configuration
+  files and is empty with a stored sign-in), the models (`GET /api/model`, as
+  `providerID/id`, each once: several entries share a `modelID`) and the default (`GET
+  /api/model/default`, with any provider often one of OpenCode's own free models) are
+  read; the join is refused when OpenCode offers no model, or not
+  the one `opencode.model` names ("run `opencode auth login` …"). A guild without a session
+  gets one: `POST /api/session` with the title "VoiceBro <guild>", the agent, the working
+  folder and the chosen model. The leave deletes it (`DELETE /api/session/{id}`).
+- *Turns* (`turns.rs`, `OpencodeTurns`, the `TurnBackend`): a question is `POST
+  /api/session/{id}/prompt` with the `TurnContext` before it and `delivery: "queue"`, after
+  a model chosen since (`POST /api/session/{id}/model`), so a model change applies from the
+  next question. The turn runs from `session.execution.started` to `.succeeded`, `.failed`
+  or `.interrupted`; `session.text.delta` → `Delta`, `session.text.ended` → `Message` and an
+  `agent` chat line, both without OpenAI's citation marks (`\u{e200}cite…\u{e201}`) or any
+  other private-use character (`strip_citations`, which keeps an open mark across the
+  stream's pieces); `session.tool.input.started {id, name}` names a call, and
+  `session.tool.called {id, input}` becomes a `tool` chat line ("Web search: <query>"), a
+  `.failed` or `.error` one "<tool> failed: <message>". `add` sends the question
+  with `delivery: "steer"` while the execution runs, so with one speaker at a time it joins
+  the running answer; with no execution it is refused and the question starts the next
+  turn. `interrupt` posts `/api/session/{id}/interrupt` and waits up to 3 s for the
+  execution's end before the next question goes out. The server ending is `Exited`
+  ("OpenCode stopped; run /join again", the `opencode` connection error).
+- Check (`opencode_check`) returns `{providers, models, default_model}`; the status summary
+  names the providers, and the models fill the Model list.
+- Tests: `testdata/fake-opencode` (Node) serves those routes with Basic auth (401 without
+  it), executions with deltas, a web search and an end, interrupts, `queue` against `steer`,
+  and `FAKE_OPENCODE_PROVIDERS`, `FAKE_OPENCODE_MODELS` and `FAKE_OPENCODE_FAIL_FIRST`; its
+  own `/fake/delay`, `/fake/state` and `/fake/exit`. Live: `probe opencode-smoke`
+  (`OPENCODE_EXECUTABLE` names another program), and `VOICEBRO_OPENCODE_LIVE=1 cargo test
+  -p voicebro-core opencode_text_turn_when_enabled -- --nocapture` (OpenCode of this PC,
+  its default model unless `VOICEBRO_OPENCODE_MODEL`).
+
 ### 4.6 Settings (`settings/`)
 
 One schema, one place to validate, one place to apply.
@@ -1198,8 +1354,10 @@ pub struct Settings {
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation?, deactivation? } } (an absent list: the model's defaults)
-    pub assistant: AssistantSettings,      // engine id, mode: realtime (default) | whisper (its own `mode` part in changed_sections), speaker_labels: start | changes | off, save_chat_history (default false), post_answers: off (default) | voice_channel | command_channel | channel, answers_channel (a channel id, digits or empty; required by channel, kept while another value is chosen)
-    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), instructions (no default), handoff_mode: items (default) | commentary | bem_tags | thinking, refresh_lists_at_start (default false, read at start)
+    pub assistant: AssistantSettings,      // engine: codex (default) | claude | opencode (its own `engine` part; realtime is refused with claude or opencode), mode: realtime (default) | whisper (its own `mode` part in changed_sections), speaker_labels: start | changes | off, instructions (the user's, for every engine, no default; its own `instructions` part; moved from codex.instructions at load), save_chat_history (default false), post_answers: off (default) | voice_channel | command_channel | channel, answers_channel (a channel id, digits or empty; required by channel, kept while another value is chosen)
+    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), handoff_mode: items (default) | commentary | bem_tags | thinking, refresh_lists_at_start (default false, read at start)
+    pub claude: ClaudeSettings,            // executable (empty = found automatically), model (empty = Claude Code's default; no spaces, at most 200 characters), subscription_notice_shown (default false; the window's one-time dialog, 4.5)
+    pub opencode: OpencodeSettings,        // executable (empty = found automatically), model (empty = OpenCode's default, else provider/model; the model part may hold more /)
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
     pub ui: UiSettings,                    // theme: dark | darcula | light | intellij (default dark); font_size: 11..=20 (default 13); collapsed_cards: ids of the collapsed cards of the Settings and Config tabs (default empty; unknown ids kept, ignored by the window)
     pub diagnostics: DiagnosticsSettings,  // performance, memory, verbose_log: all default false, read by the window and the desktop shell; opus_codec: libopus (default) | opus-rs, read by the core at each join and each call
@@ -1264,6 +1422,18 @@ and "peace out" whatever the language (4.12). The code ships no assistant instru
   as parts of their own; the mode is not part of `assistant`. A 1.0.x file loads in the
   realtime mode with the new sections at their defaults; the schema version is unchanged,
   and an older build keeps the new sections as unknown fields.
+- **The engines' settings** (change `claude-and-opencode-engines`, design D11).
+  `assistant.engine` is an `AssistantEngine` read through `TryFrom<String>`: an unknown
+  value is refused while the document is read, naming the field and the three values.
+  `validate()` refuses `assistant.mode = realtime` with Claude Code or OpenCode ("the voice
+  mode works only with Codex"), a `claude.model` with spaces or over 200 characters, and an
+  `opencode.model` without a provider part and a model part around its first `/`.
+  `changed_sections` reports `engine` (switched at once on the mode switch's path, 4.7),
+  `instructions`, `claude` and `opencode` as parts of their own. `store::
+  migrate_codex_instructions` runs on every load: a `codex.instructions` of builds up to
+  1.2.0 moves to `assistant.instructions` when that is missing, and is removed either way;
+  an older build reading a newer file finds no instruction. The schema version is
+  unchanged.
 - Adding a setting means: a field with a default, its validation, its `apply` effect, and its
   UI control. Nothing else.
 - **Secrets** go through `SecretStore` (Windows Credential Manager via `windows-sys`, entry
@@ -1334,6 +1504,22 @@ hands to the assistant (`use_tts`); both live in the gate host (4.12).
   mode", and the panels are refreshed.
 - `assistant_mode()` names the mode for `/status` and the panel (4.2).
 - *Shutdown* configures both with the realtime mode, which unloads them.
+
+**The engine switch** (change `claude-and-opencode-engines`, design D1). The desktop shell
+builds every engine at start (each starts nothing until used) and hands the runtime one
+`EngineSwitch` (`assistant/switch.rs`) as its `Assistant`. It forwards `prepare`, `attach`,
+`status` and `capabilities` to the engine `assistant.engine` names, `configure`, `stop` and
+`use_tts` to all of them, and `detach` to the engine the guild was attached to, whatever is
+selected by then; an engine missing from the build refuses the join with "<product> is not
+available in this build". `changed_sections` reports `engine` as its own part. `apply`
+configures the switch (which selects the engine), moves the consent records to the new
+recipient (4.13), and then, instead of `switch_mode`, rebuilds every gate with
+`rebuild_gates` (the same steps: the old session detached from its engine, the falling tone,
+a new gate on the same output) and spawns `switch_engine`, which awaits the new engine's
+`prepare` for each guild before attaching it. A guild whose preparation fails stays in its
+channel with a gate and no session, and the `assistant` connection error says "<product>
+could not start for this channel: <reason>". The old engine's process stops as after its
+last leave. `VoiceHost::engine_name` gives `/status` and the panel the engine's name.
 
 **Codec failures** (change `opus-codec-experiment`): `Runtime::start` spawns a task that
 drains the `CodecFailureHub` (4.1). For each report `handle_codec_failure` logs
@@ -1884,6 +2070,18 @@ open to everyone.
   account read by each join preparation. Another account removes the link
   (`link_ended`: "the Codex account changed"); signing out keeps it. The join goes on in
   either case: only the voice is limited.
+- **Per engine** (change `claude-and-opencode-engines`, design D9). `signed_in_account`
+  takes the engine and the fingerprint from the selected engine's status: Codex's ChatGPT
+  account, Claude Code's sign-in (`claude.ai` or `api_key` with the email of
+  `claude auth status`), and for OpenCode, which has no account, an empty fingerprint
+  whether or not anything is set up, so Link works without one. `issue_code_for(engine,
+  account)` binds the code to both and the link records the engine in `assistant`.
+  `check_account_of(engine, fingerprint)` compares only a link of the same engine: another
+  account removes it with "the <Codex | Claude | OpenCode> account changed"; a link of
+  another engine is kept, and the new engine and account are written into it (logged
+  "owner link: kept for <engine>; its account is recorded from now on"). A Claude Code
+  without a sign-in refuses Link with "Claude Code is not signed in". `owner-link.bin` keeps
+  its fields, so a 1.2.0 file reads as a Codex link.
 
 ### 4.12 Speech to text and the local voice (`stt/`, `tts/`)
 
@@ -2237,6 +2435,16 @@ mode is optional; the default `everyone` is the behavior before the change.
   kept, that `/optout` withdraws at once and earlier speech is already sent, and where the
   policy is. A record of another version or engine is deleted at start and when
   `assistant.engine` changes; raising the version makes everyone run `/optin` again.
+- **The recipient per engine** (change `claude-and-opencode-engines`, design D10).
+  `consent::recipient_key(settings)` is the record's `assistant` value: `codex`, `claude` or
+  `opencode:<provider>` (the provider part of `opencode.model`, `default` when it is
+  empty), so a change of the engine or of OpenCode's provider ends the records
+  (`apply` calls `set_assistant` for the `engine` and `opencode` parts).
+  `provider_name(key)` fills the text: "OpenAI, through Codex" (the 1.2.0 wording, so the
+  text and its version stay and no Codex record is lost), "Anthropic, through Claude Code",
+  and for OpenCode the provider's company by a short table (an unknown id named as it is),
+  "through OpenCode, and, for the web searches the assistant makes, OpenCode's web search
+  service". `/optin`'s command description names no company.
 - **The window.** `Status.consent` and `AppEvent::Consent` carry the records (id as a
   string, name, `agreed_at`) and the unreadable reason; `Runtime::consent_remove(id)`
   (the Tauri command `consent_remove`) deletes one record as `/optout` does and sends the
@@ -2318,6 +2526,9 @@ question ─► CodexTextSession: flush the voice, turn/interrupt the running tu
 deactivation phrase / idle timeout / mute ─► session_wanted(false): voice flushed, turn interrupted
 assistant.mode changed ─► Vosk off or on, Whisper and the voice configured,
    every gate rebuilt in the new mode on the same output; the bot stays in the channel
+assistant.engine changed (Whisper mode for Claude Code and OpenCode) ─► EngineSwitch selects
+   it, consent records of the old recipient deleted, every gate rebuilt (old session
+   detached from its own engine) ─► per guild: new engine's prepare ─► attach │ error, no session
 last /leave ─► Whisper and the voice unload 0.5 s later
 ```
 

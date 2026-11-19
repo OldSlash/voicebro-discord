@@ -978,6 +978,7 @@ impl CodexSession {
                         guild: self.guild,
                         task,
                         text,
+                        engine: "Codex",
                     });
                 }
                 let seconds = turn
@@ -1444,6 +1445,7 @@ mod tests {
                 guild: 7,
                 task: Some("find the weather in Bangkok tomorrow".to_owned()),
                 text: "**Sunny**, 33 °C. [Forecast](https://example.com)".to_owned(),
+                engine: "Codex",
             }]
         );
 

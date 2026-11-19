@@ -172,8 +172,13 @@ pub trait VoiceHost: Send + Sync {
         String::new()
     }
     /// Who receives the speech, as the consent text names it.
-    fn consent_provider(&self) -> &'static str {
+    fn consent_provider(&self) -> String {
         crate::consent::provider_name("codex")
+    }
+    /// The engine in use as people see it: "Codex", "Claude" or "OpenCode" (change
+    /// `claude-and-opencode-engines`).
+    fn engine_name(&self) -> &'static str {
+        "Codex"
     }
     /// The consent record of `user`, if any.
     fn consent_record(&self, _user: u64) -> Option<crate::consent::ConsentRecord> {

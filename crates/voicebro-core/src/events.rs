@@ -130,6 +130,7 @@ mod tests {
             kind: "agent",
             who: None,
             text: "Searching the web".to_owned(),
+            engine: "Codex",
         };
         let gate = crate::gate::GateStatus {
             guild_id: "42".to_owned(),

@@ -424,6 +424,7 @@ pub(crate) fn panel_message(
         participants: &session.participants,
         assistant: shared.host.assistant_state(guild.get()),
         mode: shared.host.assistant_mode(),
+        engine: shared.host.engine_name(),
         muted: shared.host.is_muted(),
     };
     Some((panel::embed(&view), panel::components(guild, view.muted)))

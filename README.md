@@ -27,11 +27,15 @@
 - **A real voice.** ChatGPT's voice through the official Codex CLI, with your own ChatGPT
   account. No API key.
 - **Or keep the speech on your PC.** In the second mode, Whisper, speech is turned into text
-  on your PC (on the CPU or an NVIDIA GPU), Codex answers the text, and a local voice reads
-  the answer into the channel. Only text goes to OpenAI. Models and voices are downloaded
-  after you agree. ([Whisper mode](docs/user-guide.md#7-the-whisper-mode))
-- **Looks things up.** Questions that need research go to Codex, which can search the web,
-  and the answer comes back by voice. If you like, Codex's full answer is also posted as
+  on your PC (on the CPU or an NVIDIA GPU), the assistant answers the text, and a local voice
+  reads the answer into the channel. Only text leaves your PC. Models and voices are
+  downloaded after you agree. ([Whisper mode](docs/user-guide.md#7-the-whisper-mode))
+- **Three engines.** Codex is the default. In the Whisper mode the answers can also come
+  from [Claude Code](https://code.claude.com) with your Claude sign-in or an API key, or
+  from [OpenCode](https://opencode.ai) with the AI providers you set up in it. You switch in
+  Config → Assistant, also while the bot is in a channel.
+- **Looks things up.** Questions that need research go to the engine, which can search the
+  web, and the answer comes back by voice. If you like, the full answer is also posted as
   text in a Discord channel of your choice, with its links and their previews.
 - **Built for gaming.** Mute with a system-wide hotkey, from the app or from a button in
   Discord. While nobody uses `/join`, nothing of the assistant runs.
@@ -45,7 +49,11 @@
 
 - Windows 10 or 11, 64-bit
 - A Discord server where you can add a bot
-- A ChatGPT account with access to Codex
+- One of the engines:
+  - a ChatGPT account with access to Codex (the realtime voice and the Whisper mode);
+  - Claude Code with a Claude account or an Anthropic API key (the Whisper mode; see
+    [A Claude subscription is yours alone](#a-claude-subscription-is-yours-alone));
+  - OpenCode with an AI provider set up in it (the Whisper mode).
 
 ## Download
 
@@ -70,8 +78,11 @@ Get the latest version from [Releases](https://github.com/OldSlash/voicebro-disc
    ([Step by step](docs/user-guide.md#1-create-the-discord-bot))
 2. **Connect it.** Start VoiceBro, paste the token into **Config → Discord bot token** and
    press **Save changes**.
-3. **Set up Codex.** On the **Status** tab press **Install Codex** if it is missing, then
-   **Sign in to Codex** and finish the ChatGPT sign-in in your browser.
+3. **Set up the engine.** On the **Status** tab press **Install Codex** if it is missing,
+   then **Sign in to Codex** and finish the ChatGPT sign-in in your browser. For Claude Code
+   or OpenCode, pick it in **Config → Assistant → Engine** first, then **Install** and
+   **Sign in to Claude Code**, or set up a provider in OpenCode.
+   ([Set up the engine](docs/user-guide.md#4-set-up-the-engine))
 4. **Choose a wake phrase.** In **Config → Assistant**, pick the wake model for your
    language, enter a phrase such as `hey bro`, and press **Download** under **Wake model**
    for the speech model, or download its files yourself from the linked pages.
@@ -95,13 +106,36 @@ its owner. VoiceBro gives you optional tools for them; using them is your choice
 
 The [user guide](docs/user-guide.md#who-the-assistant-hears) explains each of them.
 
+### A Claude subscription is yours alone
+
+If Claude Code answers with a Claude subscription (Free, Pro, Max, Team, Enterprise or
+another plan you sign in to on claude.ai), that subscription is for you alone.
+[Anthropic's Consumer Terms](https://www.anthropic.com/legal/consumer-terms) do not let you
+make your account available to anyone else, and
+[Claude Code's legal page](https://code.claude.com/docs/en/legal-and-compliance) says that
+subscription plans are meant for ordinary, individual use and that subscription
+credentials may not carry other people's requests. When everyone in the voice channel can
+talk to the assistant, the others use your subscription.
+
+So with a subscription, choose **Only my Discord account** in Config → Access: then only
+your own voice reaches Claude, and everyone still hears the answers and can use the bot's
+commands. VoiceBro shows this notice when you pick Claude Code and offers to switch for you;
+it does not enforce it. An Anthropic API key or a cloud provider (Amazon Bedrock, Google
+Vertex AI, Microsoft Foundry) falls under
+[Anthropic's Commercial Terms](https://www.anthropic.com/legal/commercial-terms) instead, and
+VoiceBro shows no notice for it. VoiceBro never reads, stores or passes your Claude
+credentials: you sign in through Claude Code itself.
+
+This is not legal advice; read the terms that apply to your account.
+
 ## Limitations
 
-- **The assistant is only OpenAI's Codex.** In the default mode the assistant listens and
-  speaks through the Codex CLI with your ChatGPT sign-in; in the Whisper mode it hears and
-  speaks on your PC, but Codex still writes every answer. Without Codex, a ChatGPT account
-  with access to it and a connection to OpenAI, the assistant cannot answer. Only the wake
-  word, speech recognition in the Whisper mode and its voice work offline.
+- **The realtime voice is only OpenAI's Codex.** In the default mode the assistant listens
+  and speaks through the Codex CLI with your ChatGPT sign-in. Claude Code and OpenCode
+  answer only in the Whisper mode, which hears and speaks on your PC while the engine writes
+  every answer. Without an engine, its sign-in or provider and a connection to it, the
+  assistant cannot answer. Only the wake word, speech recognition in the Whisper mode and
+  its voice work offline.
 - **The Whisper mode is new.** It has been tested on one PC, not yet in a real voice
   channel with several people while a game runs. Whisper on the GPU needs an NVIDIA card;
   on a CPU, only the smaller models answer quickly.
@@ -164,7 +198,7 @@ This writes a test installer, the portable zip and their checksums to
 
 | Path | Contents |
 |---|---|
-| `crates/voicebro-core` | The app's core: Discord voice, the wake word, the ChatGPT call through Codex, the Whisper mode's speech to text and local voice, settings. No UI. |
+| `crates/voicebro-core` | The app's core: Discord voice, the wake word, the ChatGPT call through Codex, the Claude Code and OpenCode engines, the Whisper mode's speech to text and local voice, settings. No UI. |
 | `apps/desktop` | The Tauri app: the window, its commands and the installer configuration. |
 | `apps/probe` | Developer probes that check the external APIs live. |
 | `scripts/` | The release build, the third-party notices and test helpers. |
@@ -188,7 +222,9 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing code.
 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with [ONNX Runtime](https://github.com/microsoft/onnxruntime) | The local voice of the Whisper mode. Downloaded after you agree. | Apache-2.0; MIT |
 | Voices: [Supertonic 3](https://huggingface.co/Supertone/supertonic-3), [Piper](https://huggingface.co/rhasspy/piper-voices), [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) | The voices of the Whisper mode, each downloaded after you agree. The Windows voices need no download. | Supertonic 3: BigScience OpenRAIL-M, with use restrictions; Piper: MIT, each voice's data under its own license (CC0, CC BY 4.0, public domain and others); Kokoro: Apache-2.0 |
 | [piper-phonemize](https://github.com/csukuangfj/piper-phonemize) | Turns text into phonemes for the Piper and Kokoro voices. Not part of VoiceBro: a separate download, only for those voices. | GPL-3.0 |
-| [Codex CLI](https://github.com/openai/codex) | The assistant: the ChatGPT sign-in, the voice call and the web search. Installed separately. | Apache-2.0 |
+| [Codex CLI](https://github.com/openai/codex) | The default engine: the ChatGPT sign-in, the voice call and the web search. Installed separately. | Apache-2.0 |
+| [Claude Code](https://code.claude.com) | An engine for the Whisper mode: run headless with your Claude sign-in or API key, limited to web search and web fetch. Installed separately, never shipped. | Proprietary, under Anthropic's terms |
+| [OpenCode](https://github.com/anomalyco/opencode) | An engine for the Whisper mode, with the AI providers you set up in it; its web search goes to OpenCode's search service. Installed separately, never shipped. | MIT |
 | [NSIS](https://nsis.sourceforge.io) | The installer. | zlib/libpng |
 
 These are the main parts. `THIRD-PARTY-NOTICES.txt`, which comes with the installer and the
@@ -204,7 +240,9 @@ Copyright (c) 2026 Aleksandr Bogdanov.
 The third-party software it is built with keeps its own licenses; see
 [Built with](#built-with).
 
-VoiceBro is an independent project and is not affiliated with Discord or OpenAI.
+VoiceBro is an independent project and is not affiliated with Discord, OpenAI, Anthropic
+or the OpenCode project. It runs Claude Code and OpenCode as you installed them; it does
+not change or ship them.
 
 ## Acknowledgements
 

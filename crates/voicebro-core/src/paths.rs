@@ -43,6 +43,27 @@ pub fn codex_workspace_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("codex-workspace")
 }
 
+/// The empty working folder of Claude Code's processes (change `claude-and-opencode-engines`).
+pub fn claude_workspace_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("claude-workspace")
+}
+
+/// What the app hands Claude Code as files: the user's instruction per guild and the empty
+/// MCP configuration.
+pub fn claude_config_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("claude")
+}
+
+/// The empty working folder of OpenCode's server (change `claude-and-opencode-engines`).
+pub fn opencode_workspace_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("opencode-workspace")
+}
+
+/// The configuration the app writes for OpenCode (`opencode.json`).
+pub fn opencode_config_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("opencode")
+}
+
 /// The Codex models, reasoning efforts and voices from the last read, so the window offers
 /// them before any Codex process runs (change `config-tab-and-codex-lists`).
 pub fn codex_lists_path(data_dir: &Path) -> PathBuf {

@@ -1,20 +1,73 @@
-//! The Codex install offer on the Status tab: whether winget is on this PC, and winget run
-//! in a console window the user sees. Nothing is installed without the user's click, and no
-//! agreement is accepted on their behalf: winget asks in the console if it needs to.
+//! The install offers on the Status tab (Codex, and since change
+//! `claude-and-opencode-engines` Claude Code and OpenCode): whether winget is on this PC,
+//! and winget run in a console window the user sees. Nothing is installed without the
+//! user's click, and no agreement is accepted on their behalf: winget asks in the console
+//! if it needs to. The same console runs Claude Code's own sign-in.
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-pub const PACKAGE: &str = "OpenAI.Codex";
-pub const SOURCE: &str = "OpenAI's GitHub releases (github.com/openai/codex)";
-/// Sizes of Codex 0.167.1 for the notice: labels, not checks.
-pub const DOWNLOAD_MB: u32 = 200;
-pub const DISK_MB: u32 = 370;
+/// A winget package the Status tab offers, with the sizes its notice names (labels, not
+/// checks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Package {
+    pub id: &'static str,
+    pub source: &'static str,
+    pub download_mb: u32,
+    pub disk_mb: u32,
+}
 
-/// What runs in the console: winget, then a pause so its output stays readable, then the
-/// window closes with winget's exit code.
-pub const WINGET_ARGS: &str = "/V:ON /C \"winget install --id OpenAI.Codex --exact --source winget & set rc=!errorlevel! & echo. & pause & exit !rc!\"";
+/// Codex 0.167.1.
+pub const CODEX: Package = Package {
+    id: "OpenAI.Codex",
+    source: "OpenAI's GitHub releases (github.com/openai/codex)",
+    download_mb: 200,
+    disk_mb: 370,
+};
+
+/// Claude Code 2.1.318: one portable `claude.exe` from Anthropic (sizes of 2026-11-19).
+pub const CLAUDE_CODE: Package = Package {
+    id: "Anthropic.ClaudeCode",
+    source: "Anthropic (downloads.claude.ai)",
+    download_mb: 327,
+    disk_mb: 327,
+};
+
+/// OpenCode 2.3.2: a portable zip from the OpenCode project (sizes measured on 2026-11-19:
+/// a 119.8 MB zip, 247.7 MB in winget's package folder).
+pub const OPENCODE: Package = Package {
+    id: "Anomaly.OpenCode",
+    source: "the OpenCode project (opencode.ai, github.com/anomalyco/opencode)",
+    download_mb: 120,
+    disk_mb: 250,
+};
+
+/// What runs in the console: `command`, then a pause so its output stays readable, then
+/// the window closes with the command's exit code.
+pub fn console_args(command: &str) -> String {
+    console_args_with(command, true)
+}
+
+/// As [`console_args`]; without the pause for the tests, which have no one to press a key.
+fn console_args_with(command: &str, pause: bool) -> String {
+    let pause = if pause { " & echo. & pause" } else { "" };
+    format!("/V:ON /C \"{command} & set rc=!errorlevel!{pause} & exit !rc!\"")
+}
+
+/// `executable` with `args` as the console runs it. The line starts with the quoted path,
+/// so it holds more than two quotes and cmd drops only the outer pair of `/C "…"`.
+pub fn program_line(executable: &Path, args: &str) -> String {
+    format!("\"{}\" {args}", executable.display())
+}
+
+/// winget for `package` in the console.
+pub fn winget_args(package: &Package) -> String {
+    console_args(&format!(
+        "winget install --id {} --exact --source winget",
+        package.id
+    ))
+}
 
 /// `CREATE_NEW_CONSOLE`: winget gets a console window of its own.
 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
@@ -70,21 +123,27 @@ pub fn winget_on_this_pc() -> Option<PathBuf> {
     )
 }
 
-/// One install at a time; the state the window shows.
+/// One install (or console) at a time per package; the state the window shows.
 #[derive(Clone)]
 pub struct Installer {
+    package: Package,
     state: Arc<Mutex<InstallState>>,
 }
 
 impl Default for Installer {
     fn default() -> Self {
-        Self {
-            state: Arc::new(Mutex::new(InstallState::Idle)),
-        }
+        Self::new(CODEX)
     }
 }
 
 impl Installer {
+    pub fn new(package: Package) -> Self {
+        Self {
+            package,
+            state: Arc::new(Mutex::new(InstallState::Idle)),
+        }
+    }
+
     pub fn state(&self) -> InstallState {
         self.state.lock().expect("install state lock").clone()
     }
@@ -92,10 +151,10 @@ impl Installer {
     pub fn info(&self) -> InstallInfo {
         InstallInfo {
             winget: winget_on_this_pc().is_some(),
-            package: PACKAGE,
-            source: SOURCE,
-            download_mb: DOWNLOAD_MB,
-            disk_mb: DISK_MB,
+            package: self.package.id,
+            source: self.package.source,
+            download_mb: self.package.download_mb,
+            disk_mb: self.package.disk_mb,
             state: self.state(),
         }
     }
@@ -106,7 +165,23 @@ impl Installer {
         &self,
         done: impl FnOnce(InstallState) + Send + 'static,
     ) -> Result<(), String> {
-        self.start_with("cmd.exe", WINGET_ARGS, true, done)
+        self.start_with("cmd.exe", &winget_args(&self.package), true, done)
+    }
+
+    /// Runs `executable` with `args` in its own console window, as winget runs (Claude
+    /// Code's sign-in, change `claude-and-opencode-engines`).
+    pub fn start_program(
+        &self,
+        executable: &Path,
+        args: &str,
+        done: impl FnOnce(InstallState) + Send + 'static,
+    ) -> Result<(), String> {
+        self.start_with(
+            "cmd.exe",
+            &console_args(&program_line(executable, args)),
+            true,
+            done,
+        )
     }
 
     fn start_with(
@@ -173,13 +248,49 @@ mod tests {
     #[test]
     fn the_console_runs_winget_with_a_pause_and_its_exit_code() {
         assert_eq!(
-            WINGET_ARGS,
+            winget_args(&CODEX),
             r#"/V:ON /C "winget install --id OpenAI.Codex --exact --source winget & set rc=!errorlevel! & echo. & pause & exit !rc!""#
         );
-        assert!(
-            !WINGET_ARGS.contains("--accept"),
-            "no agreement accepted for the user"
+        // Change `claude-and-opencode-engines`: the same console for the two new engines.
+        assert_eq!(
+            winget_args(&CLAUDE_CODE),
+            r#"/V:ON /C "winget install --id Anthropic.ClaudeCode --exact --source winget & set rc=!errorlevel! & echo. & pause & exit !rc!""#
         );
+        assert!(winget_args(&OPENCODE).contains("--id Anomaly.OpenCode --exact"));
+        for package in [CODEX, CLAUDE_CODE, OPENCODE] {
+            assert!(
+                !winget_args(&package).contains("--accept"),
+                "no agreement accepted for the user"
+            );
+        }
+    }
+
+    /// Claude Code's sign-in runs in the console as `start_program` builds the line: the
+    /// path quoted (here one with a space), its arguments, and its exit code back.
+    #[test]
+    fn a_program_runs_in_the_console_with_its_exit_code() {
+        let dir = scratch("console program");
+        let program = dir.join("fake claude.cmd");
+        std::fs::write(&program, "@exit /b %2\r\n").unwrap();
+        let line = program_line(&program, "auth 5");
+        assert_eq!(line, format!("\"{}\" auth 5", program.display()));
+        assert!(console_args(&line).starts_with(&format!("/V:ON /C \"{line} & ")));
+        let installer = Installer::new(CLAUDE_CODE);
+        let (sender, receiver) = mpsc::channel();
+        installer
+            .start_with(
+                "cmd.exe",
+                &console_args_with(&line, false),
+                false,
+                move |state| sender.send(state).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(10)).unwrap(),
+            InstallState::Finished { code: 5 },
+            "the quoted path ran with its arguments"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
