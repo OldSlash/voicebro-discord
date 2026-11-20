@@ -215,31 +215,51 @@ const scenarios = [
     expect(r.note.includes("web search service"), r.note);
   }],
   // ---- settings-ui "The Claude subscription notice in the window"
-  ["the notice shows in the Assistant and Access cards with both links and goes with the owner-only mode", async () => {
+  ["the notice shows only in the Claude Code card, with both links, Hear only me and Hide, and goes with the owner-only mode", async () => {
     await load("?engine=claude&whisper&notice_shown");
     const r = await page(`
       tab("config");
       window.__mock.setClaudeSignIn("subscription");
       await sleep(600);
-      const boxes = ["claude-notice-assistant", "claude-notice-access"].map((id) => ({ shown: visible($(id)),
-        links: [...$(id).querySelectorAll("a")].map((a) => a.href), button: $(id).querySelector("button")?.textContent }));
+      const box = $("claude-notice-card");
+      const notice = { shown: visible(box), card: box.closest(".card")?.dataset.card, title: $("engine-card-title").textContent,
+        links: [...box.querySelectorAll("a")].map((a) => a.href), buttons: [...box.querySelectorAll("button")].map((b) => b.textContent),
+        elsewhere: [...document.querySelectorAll("[data-claude-notice]")].filter((n) => n !== box).length,
+        inAssistant: Boolean($("card-assistant-body").querySelector(".claude-notice")), inAccess: Boolean($("card-access-body").querySelector(".claude-notice")) };
       const s = $("access-mode"); s.value = "owner"; s.dispatchEvent(new Event("change", { bubbles: true }));
       await sleep(600);
-      return { boxes, after: ["claude-notice-assistant", "claude-notice-access"].map((id) => visible($(id))) };`);
-    for (const box of r.boxes) {
-      expect(box.shown, "a card without the notice");
-      expect(box.links.includes("https://www.anthropic.com/legal/consumer-terms") && box.links.includes("https://code.claude.com/docs/en/legal-and-compliance"), JSON.stringify(box.links));
-      expect(box.button === "Hear only me", box.button);
-    }
-    expect(!r.after[0] && !r.after[1], "the notice stays with Only my Discord account");
+      return { notice, after: visible(box) };`);
+    expect(r.notice.shown && r.notice.card === "codex" && r.notice.title === "Claude Code", `notice: ${JSON.stringify(r.notice)}`);
+    expect(r.notice.elsewhere === 0 && !r.notice.inAssistant && !r.notice.inAccess, `the notice is in another card too: ${JSON.stringify(r.notice)}`);
+    expect(r.notice.links.includes("https://www.anthropic.com/legal/consumer-terms") && r.notice.links.includes("https://code.claude.com/docs/en/legal-and-compliance"), JSON.stringify(r.notice.links));
+    expect(JSON.stringify(r.notice.buttons) === JSON.stringify(["Hear only me", "Hide"]), JSON.stringify(r.notice.buttons));
+    expect(!r.after, "the notice stays with Only my Discord account");
+  }],
+  ["Hide: the notice goes for good, the flag is saved, the access mode stays, and neither a reload nor a switch to Codex and back brings it back", async () => {
+    await load("?engine=claude&whisper&notice_shown");
+    const r = await page(`
+      tab("config");
+      window.__mock.setClaudeSignIn("subscription"); await sleep(600);
+      const before = visible($("claude-notice-card"));
+      [...$("claude-notice-card").querySelectorAll("button")].find((b) => b.textContent === "Hide").click();
+      await sleep(600);
+      const after = { shown: visible($("claude-notice-card")), hidden: stored().claude.subscription_notice_hidden, access: stored().discord.access, links: calls("owner_link_start").length };
+      await choose("codex"); await choose("claude"); await sleep(600);
+      return { before, after, again: visible($("claude-notice-card")), dialog: dialogOpen() };`);
+    expect(r.before, "no notice before Hide");
+    expect(!r.after.shown && r.after.hidden === true && r.after.access === "everyone" && r.after.links === 0, JSON.stringify(r.after));
+    expect(!r.again && !r.dialog, `back after a switch: ${JSON.stringify(r)}`);
+    await load("?engine=claude&whisper&notice_shown&notice_hidden");
+    const reload = await page(`tab("config"); window.__mock.setClaudeSignIn("subscription"); await sleep(600); return visible($("claude-notice-card"));`);
+    expect(!reload, "the hidden notice came back after a restart");
   }],
   ["an API key or a cloud provider shows no notice", async () => {
     await load("?engine=claude&whisper&claude_signin=api_key");
     const r = await page(`
       tab("status"); $("claude-check").click(); await sleep(800);
-      const key = visible($("claude-notice-assistant"));
+      const key = visible($("claude-notice-card"));
       window.__mock.setClaudeSignIn("cloud"); await sleep(600);
-      return { key, cloud: visible($("claude-notice-assistant")) };`);
+      return { key, cloud: visible($("claude-notice-card")) };`);
     expect(!r.key && !r.cloud, JSON.stringify(r));
   }],
   // ---- settings-ui "The Claude subscription dialog"
@@ -278,7 +298,7 @@ const scenarios = [
       await until(dialogOpen, 3000);
       $("claude-notice-dialog").dispatchEvent(new Event("cancel", { cancelable: true }));
       await sleep(700);
-      return { closed: !dialogOpen(), access: stored().discord.access, shown: stored().claude.subscription_notice_shown, notice: visible($("claude-notice-assistant")) };`);
+      return { closed: !dialogOpen(), access: stored().discord.access, shown: stored().claude.subscription_notice_shown, notice: visible($("claude-notice-card")) };`);
     expect(r.closed && r.access === "everyone" && r.shown && r.notice, JSON.stringify(r));
   }],
   ["asked once: Codex and then Claude Code again opens no dialog", async () => {

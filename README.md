@@ -120,7 +120,7 @@ talk to the assistant, the others use your subscription.
 So with a subscription, choose **Only my Discord account** in Config → Access: then only
 your own voice reaches Claude, and everyone still hears the answers and can use the bot's
 commands. VoiceBro shows this notice when you pick Claude Code and offers to switch for you;
-it does not enforce it. An Anthropic API key or a cloud provider (Amazon Bedrock, Google
+it does not enforce it, and **Hide** in the Claude Code card puts the notice away for good. An Anthropic API key or a cloud provider (Amazon Bedrock, Google
 Vertex AI, Microsoft Foundry) falls under
 [Anthropic's Commercial Terms](https://www.anthropic.com/legal/commercial-terms) instead, and
 VoiceBro shows no notice for it. VoiceBro never reads, stores or passes your Claude

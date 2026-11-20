@@ -1546,23 +1546,53 @@
     links.append(link(ANTHROPIC_TERMS, "Anthropic's Consumer Terms"), " · ", link(CLAUDE_CODE_LEGAL, "Claude Code: legal and compliance"));
     container.append(text, advice, links);
     if (withButton) {
+      const actions = document.createElement("span");
+      actions.className = "row-actions";
       const button = document.createElement("button");
       button.type = "button";
       button.className = "button primary";
       button.textContent = "Hear only me";
       button.addEventListener("click", () => hearOnlyMe(false));
-      container.append(button);
+      // Change `claude-notice-hide`: the notice goes for good; the choice is the user's.
+      const hide = document.createElement("button");
+      hide.type = "button";
+      hide.className = "button";
+      hide.textContent = "Hide";
+      hide.addEventListener("click", () => hideClaudeNotice(container));
+      actions.append(button, hide);
+      const message = document.createElement("small");
+      message.className = "field-message";
+      message.dataset.noticeMessage = "";
+      container.append(actions, message);
     }
   }
-  // Shown in the Assistant and Access cards while the engine is Claude Code, its sign-in is
-  // a subscription or not known, and more voices than the owner's pass.
+  // Shown at the top of the Claude Code card (change `claude-notice-hide`) while the engine
+  // is Claude Code, its sign-in is a subscription or not known, more voices than the owner's
+  // pass, and the user has not hidden it.
   function renderClaudeNotice() {
     // The kind of the last status of Claude Code, or of the Check the engine choice ran.
-    const show = engineOf() === "claude" && noticeApplies(claudeNotice.kind) && (stored?.discord?.access || "everyone") !== "owner";
+    const show = engineOf() === "claude" && noticeApplies(claudeNotice.kind)
+      && (stored?.discord?.access || "everyone") !== "owner" && !stored?.claude?.subscription_notice_hidden;
     document.querySelectorAll("[data-claude-notice]").forEach((box) => {
       if (show && !box.childElementCount) noticeParagraphs(box, true);
       box.hidden = !show;
     });
+  }
+  // Hide: stores `claude.subscription_notice_hidden`; the notice then never shows again. A
+  // refused save leaves it with the reason under it.
+  async function hideClaudeNotice(box) {
+    if (!invoke || claudeNotice.busy) return;
+    claudeNotice.busy = true;
+    const message = box.querySelector("[data-notice-message]");
+    try {
+      stored = await invoke("save_settings", { patch: { claude: { subscription_notice_hidden: true } } });
+      if (message) message.textContent = "";
+      renderClaudeNotice();
+    } catch (error) {
+      if (message) message.textContent = `Not hidden: ${error}`;
+    } finally {
+      claudeNotice.busy = false;
+    }
   }
   function openClaudeDialog() {
     noticeParagraphs($("claude-notice-text"), false);
@@ -2831,7 +2861,7 @@
       return;
     }
     if (assistant.sign_in_kind === "none") {
-      setupBox("claude", [], `Claude Code is installed${assistant.version ? ` (${assistant.version})` : ""}. Next: Sign in to Claude Code, which opens Claude Code's own sign-in in a console window; VoiceBro never sees your credentials. A Claude subscription is yours alone: see the notice in Config → Assistant.`, false);
+      setupBox("claude", [], `Claude Code is installed${assistant.version ? ` (${assistant.version})` : ""}. Next: Sign in to Claude Code, which opens Claude Code's own sign-in in a console window; VoiceBro never sees your credentials. A Claude subscription is yours alone: see the notice in the Claude Code card on the Config tab.`, false);
       return;
     }
     $("claude-setup").hidden = true;

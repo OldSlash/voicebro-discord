@@ -167,17 +167,19 @@ make your account available to anyone else, and
 subscriptions are meant for ordinary, individual use. While everyone in the channel is
 heard, the others use your subscription.
 
-So VoiceBro shows a notice in **Config → Assistant** and **Config → Access** while Claude
-Code runs on a subscription and more voices than yours reach it. The first time you choose
-Claude Code, a window asks the same:
+So VoiceBro shows a notice at the top of the **Claude Code** card on the **Config** tab while
+Claude Code runs on a subscription and more voices than yours reach it. The first time you
+choose Claude Code, a window asks the same:
 
 - **Hear only me** chooses **Only my Discord account** in the Access card and, if your
   Discord account is not linked yet, shows the link code right away
   ([Only my Discord account](#only-my-discord-account)). Everyone still hears the answers
   and can use the bot's commands.
-- **Not now** changes nothing; the notice stays in the two cards.
+- **Not now** changes nothing; the notice stays in the Claude Code card.
 
-The window does not come back after you answered it. VoiceBro does not enforce the choice:
+The window does not come back after you answered it. The notice in the card has **Hide**
+next to **Hear only me**: it removes the notice for good, also after a restart, and changes
+nothing else. VoiceBro does not enforce the choice:
 it is yours. With an Anthropic API key or a cloud provider (Amazon Bedrock, Google Vertex
 AI, Microsoft Foundry), [Anthropic's Commercial Terms](https://www.anthropic.com/legal/commercial-terms)
 apply instead and VoiceBro shows no notice. This is not legal advice; read the terms of

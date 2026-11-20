@@ -61,7 +61,7 @@
     // `handoff_mode` and `refresh_lists_at_start` as the app fills them for a file without
     // the fields: the defaults.
     codex: { executable: "", model: "", reasoning_effort: "", voice: "", handoff_mode: "items", refresh_lists_at_start: false },
-    claude: { executable: "", model: "", subscription_notice_shown: false },
+    claude: { executable: "", model: "", subscription_notice_shown: false, subscription_notice_hidden: false },
     opencode: { executable: "", model: "" },
     hotkey: { mute: "Ctrl+Alt+M" },
     ui: { theme: "dark", font_size: 13, collapsed_cards: [] },
@@ -193,7 +193,8 @@
   // stored engine (in the Whisper mode, which they need); `?claude_signin=subscription|
   // api_key|cloud|none|unknown` is Claude Code's sign-in (a Max subscription by default);
   // `?claude_missing` and `?opencode_missing` start without the engine installed;
-  // `?notice_shown` with the subscription dialog answered before; `?opencode_providers=
+  // `?notice_shown` with the subscription dialog answered before; `?notice_hidden` with the
+  // notice hidden by its Hide (change `claude-notice-hide`); `?opencode_providers=
   // openai,anthropic` the providers OpenCode has (none by default). `__mock.setClaudeSignIn
   // (kind)` changes the sign-in as Claude Code's own sign-in would.
   const ENGINE_PARAM = new URLSearchParams(location.search).get("engine");
@@ -202,6 +203,7 @@
     if (ENGINE_PARAM !== "codex") settings.assistant.mode = "whisper";
   }
   if (new URLSearchParams(location.search).has("notice_shown")) settings.claude.subscription_notice_shown = true;
+  if (new URLSearchParams(location.search).has("notice_hidden")) settings.claude.subscription_notice_hidden = true;
   const claude = {
     installed: !new URLSearchParams(location.search).has("claude_missing"),
     signIn: new URLSearchParams(location.search).get("claude_signin") || "subscription",
@@ -797,6 +799,9 @@
     }
     const claudeModel = String(doc.claude.model).trim();
     if (/\s/.test(claudeModel)) throw `claude.model: «${claudeModel}» must not contain spaces`;
+    if (typeof doc.claude.subscription_notice_hidden !== "boolean") {
+      throw `claude.subscription_notice_hidden must be true or false, not ${JSON.stringify(doc.claude.subscription_notice_hidden)}`;
+    }
     const opencodeModel = String(doc.opencode.model).trim();
     if (/\s/.test(opencodeModel)) throw `opencode.model: «${opencodeModel}» must not contain spaces`;
     if (opencodeModel && !/^[^/]+\/.+$/.test(opencodeModel)) {
