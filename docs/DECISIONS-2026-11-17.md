@@ -82,8 +82,6 @@ words between commas, "ё" and "е" match, and every wake model comes with defau
 
 ### Not done here
 
-- Task 7.3, the acceptance in a real Discord channel with a second person and a game: the
-  user's step.
 - Task 7.2 only in part: the debug app was started in a scratch folder with the Russian
   model and the user's three deactivation phrases ("wake word ready" with all of them, no
   unknown word, the gate's transcript list in the log), then switched to the English model
@@ -213,9 +211,8 @@ Intel Core Ultra 9 275HX (24 logical processors), RTX 5090 Laptop GPU, 2026-11-1
 - **The uninstall with "Delete the application data" checked** (task 10.2): it needs the
   uninstaller's window and deletes the real Discord token. The `whisper-models` line sits
   next to the `models` one in the hook.
-- **Not tested by the agent:** a real Discord channel with two or more people and a game
-  running, the Whisper mode's wake phrase in the channel, the voices by ear, and the
-  comparison of both modes' resource use. Those are the user's steps.
+- **Not tested by the agent:** the Whisper mode's wake phrase in the channel, the voices by
+  ear, and the comparison of both modes' resource use. Those are the user's steps.
 
 ## whisper-config-layout
 
@@ -251,7 +248,7 @@ Decided while building:
 Checked: the core tests, the three headless window checks (23, 44 and 34 scenarios), and
 the release build: screenshots of both modes in `target\whisper-config-shots\`, and a
 download in the realtime mode into an empty folder (the tiny model, 53 MB, in 4 s, nothing
-loaded). Not tested: a real Discord channel with two or more people and a game running.
+loaded).
 
 ### The repetition filter (after the user's Discord test)
 

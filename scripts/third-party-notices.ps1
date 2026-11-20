@@ -5,9 +5,11 @@
 # installer's components; the components the app downloads only after the user's OK (Vosk
 # and its models); and what the app can use but does not ship (the Codex CLI, Claude Code
 # and OpenCode, the three assistant engines). License texts
-# that no crate ships are kept in scripts\notices\. The script stops and writes nothing when
-# one of those texts is missing, a crate with a native library changed its version, or its
-# list of wake models and the catalog in wake\catalog.rs differ.
+# that no crate ships are kept in scripts\notices\ (the standard SPDX texts in
+# scripts\notices\licenses\). The script stops and writes nothing when a crate has no
+# license text, one of the kept
+# texts is missing, a crate with a native library changed its version, or its lists of
+# models and voices and the catalogs differ.
 # Run from the repository root; the release script calls it before `cargo tauri build`:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\third-party-notices.ps1
 param(
@@ -107,16 +109,30 @@ $text = New-Object System.Text.StringBuilder
 [void]$text.AppendLine("text of its license and notice files.")
 [void]$text.AppendLine("")
 Add-Heading "1. Rust crates built into voicebro.exe"
+# Every crate gets a license text: the license files its package ships, or, when it ships
+# none, the standard text of one of its licenses from scripts\notices\licenses\ (the SPDX
+# texts), printed once at the end of this section, with the crate's authors named as the
+# copyright holders. A crate under none of these licenses stops the script.
+$licensePattern = '^(LICEN[CS]E|COPYING|NOTICE|UNLICENSE)'
+$shared = [ordered]@{
+    "MIT" = @{ Title = "MIT License"; Url = "https://spdx.org/licenses/MIT.html"; Used = $false }
+    "Apache-2.0" = @{ Title = "Apache License 2.0"; Url = "https://www.apache.org/licenses/LICENSE-2.0"; Used = $false }
+    "ISC" = @{ Title = "ISC License"; Url = "https://spdx.org/licenses/ISC.html"; Used = $false }
+    "BSD-3-Clause" = @{ Title = "BSD 3-Clause License"; Url = "https://spdx.org/licenses/BSD-3-Clause.html"; Used = $false }
+    "MPL-2.0" = @{ Title = "Mozilla Public License 2.0"; Url = "https://www.mozilla.org/MPL/2.0/"; Used = $false }
+}
 foreach ($crate in $crates) {
+    $name = $crate["name"]
+    $crateVersion = $crate["version"]
     [void]$text.AppendLine("-" * 60)
-    [void]$text.AppendLine("$($crate["name"]) $($crate["version"])")
+    [void]$text.AppendLine("$name $crateVersion")
     $license = if ($crate["license"]) { $crate["license"] } else { "see the license file below" }
     [void]$text.AppendLine("License: $license")
     if ($crate["repository"]) { [void]$text.AppendLine("Source: $($crate["repository"])") }
     $dir = Split-Path $crate["manifest_path"]
-    $files = Get-ChildItem -File -LiteralPath $dir |
-        Where-Object { $_.Name -match '^(LICEN[CS]E|COPYING|NOTICE|UNLICENSE)' } |
-        Sort-Object Name
+    $files = @(Get-ChildItem -File -LiteralPath $dir |
+        Where-Object { $_.Name -match $licensePattern } |
+        Sort-Object Name)
     if ($crate["license_file"] -and -not ($files | Where-Object { $_.Name -eq (Split-Path -Leaf $crate["license_file"]) })) {
         $extra = Join-Path $dir $crate["license_file"]
         if (Test-Path -LiteralPath $extra) { $files = @($files) + (Get-Item -LiteralPath $extra) }
@@ -126,7 +142,25 @@ foreach ($crate in $crates) {
         [void]$text.AppendLine("--- $($file.Name) ---")
         [void]$text.AppendLine(([System.IO.File]::ReadAllText($file.FullName)).TrimEnd())
     }
+    if ($files.Count -eq 0) {
+        $spdx = $shared.Keys | Where-Object { $license -match "(^|[ (/])$([regex]::Escape($_))([ )/]|$)" } | Select-Object -First 1
+        if ($spdx) {
+            $authors = @($crate["authors"]) | Where-Object { $_ }
+            $holders = if ($authors.Count -gt 0) { ($authors | ForEach-Object { $_ -replace '\s*<[^>]*>', '' }) -join ", " } else { "the authors of $name" }
+            [void]$text.AppendLine("Copyright holders: $holders")
+            [void]$text.AppendLine("")
+            [void]$text.AppendLine("--- ${spdx}: the full text is under ""$($shared[$spdx].Title)"" at the end of this section ---")
+            $shared[$spdx].Used = $true
+        } else {
+            $problems.Add("$name $crateVersion ($license) ships no license text and none of its licenses has a standard text in scripts\notices\licenses\: add that license's SPDX text there")
+        }
+    }
     [void]$text.AppendLine("")
+}
+foreach ($spdx in $shared.Keys) {
+    if ($shared[$spdx].Used) {
+        Add-Component $shared[$spdx].Title $spdx $shared[$spdx].Url @("The license text for the crates above that ship no license file of their own and are under $spdx; their copyright holders are named with each crate.") $spdx (Read-NoticeText "scripts\notices\licenses\$spdx.txt")
+    }
 }
 
 Add-Heading "2. Native libraries inside the crates, built into voicebro.exe"
@@ -207,24 +241,29 @@ foreach ($id in $sttIds) {
 foreach ($id in $whisperModels.Keys) {
     if ($sttIds -notcontains $id) { $problems.Add("Whisper model $id is in the notices script but not in stt\catalog.rs") }
 }
+# Each Piper voice as its MODEL_CARD in rhasspy/piper-voices v1.0.0 states it (the
+# sherpa-onnx archives carry the same cards): where its recordings come from and their
+# license, the voice it was fine-tuned from, and for CC BY the attribution it asks for.
+$nabuCasa = "https://github.com/NabuCasa/voice-datasets"
+$fromLessac = "lessac (en_US)"
 $piperVoices = [ordered]@{
-    "en_US-libritts_r-medium" = "CC BY 4.0 (LibriTTS-R)"
-    "en_GB-cori-high" = "public domain"
-    "en_GB-alba-medium" = "CC BY 4.0"
-    "ru_RU-denis-medium" = "CC0"
-    "ru_RU-dmitri-medium" = "CC0"
-    "ru_RU-irina-medium" = "not stated (RHVoice data)"
-    "cs_CZ-jirka-medium" = "CC0"
-    "nl_NL-pim-medium" = "CC0"
-    "nl_BE-nathalie-medium" = "CC0"
-    "fr_FR-siwis-medium" = "CC BY 4.0 (SIWIS)"
-    "de_DE-thorsten-medium" = "CC0 (Thorsten)"
-    "it_IT-paola-medium" = "CC0"
-    "pl_PL-gosia-medium" = "CC0"
-    "pl_PL-darkman-medium" = "CC0"
-    "pt_BR-faber-medium" = "CC0"
-    "es_ES-davefx-medium" = "CC0"
-    "es_MX-ald-medium" = "Unlicense"
+    "en_US-libritts_r-medium" = @{ Data = "CC BY 4.0"; From = "LibriTTS-R by Yuma Koizumi, Heiga Zen, Shigeki Karita, Yifan Ding, Kohei Yatabe, Nobuyuki Morioka, Michiel Bacchiani, Yu Zhang, Wei Han and Ankur Bapna, https://www.openslr.org/141/"; Base = "$fromLessac, on LibriTTS-R train-clean-360" }
+    "en_GB-cori-high" = @{ Data = "public domain"; From = "LibriVox recordings put together by Bryce Beattie, https://brycebeattie.com/files/tts/"; Base = "" }
+    "en_GB-alba-medium" = @{ Data = "CC BY 4.0"; From = "the Alba speech corpus by Cassia Valentini-Botinhao and Junichi Yamagishi, https://datashare.ed.ac.uk/handle/10283/3270"; Base = $fromLessac }
+    "ru_RU-denis-medium" = @{ Data = "CC0"; From = $nabuCasa; Base = $fromLessac }
+    "ru_RU-dmitri-medium" = @{ Data = "CC0"; From = $nabuCasa; Base = $fromLessac }
+    "ru_RU-irina-medium" = @{ Data = "not stated (the card says Unknown)"; From = "RHVoice, https://github.com/RHVoice/RHVoice"; Base = $fromLessac }
+    "cs_CZ-jirka-medium" = @{ Data = "CC0"; From = $nabuCasa; Base = $fromLessac }
+    "nl_NL-pim-medium" = @{ Data = "CC0"; From = $nabuCasa; Base = $fromLessac }
+    "nl_BE-nathalie-medium" = @{ Data = "CC0"; From = "https://github.com/rhasspy/dataset-voice-nathalie"; Base = $fromLessac }
+    "fr_FR-siwis-medium" = @{ Data = "CC BY 4.0"; From = "the SIWIS French Speech Synthesis Database by Junichi Yamagishi, Pierre-Edouard Honnet, Philip Garner and Alexandros Lazaridis, https://datashare.is.ed.ac.uk/handle/10283/2353"; Base = $fromLessac }
+    "de_DE-thorsten-medium" = @{ Data = "CC0"; From = "Thorsten-Voice, https://github.com/thorstenMueller/Thorsten-Voice"; Base = $fromLessac }
+    "it_IT-paola-medium" = @{ Data = "CC0 (the card says ""see URL""; the dataset is CC0-1.0)"; From = "https://huggingface.co/datasets/paolapersico1/Voice-Dataset-Italian"; Base = $fromLessac }
+    "pl_PL-gosia-medium" = @{ Data = "CC0"; From = $nabuCasa; Base = $fromLessac }
+    "pl_PL-darkman-medium" = @{ Data = "CC0"; From = $nabuCasa; Base = $fromLessac }
+    "pt_BR-faber-medium" = @{ Data = "CC0"; From = $nabuCasa; Base = $fromLessac }
+    "es_ES-davefx-medium" = @{ Data = "CC0"; From = $nabuCasa; Base = $fromLessac }
+    "es_MX-ald-medium" = @{ Data = "Unlicense"; From = "https://huggingface.co/datasets/rmcpantoja/Ald_Mexican_Spanish_speech_dataset"; Base = "es_ES-davefx-medium, itself fine-tuned from $fromLessac" }
 }
 # rustfmt may put each argument of piper_pack! on a line of its own: read the file whole.
 $voiceIds = @([regex]::Matches((Get-Content -Raw "crates\voicebro-core\src\tts\catalog.rs"), 'piper_pack!\(\s*[A-Z_]+,\s*"([^"]+)"') |
@@ -264,15 +303,23 @@ Add-Component "Silero VAD 6.2.0 for whisper.cpp (ggml-silero-v6.2.0.bin)" "MIT" 
 [void]$text.AppendLine("License: Apache-2.0")
 [void]$text.AppendLine("Source: https://github.com/k2-fsa/sherpa-onnx")
 [void]$text.AppendLine("")
-Add-Component "ONNX Runtime 1.28.2 (onnxruntime.dll, shipped with sherpa-onnx)" "MIT" "https://github.com/microsoft/onnxruntime" @() "LICENSE" (Read-NoticeText "scripts\notices\onnxruntime-LICENSE.txt")
+Add-Component "ONNX Runtime 1.28.2 (onnxruntime.dll, shipped with sherpa-onnx)" "MIT" "https://onnxruntime.ai" @() "LICENSE" (Read-NoticeText "scripts\notices\onnxruntime-LICENSE.txt")
 Add-Component "Supertonic 3 voices (Supertone Inc.)" "BigScience OpenRAIL-M: commercial use is allowed, and its use restrictions (Attachment A below) pass on to you" "https://huggingface.co/Supertone/supertonic-3 (sherpa-onnx int8 export from https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models)" @("You may not use the model or its output for anything Attachment A forbids.") "LICENSE" (Read-NoticeText "scripts\notices\supertonic-3-LICENSE.txt")
-[void]$text.AppendLine("piper-phonemize 1.5.9 (piper_phonemize_core.dll, with espeak-ng inside), only for Piper and Kokoro voices")
-[void]$text.AppendLine("License: GPL-3.0. VoiceBro does not ship it: it is a separate download, and VoiceBro (MIT)")
-[void]$text.AppendLine("loads it at run time only when you choose a Piper or Kokoro voice.")
-[void]$text.AppendLine("Source: https://github.com/csukuangfj/piper-phonemize (espeak-ng: https://github.com/espeak-ng/espeak-ng)")
-[void]$text.AppendLine("")
-[void]$text.AppendLine("Piper voices (each archive carries its MODEL_CARD with the dataset and its attribution):")
-foreach ($id in $piperVoices.Keys) { [void]$text.AppendLine("  $id - voice data: $($piperVoices[$id])") }
+Add-Component "piper-phonemize 1.5.9 (piper_phonemize_core.dll, with espeak-ng inside) and the espeak-ng data (the espeak-ng-data folder inside every Piper and Kokoro voice archive), only for Piper and Kokoro voices" "GPL-3.0" "https://github.com/csukuangfj/piper-phonemize (espeak-ng: https://github.com/espeak-ng/espeak-ng)" @("VoiceBro does not ship them: they are separate downloads, and VoiceBro (MIT) loads them at", "run time only when you choose a Piper or Kokoro voice.") "GPL-3.0" (Read-NoticeText "scripts\notices\licenses\GPL-3.0.txt")
+[void]$text.AppendLine("Piper voices, one per voice you choose. For each: the license of its recordings and where")
+[void]$text.AppendLine("they come from, and the voice it was fine-tuned from, as its MODEL_CARD (piper-voices")
+[void]$text.AppendLine("v1.0.0, also inside each archive) states them:")
+foreach ($id in $piperVoices.Keys) {
+    $voice = $piperVoices[$id]
+    [void]$text.AppendLine("  $id")
+    [void]$text.AppendLine("    recordings: $($voice.Data); $($voice.From)")
+    $base = if ($voice.Base) { $voice.Base } else { "none (trained from scratch)" }
+    [void]$text.AppendLine("    fine-tuned from: $base")
+}
+[void]$text.AppendLine("lessac (en_US), the voice most of these were fine-tuned from, was trained on the Blizzard")
+[void]$text.AppendLine("Challenge 2013 lessac recordings, whose licence allows research purposes only:")
+[void]$text.AppendLine("https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html")
+[void]$text.AppendLine("CC BY 4.0: https://creativecommons.org/licenses/by/4.0/ - CC0: https://creativecommons.org/publicdomain/zero/1.0/")
 [void]$text.AppendLine("Model license: MIT (Piper). Source: https://huggingface.co/rhasspy/piper-voices, archives from")
 [void]$text.AppendLine("https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models")
 [void]$text.AppendLine("")

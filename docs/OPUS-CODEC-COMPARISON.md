@@ -260,8 +260,6 @@ Opus codec <label> from the next join and the next call" for each.
 
 ## Not tested
 
-- A real channel with two or more people and a game running, with each codec selected in
-  turn (the user's step; nothing counts as verified before it).
 - Listening: the decoded files are written for it; nobody has listened to them yet.
 - What a listener in Discord hears from each encoder; Discord's reports only show the
   packets arrived.
@@ -295,7 +293,7 @@ burst of 3 on the answer), and it plays the playout's bridging slightly differen
 Next steps, each the user's decision:
 
 1. Listen to the files under `target\opus-compare\out\` and test opus-rs in a real channel
-   with two people and a game (Settings → Diagnostics → Opus codec → opus-rs, then
+   (Settings → Diagnostics → Opus codec → opus-rs, then
    `/leave` and `/join`).
 2. Decide whether release builds should unwind on panic, so that a codec panic costs one
    frame instead of the app. (Decided on 2026-11-12: they unwind, and a codec panic ends

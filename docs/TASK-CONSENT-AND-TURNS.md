@@ -148,9 +148,6 @@ changes is what happens when an utterance arrives while Codex is busy:
   `/optin` and `/optout`.
 - Live: the call test with two overlapping speakers (the probes above), a Whisper text turn
   with two overlapping questions.
-- In a real Discord channel with two people and a game running: `/optin`, `/optout`,
-  `/privacy`, each mode, two people talking over each other in both modes. Nothing counts
-  as verified before that.
 
 ## Order
 

@@ -2057,7 +2057,12 @@ is built on it.
   voicebro-desktop -e normal --target x86_64-pc-windows-msvc` (the metadata's resolve
   graph is not used: it unifies the whole workspace's features, dev dependencies included),
   each with version, license, source and the `LICENSE*`, `COPYING*`, `NOTICE*` files from
-  its package folder. Five numbered sections: (1) those crates; (2) native libraries that
+  its package folder. A crate whose package ships none (22 today: songbird, davey, openmls,
+  webview2-com, symphonia and others) gets the standard text of one of its licenses from
+  `scripts\notices\licenses\` (MIT, ISC and BSD-3-Clause as SPDX has them, Apache-2.0,
+  MPL-2.0), printed once at the end of section 1, and a "Copyright holders" line from its
+  `authors`. A crate under none of these stops the script, naming it (change
+  `release-1-3-0`). Five numbered sections: (1) those crates; (2) native libraries that
   crates build or link in under licenses of their own: Opus 1.5 from `libopus_sys` (text
   `opus\COPYING` inside the crate) and the WebView2 loader from `webview2-com-sys` (WebView2
   SDK 1.0.3800.47; text kept in `scripts\notices\`) (opus-rs, a port of the Opus code,
@@ -2451,8 +2456,8 @@ session against the fake Codex (4.5). The probes:
 They take their files from `--assets`, `VOICEBRO_WHISPER_DIR` or
 `target\whisper-test\assets\` through the asset store.
 
-**Not tested:** a real Discord channel with two or more people and a game running, the
-Whisper mode's wake phrase in a channel, and the comparison of both modes' resource use.
+**Not tested:** the Whisper mode's wake phrase in a channel and the comparison of both
+modes' resource use.
 These are the user's tests.
 
 ### 4.13 Access and consent (`access.rs`, `consent.rs`, `protect.rs`)
