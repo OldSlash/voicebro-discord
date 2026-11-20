@@ -1116,6 +1116,23 @@ assistant is given, so the app never panics on an unknown engine setting.
     that started after its session ended is interrupted as soon as its id is known. This
     reacts to words Whisper heard, not to any sound. This is the behavior with
     `assistant.one_speaker_at_a_time` off.
+  - *The answer stops at the start of speech* (change `interrupt-on-speech`, with
+    `assistant.interrupt_on_speech` on, in the Whisper mode only, one speaker at a time
+    off). The gate counts each speaker's voiced frames (peak at or above 700) in the
+    current utterance (`SpeakerState::voiced_frames`, reset after the 700 ms utterance
+    gap). In a session (`wants_session`) while the session is `working`, a speaker who
+    talks in this tick and reaches `INTERRUPT_AFTER_FRAMES` (30 frames, 600 ms) raises the
+    effect `stop_answer` once per utterance (`stopped_answer`), with the log line "gate <g>:
+    <name> spoke for 600 ms: the answer stopped". `AssistantSession::stop_answer` (a no-op
+    for the realtime call) is, in the text session, the barge-in without the new turn:
+    `stop_running` flushes the player, and the turn id gets `turn/interrupt`; the stopped
+    turn posts nothing. The utterance goes on to Whisper and becomes the next question, or
+    nothing when it has no words. Only loudness and duration decide: on 2026-11-20 corpus
+    sentences stopped the answer 620 to 680 ms after their first voiced frame, single words
+    and steady noise of peak 300 did not, and a game-like clip with a steady loud hum did.
+    `GateSettings::interrupt_on_speech` is the setting and the Whisper mode together, so
+    the realtime and text answers modes never raise it; a save of the switch reaches the
+    gates through `apply_settings` without a rebuild.
   - *Questions wait their turn* (change `speaker-turns`, D6'; the setting on, read per
     question from `CodexConfig`). Nothing is interrupted or flushed. With a turn running,
     the question is added to `Running.added`, the log says "question added to turn <n>",
@@ -1362,7 +1379,7 @@ pub struct Settings {
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation?, deactivation? } } (an absent list: the model's defaults)
-    pub assistant: AssistantSettings,      // engine: codex (default) | claude | opencode (its own `engine` part; realtime is refused with claude or opencode), mode: realtime (default) | whisper | text (the text answers mode, change `text-answers-mode`: Whisper without the voice; `AssistantMode::hears_with_whisper()` is true for whisper and text, `speaks_locally()` for whisper only; its own `mode` part in changed_sections), speaker_labels: start | changes | off, instructions (the user's, for every engine, no default; its own `instructions` part; moved from codex.instructions at load), save_chat_history (default false), post_answers: off (default) | voice_channel | command_channel | channel, answers_channel (a channel id, digits or empty; required by channel, kept while another value is chosen)
+    pub assistant: AssistantSettings,      // engine: codex (default) | claude | opencode (its own `engine` part; realtime is refused with claude or opencode), mode: realtime (default) | whisper | text (the text answers mode, change `text-answers-mode`: Whisper without the voice; `AssistantMode::hears_with_whisper()` is true for whisper and text, `speaks_locally()` for whisper only; its own `mode` part in changed_sections), speaker_labels: start | changes | off, instructions (the user's, for every engine, no default; its own `instructions` part; moved from codex.instructions at load), save_chat_history (default false), post_answers: off (default) | voice_channel | command_channel | channel, answers_channel (a channel id, digits or empty; required by channel, kept while another value is chosen), interrupt_on_speech (default false, a boolean only; change `interrupt-on-speech`, the `assistant` part, applied to the gates without a rebuild)
     pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), handoff_mode: items (default) | commentary | bem_tags | thinking, refresh_lists_at_start (default false, read at start)
     pub claude: ClaudeSettings,            // executable (empty = found automatically), model (empty = Claude Code's default; no spaces, at most 200 characters), subscription_notice_shown (default false; the window's one-time dialog, 4.5), subscription_notice_hidden (default false; Hide in the Claude Code card's notice, which then never shows again; only true or false, change `claude-notice-hide`)
     pub opencode: OpencodeSettings,        // executable (empty = found automatically), model (empty = OpenCode's default, else provider/model; the model part may hold more /)

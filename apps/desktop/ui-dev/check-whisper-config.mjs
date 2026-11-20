@@ -232,7 +232,7 @@ const scenarios = [
     expect(r.whisper.shown.every(Boolean) && r.whisper.hidden.every(Boolean), `rows: ${JSON.stringify(r.whisper)}`);
     expect(same(r.whisper.phrases, ["bro", "peace out"]), `Whisper phrases: ${r.whisper.phrases}`);
     expect(!r.whisper.disabled.some(Boolean), "the Vosk rows were disabled instead of hidden");
-    expect(same(r.whisper.order, ["assistant-mode", "recognition-engine", "assistant-engine", "whisper-activation", "whisper-deactivation", "session-mode", "idle-timeout", "one-speaker"]), `order: ${r.whisper.order}`);
+    expect(same(r.whisper.order, ["assistant-mode", "recognition-engine", "assistant-engine", "whisper-activation", "whisper-deactivation", "session-mode", "idle-timeout", "one-speaker", "interrupt-on-speech"]), `order: ${r.whisper.order}`);
     expect(r.back.stored === "realtime" && r.back.rec === "Vosk", `back: ${JSON.stringify(r.back)}`);
     expect(same(r.back.values, ["alpha", "omega", "vosk-model-small-ru-0.22"]) && r.back.shown.every(Boolean) && r.back.hidden.every(Boolean), `back: ${JSON.stringify(r.back)}`);
   }],

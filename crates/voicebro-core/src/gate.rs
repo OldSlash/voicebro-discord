@@ -74,6 +74,9 @@ pub struct GateSettings {
     /// `assistant.one_speaker_at_a_time` (change `speaker-turns`, D0): read at the start of
     /// each session; a session never switches halfway.
     pub one_speaker_at_a_time: bool,
+    /// `assistant.interrupt_on_speech` in the Whisper mode, the one that speaks (change
+    /// `interrupt-on-speech`, D2); false in the realtime and text answers modes.
+    pub interrupt_on_speech: bool,
 }
 
 impl GateSettings {
@@ -93,6 +96,8 @@ impl GateSettings {
                 &whisper_phrases.deactivation,
             ),
             one_speaker_at_a_time: settings.assistant.one_speaker_at_a_time,
+            interrupt_on_speech: settings.assistant.interrupt_on_speech
+                && settings.assistant.mode.speaks_locally(),
         }
     }
 }
@@ -198,7 +203,16 @@ pub struct GateStatus {
 struct SpeakerState {
     name: Option<String>,
     last_voice: Option<Instant>,
+    /// Frames at or above the speech threshold since this speaker's utterance started
+    /// (change `interrupt-on-speech`, D1).
+    voiced_frames: u32,
+    /// This utterance already stopped an answer: once per utterance.
+    stopped_answer: bool,
 }
+
+/// One speaker's speech that stops the spoken answer (change `interrupt-on-speech`, D4):
+/// 30 voiced frames of 20 ms.
+pub const INTERRUPT_AFTER_FRAMES: u32 = 30;
 
 struct GateState {
     settings: GateSettings,
@@ -394,6 +408,8 @@ struct Effects {
     log: Option<String>,
     error: Option<String>,
     status_changed: bool,
+    /// Stop the answer without starting a turn (change `interrupt-on-speech`, D3).
+    stop_answer: bool,
 }
 
 pub struct RelayGate {
@@ -570,7 +586,10 @@ impl RelayGate {
                 speaker.last_voice = Some(now);
                 if new_utterance {
                     starters.push(*ssrc);
+                    speaker.voiced_frames = 0;
+                    speaker.stopped_answer = false;
                 }
+                speaker.voiced_frames = speaker.voiced_frames.saturating_add(1);
             }
             if state.preroll.len() >= PREROLL_FRAMES {
                 state.preroll.pop_front();
@@ -617,6 +636,33 @@ impl RelayGate {
                         "session ended after no input; waiting for the activation phrase"
                             .to_owned(),
                     );
+                } else if state.settings.interrupt_on_speech
+                    && !state.settings.one_speaker_at_a_time
+                    && state.wants_session()
+                    && working
+                {
+                    // Change `interrupt-on-speech` (D1, D2): one person talking for 600 ms
+                    // stops the spoken answer before Whisper has written the phrase down;
+                    // once per utterance, and only for someone talking in this tick.
+                    let talker = state.speakers.iter_mut().find_map(|(ssrc, speaker)| {
+                        let talking = speaker.last_voice == Some(now)
+                            && speaker.voiced_frames >= INTERRUPT_AFTER_FRAMES
+                            && !speaker.stopped_answer;
+                        talking.then(|| {
+                            speaker.stopped_answer = true;
+                            speaker
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| format!("speaker {ssrc}"))
+                        })
+                    });
+                    if let Some(name) = talker {
+                        effects.stop_answer = true;
+                        effects.log = Some(format!(
+                            "{name} spoke for {} ms: the answer stopped",
+                            INTERRUPT_AFTER_FRAMES * 20
+                        ));
+                    }
                 }
                 None
             } else if state.settings.mode == SessionMode::Always {
@@ -1100,6 +1146,9 @@ impl RelayGate {
             if let Some(wanted) = effects.session {
                 session.session_wanted(wanted);
             }
+            if effects.stop_answer {
+                session.stop_answer();
+            }
         }
         if let Some(message) = effects.log {
             self.events.log(format!("gate {}: {message}", self.guild));
@@ -1291,6 +1340,7 @@ mod tests {
             whisper: false,
             whisper_phrases: PhraseSet::default(),
             one_speaker_at_a_time: false,
+            interrupt_on_speech: false,
         }
     }
 
@@ -1430,8 +1480,213 @@ mod tests {
         );
     }
 
+    /// A Whisper-mode gate with the setting of change `interrupt-on-speech` as given.
+    fn interrupt_rig(mode: SessionMode, on: bool, one_at_a_time: bool) -> Rig {
+        let rig = rig(mode, None, Duration::ZERO);
+        let mut whisper = settings(mode, None);
+        whisper.whisper = true;
+        whisper.whisper_phrases = PhraseSet::new(&["hey bro".to_owned()], &["goodbye".to_owned()]);
+        whisper.interrupt_on_speech = on;
+        whisper.one_speaker_at_a_time = one_at_a_time;
+        rig.gate.update_settings(whisper);
+        rig.gate.set_speaker_name(7, "Alex");
+        rig
+    }
+
+    /// `frames` voiced ticks of speaker 7, back to back (one utterance).
+    fn talk(rig: &Rig, frames: u32) {
+        let loud = vec![3_000i16; 1920];
+        for _ in 0..frames {
+            rig.gate.process_tick(&voice(), &[(7, &loud)]);
+        }
+    }
+
+    fn stops(rig: &Rig) -> u64 {
+        rig.stub.stopped.load(Ordering::Acquire)
+    }
+
+    /// Requirement "The answer stops when someone starts talking": 30 voiced frames of one
+    /// speaker during a session while the assistant works stop the answer once, with a log
+    /// line naming the speaker; a new utterance after the gap can stop it again.
+    #[test]
+    fn speech_of_600_ms_stops_the_answer_once_per_utterance() {
+        let rig = interrupt_rig(SessionMode::Always, true, false);
+        let mut log = rig.events.subscribe();
+        rig.stub.busy.store(true, Ordering::Release);
+        talk(&rig, INTERRUPT_AFTER_FRAMES - 1);
+        assert_eq!(stops(&rig), 0, "29 frames are not enough");
+        talk(&rig, 1);
+        assert_eq!(stops(&rig), 1, "the 30th frame stops it");
+        let mut lines = Vec::new();
+        while let Ok(event) = log.try_recv() {
+            if let crate::events::AppEvent::Log { line } = event {
+                lines.push(line);
+            }
+        }
+        assert!(
+            lines.contains(&"gate 1: Alex spoke for 600 ms: the answer stopped".to_owned()),
+            "{lines:?}"
+        );
+        talk(&rig, 40);
+        assert_eq!(stops(&rig), 1, "once per utterance");
+        std::thread::sleep(UTTERANCE_GAP + Duration::from_millis(50));
+        talk(&rig, INTERRUPT_AFTER_FRAMES);
+        assert_eq!(stops(&rig), 2, "a new utterance stops it again");
+    }
+
+    /// Scenarios "A sneeze", "Outside a session", "Nothing to stop", "One speaker at a time"
+    /// and "Off": nothing is stopped.
+    #[test]
+    fn short_sounds_and_the_wrong_moments_stop_nothing() {
+        // A sneeze: 15 frames.
+        let rig = interrupt_rig(SessionMode::Always, true, false);
+        rig.stub.busy.store(true, Ordering::Release);
+        talk(&rig, 15);
+        assert_eq!(stops(&rig), 0, "a sneeze");
+        // Outside a session: the wake word, no activation.
+        let rig = interrupt_rig(SessionMode::WakeWord, true, false);
+        rig.stub.busy.store(true, Ordering::Release);
+        talk(&rig, 100);
+        assert_eq!(stops(&rig), 0, "outside a session");
+        // In a session started by the phrase, the same speech stops it.
+        rig.gate.on_transcript(heard("Hey bro"));
+        std::thread::sleep(UTTERANCE_GAP + Duration::from_millis(50));
+        talk(&rig, INTERRUPT_AFTER_FRAMES);
+        assert_eq!(stops(&rig), 1, "inside the session");
+        // Muted.
+        let rig = interrupt_rig(SessionMode::Always, true, false);
+        rig.stub.busy.store(true, Ordering::Release);
+        rig.gate.set_muted(true);
+        talk(&rig, 100);
+        assert_eq!(stops(&rig), 0, "muted");
+        // Nothing to stop.
+        let rig = interrupt_rig(SessionMode::Always, true, false);
+        talk(&rig, 100);
+        assert_eq!(stops(&rig), 0, "not working");
+        // One speaker at a time.
+        let rig = interrupt_rig(SessionMode::Always, true, true);
+        rig.stub.busy.store(true, Ordering::Release);
+        talk(&rig, 100);
+        assert_eq!(stops(&rig), 0, "one speaker at a time");
+        // The setting off.
+        let rig = interrupt_rig(SessionMode::Always, false, false);
+        rig.stub.busy.store(true, Ordering::Release);
+        talk(&rig, 100);
+        assert_eq!(stops(&rig), 0, "off");
+    }
+
+    /// Task 1.4 of change `interrupt-on-speech`: speech WAVs and noise-only clips fed as
+    /// speaker 7, one 20 ms tick each, while an answer runs; prints when the first voiced
+    /// frame came and when the answer stopped. Gated: `VOICEBRO_INTERRUPT_WAV` holds the
+    /// speech WAVs (16 kHz mono 16-bit), separated by `;`. The noise clips are the
+    /// `whisper-corpus` probe's: 3 s of silence, steady noise of peak 300, and a game-like mix
+    /// (a 70 Hz hum, bursts and a rising tone).
+    #[test]
+    fn interrupt_timing_when_enabled() {
+        let Ok(wavs) = std::env::var("VOICEBRO_INTERRUPT_WAV") else {
+            return;
+        };
+        let mut clips: Vec<(String, Vec<f32>)> = wavs
+            .split(';')
+            .filter(|path| !path.trim().is_empty())
+            .map(|path| {
+                let audio = crate::stt::read_wav_16k(std::path::Path::new(path.trim()))
+                    .expect("a 16 kHz WAV");
+                (path.trim().to_owned(), audio)
+            })
+            .collect();
+        clips.extend(noise_clips());
+        for (name, audio) in clips {
+            let rig = interrupt_rig(SessionMode::Always, true, false);
+            rig.stub.busy.store(true, Ordering::Release);
+            let mut first_voiced = None;
+            let mut stopped_at = None;
+            for (index, chunk) in audio.chunks(320).enumerate() {
+                // 16 kHz mono to the 48 kHz stereo a speaker's tick holds.
+                let mut frame = Vec::with_capacity(1920);
+                for sample in chunk.iter().chain(std::iter::repeat(&0.0)).take(320) {
+                    let value = (sample * 32_767.0).clamp(-32_768.0, 32_767.0) as i16;
+                    for _ in 0..6 {
+                        frame.push(value);
+                    }
+                }
+                if first_voiced.is_none() && peak(&frame) >= VOICE_PEAK_THRESHOLD {
+                    first_voiced = Some(index);
+                }
+                rig.gate
+                    .process_tick(&Frame::from_slice(&frame), &[(7, &frame)]);
+                if stopped_at.is_none() && stops(&rig) > 0 {
+                    stopped_at = Some(index);
+                }
+            }
+            let ms = |frame: Option<usize>| frame.map(|frame| frame * 20);
+            eprintln!(
+                "{name}: {:.1} s, first voiced frame at {:?} ms, answer stopped at {:?} ms{}",
+                audio.len() as f64 / 16_000.0,
+                ms(first_voiced),
+                ms(stopped_at),
+                match (first_voiced, stopped_at) {
+                    (Some(first), Some(stop)) => format!(", {} ms after", (stop - first + 1) * 20),
+                    _ => String::new(),
+                }
+            );
+        }
+    }
+
+    /// The `whisper-corpus` probe's noise-only clips (`apps/probe/src/whisper.rs`), at 16 kHz.
+    fn noise_clips() -> Vec<(String, Vec<f32>)> {
+        let samples = 3 * 16_000;
+        let mut seed = 0x2545_f491_u32;
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
+        };
+        let steady: Vec<f32> = (0..samples).map(|_| random() * 300.0 / 32_768.0).collect();
+        let game: Vec<f32> = (0..samples)
+            .map(|index| {
+                let t = index as f32 / 16_000.0;
+                let hum = (t * 2.0 * std::f32::consts::PI * 70.0).sin() * 0.05;
+                let burst = if (index / 4_000) % 3 == 0 && index % 4_000 < 800 {
+                    random() * 0.6 * (1.0 - (index % 4_000) as f32 / 800.0)
+                } else {
+                    0.0
+                };
+                let sweep = (t * 2.0 * std::f32::consts::PI * (300.0 + 200.0 * t)).sin() * 0.03;
+                hum + burst + sweep + random() * 0.01
+            })
+            .collect();
+        vec![
+            ("noise-silence".to_owned(), vec![0.0; samples]),
+            ("noise-steady-300".to_owned(), steady),
+            ("noise-game".to_owned(), game),
+        ]
+    }
+
+    /// The setting acts in the Whisper mode only: the realtime and the text answers modes
+    /// get it off in their gate settings.
+    #[test]
+    fn only_the_whisper_mode_turns_the_setting_on() {
+        let mut settings = Settings::default();
+        settings.assistant.interrupt_on_speech = true;
+        for (mode, on) in [
+            (crate::settings::AssistantMode::Realtime, false),
+            (crate::settings::AssistantMode::Whisper, true),
+            (crate::settings::AssistantMode::Text, false),
+        ] {
+            settings.assistant.mode = mode;
+            assert_eq!(
+                GateSettings::from_settings(&settings).interrupt_on_speech,
+                on,
+                "{mode:?}"
+            );
+        }
+    }
+
     struct Rig {
         gate: Arc<RelayGate>,
+        events: EventBus,
         feed: Arc<CountingFeed>,
         stub: Arc<crate::assistant::StubSession>,
         input: FrameReceiver,
@@ -1451,6 +1706,7 @@ mod tests {
         ));
         let errors = Arc::new(Errors::default());
         let input_gain = Arc::new(GainStage::new());
+        let events = EventBus::new(64);
         let gate = RelayGate::new(
             1,
             sender,
@@ -1458,7 +1714,7 @@ mod tests {
             output.clone(),
             settings(mode, timeout),
             false,
-            EventBus::new(64),
+            events.clone(),
             Some(feed.clone() as Arc<dyn WakeFeed>),
             Some(errors.clone() as Arc<dyn ErrorReporter>),
         );
@@ -1482,6 +1738,7 @@ mod tests {
         std::mem::forget(assistant);
         Rig {
             gate,
+            events,
             feed,
             stub,
             input: receiver,

@@ -760,6 +760,11 @@ pub struct AssistantSettings {
     /// as before.
     #[serde(deserialize_with = "one_speaker_flag")]
     pub one_speaker_at_a_time: bool,
+    /// Stop the spoken answer when someone has talked for 600 ms, before Whisper wrote the
+    /// phrase down (change `interrupt-on-speech`). Off by default; it acts only in the
+    /// Whisper mode and not while one speaker at a time is on.
+    #[serde(deserialize_with = "interrupt_flag")]
+    pub interrupt_on_speech: bool,
 }
 
 /// `assistant.one_speaker_at_a_time` takes only `true` or `false`; anything else is refused
@@ -769,6 +774,17 @@ fn one_speaker_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
         Value::Bool(on) => Ok(on),
         other => Err(serde::de::Error::custom(format!(
             "assistant.one_speaker_at_a_time must be true or false, not {other}"
+        ))),
+    }
+}
+
+/// `assistant.interrupt_on_speech` takes only `true` or `false`; anything else is refused
+/// with the field's path.
+fn interrupt_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    match Value::deserialize(deserializer)? {
+        Value::Bool(on) => Ok(on),
+        other => Err(serde::de::Error::custom(format!(
+            "assistant.interrupt_on_speech must be true or false, not {other}"
         ))),
     }
 }
@@ -784,6 +800,7 @@ impl Default for AssistantSettings {
             post_answers: PostAnswers::Off,
             answers_channel: String::new(),
             one_speaker_at_a_time: false,
+            interrupt_on_speech: false,
         }
     }
 }
@@ -1794,6 +1811,27 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("assistant.one_speaker_at_a_time"), "{error}");
+    }
+
+    /// Change `interrupt-on-speech`, requirement "Interrupt on speech setting": off by
+    /// default and in older files, written by the next save, a boolean only, and a change
+    /// of it is the `assistant` part.
+    #[test]
+    fn interrupt_on_speech_defaults_to_off_and_takes_only_a_boolean() {
+        let older: Settings = serde_json::from_str(SETTINGS_1_0_1).unwrap();
+        assert!(!older.assistant.interrupt_on_speech);
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(written["assistant"]["interrupt_on_speech"], false);
+        let on = older
+            .with_patch(&json!({ "assistant": { "interrupt_on_speech": true } }))
+            .unwrap();
+        assert!(on.assistant.interrupt_on_speech);
+        assert_eq!(older.changed_sections(&on), vec!["assistant"]);
+        let error = older
+            .with_patch(&json!({ "assistant": { "interrupt_on_speech": "yes" } }))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("assistant.interrupt_on_speech"), "{error}");
     }
 
     /// Requirement "Privacy policy URL setting": empty or `https://` with a host, trimmed, at

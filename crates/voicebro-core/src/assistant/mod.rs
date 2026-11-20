@@ -240,6 +240,10 @@ pub trait AssistantSession: Send + Sync {
     fn working(&self) -> bool {
         false
     }
+    /// Someone has talked for 600 ms while the assistant works (change
+    /// `interrupt-on-speech`, D3): stop the answer and its voice, start nothing. The
+    /// realtime call leaves this to its own server.
+    fn stop_answer(&self) {}
 }
 
 /// A question Whisper heard, with what the latency line needs (change `whisper-mode`,
@@ -369,6 +373,8 @@ pub struct StubSession {
     pub texts: Mutex<Vec<(Option<String>, String)>>,
     /// What [`AssistantSession::working`] answers.
     pub busy: AtomicBool,
+    /// How many times [`AssistantSession::stop_answer`] was called.
+    pub stopped: AtomicU64,
     frames_heard: Arc<AtomicU64>,
 }
 
@@ -400,6 +406,7 @@ impl StubSession {
             speakers: Mutex::new(Vec::new()),
             texts: Mutex::new(Vec::new()),
             busy: AtomicBool::new(false),
+            stopped: AtomicU64::new(0),
             frames_heard,
         }
     }
@@ -457,6 +464,10 @@ impl AssistantSession for StubSession {
 
     fn working(&self) -> bool {
         self.busy.load(Ordering::Acquire)
+    }
+
+    fn stop_answer(&self) {
+        self.stopped.fetch_add(1, Ordering::AcqRel);
     }
 }
 
