@@ -310,15 +310,22 @@ impl VoiceHost for GateHost {
     }
 
     fn assistant_mode(&self) -> &'static str {
-        if self
+        if !self
             .gate_settings
             .lock()
             .expect("gate settings lock")
             .whisper
         {
-            crate::discord::MODE_WHISPER
+            return crate::discord::MODE_REALTIME;
+        }
+        // The gates hear with Whisper in both of its modes; the settings tell them apart
+        // (change `text-answers-mode`).
+        if self.settings.read().expect("settings lock").assistant.mode
+            == crate::settings::AssistantMode::Text
+        {
+            crate::discord::MODE_TEXT
         } else {
-            crate::discord::MODE_REALTIME
+            crate::discord::MODE_WHISPER
         }
     }
 
@@ -388,9 +395,12 @@ impl GateHost {
 
     /// In the Whisper mode a join also loads Whisper and the voice (design D12), off the
     /// async threads; missing files refuse it with the reply that sends the user to the
-    /// Settings tab's Whisper and Local voice cards.
+    /// Settings tab's Whisper and Local voice cards. The text answers mode loads Whisper
+    /// only (the voice's `prepare_join` passes), and its reply names the Whisper card alone.
     async fn prepare_whisper(&self) -> Result<(), String> {
         let (whisper, tts) = (self.whisper.clone(), self.tts.clone());
+        let text_answers = self.settings.read().expect("settings lock").assistant.mode
+            == crate::settings::AssistantMode::Text;
         let result = tokio::task::spawn_blocking(move || {
             let heard = whisper.prepare_join();
             let spoken = tts.prepare_join();
@@ -398,7 +408,14 @@ impl GateHost {
         })
         .await
         .map_err(|error| format!("the Whisper mode did not load: {error}"))
-        .and_then(|result| result);
+        .and_then(|result| result)
+        .map_err(|error| {
+            if text_answers && error == crate::stt::manager::JOIN_NEEDS_DOWNLOADS {
+                crate::stt::manager::JOIN_NEEDS_WHISPER_FILES.to_owned()
+            } else {
+                error
+            }
+        });
         // A refused join holds nothing: a download agreed later loads only for a join.
         if result.is_err() && self.registry.all().is_empty() {
             self.whisper.release();
@@ -607,9 +624,13 @@ impl AnswerPoster for DiscordRuntime {
     }
 }
 
-/// Where the settings send an answer: `None` while posting is off.
+/// Where the settings send an answer: `None` while posting is off, except in the text
+/// answers mode, whose answers always go somewhere (change `text-answers-mode`, D3).
 pub(crate) fn answer_destination(settings: &AssistantSettings) -> Option<AnswerDestination> {
     match settings.post_answers {
+        PostAnswers::Off if settings.mode == crate::settings::AssistantMode::Text => {
+            Some(AnswerDestination::VoiceChannel)
+        }
         PostAnswers::Off => None,
         PostAnswers::VoiceChannel => Some(AnswerDestination::VoiceChannel),
         PostAnswers::CommandChannel => Some(AnswerDestination::CommandChannel),
@@ -1134,8 +1155,7 @@ impl Runtime {
             } else {
                 self.host.switch_mode(&settings);
             }
-            if settings.assistant.mode == crate::settings::AssistantMode::Whisper
-                && !self.host.registry.all().is_empty()
+            if settings.assistant.mode.hears_with_whisper() && !self.host.registry.all().is_empty()
             {
                 // In a channel already: load now; missing files wait for the window's OK.
                 let (whisper, tts) = (self.host.whisper.clone(), self.host.tts.clone());
@@ -2056,6 +2076,36 @@ mod tests {
         handler.abort();
     }
 
+    /// Requirement "Only the final answer of a completed agent task is posted" (change
+    /// `text-answers-mode`, D3): posting off sends the text answers mode's answers to the voice
+    /// channel's chat, and nothing in the other two modes; a chosen destination stays.
+    #[test]
+    fn the_text_answers_mode_posts_with_posting_off() {
+        use crate::settings::AssistantMode;
+        let with = |mode: AssistantMode, post_answers: PostAnswers| {
+            answer_destination(&AssistantSettings {
+                mode,
+                post_answers,
+                answers_channel: "13".to_owned(),
+                ..AssistantSettings::default()
+            })
+        };
+        assert_eq!(
+            with(AssistantMode::Text, PostAnswers::Off),
+            Some(AnswerDestination::VoiceChannel)
+        );
+        assert_eq!(with(AssistantMode::Whisper, PostAnswers::Off), None);
+        assert_eq!(with(AssistantMode::Realtime, PostAnswers::Off), None);
+        assert_eq!(
+            with(AssistantMode::Text, PostAnswers::Channel),
+            Some(AnswerDestination::Channel(13))
+        );
+        assert_eq!(
+            with(AssistantMode::Text, PostAnswers::CommandChannel),
+            Some(AnswerDestination::CommandChannel)
+        );
+    }
+
     /// A refusal sets the `answers` error with the channel and Discord's reason; the next
     /// post clears it. An answer not posted on purpose sets nothing.
     #[test]
@@ -2538,6 +2588,46 @@ mod tests {
         );
         assert_eq!(runtime.host.registry.all().len(), 1);
         host.on_leave(42);
+        runtime.shutdown();
+    }
+
+    /// Requirement "Join prepares the text answers mode" (change `text-answers-mode`): the
+    /// mode is named as such, a join without Whisper's files is refused with the reply that
+    /// names the Whisper card only, and the voice is neither needed nor loaded.
+    #[test]
+    fn a_join_in_the_text_answers_mode_needs_whisper_only() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({ "assistant": { "mode": "text" } }))
+            .unwrap();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        assert_eq!(host.assistant_mode(), crate::discord::MODE_TEXT);
+        let refused = tokio_rt.block_on(host.prepare_join(42));
+        assert_eq!(
+            refused,
+            Err(crate::stt::manager::JOIN_NEEDS_WHISPER_FILES.to_owned())
+        );
+        assert!(refused
+            .unwrap_err()
+            .starts_with("The Whisper mode needs downloads"));
+        let status = runtime.status();
+        assert!(matches!(
+            status.whisper.state,
+            crate::stt::manager::WhisperState::NeedsDownload { .. }
+        ));
+        assert_eq!(
+            status.tts.state,
+            crate::tts::manager::TtsState::Off,
+            "the voice is not asked for"
+        );
+        assert_eq!(
+            status.wake.state,
+            crate::wake::WakeState::Off,
+            "Vosk is off"
+        );
         runtime.shutdown();
     }
 

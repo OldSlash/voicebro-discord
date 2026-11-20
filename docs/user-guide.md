@@ -351,6 +351,18 @@ Assistant mode**:
 Your instructions, **Speaker names**, **Post answers to Discord**, **Who the assistant
 hears**, the mute, the tones and the auto-stop work in both modes and with every engine.
 
+### Text answers
+
+A third choice of **Assistant mode**, **Whisper, text answers**, is the Whisper mode without
+the voice: Whisper writes down what is said, the phrases and the questions work exactly as
+in the Whisper mode, and the engine answers, but nothing is read into the voice channel.
+Each answer is posted as text instead, where **Post answers to Discord** says
+([Posting the answers to Discord](#posting-the-answers-to-discord)); while that is **Off**,
+the answers go to the voice channel's chat. The short tones at the start and end of a
+session still play (turn them off with **Earcons** in **Config → Audio**). This mode needs
+no voice: `/join` asks only for Whisper's files, and the **Local voice** card says its voice
+is not used. On the **Status** tab the mode shows as "Whisper, text answers".
+
 > [!NOTE]
 > The Whisper mode is new. The timings below come from tests on one PC with recorded
 > speech. It has not been tried yet in a real voice channel with several people while a
@@ -637,7 +649,9 @@ its columns line up. Nobody is pinged, even if the answer contains `@everyone` o
 
 In the [Whisper mode](#7-the-whisper-mode) the engine answers every question itself, so
 every answer it finishes is posted, with the engine and the question as its first line. An
-answer cut off by a new question or by the deactivation phrase is not posted.
+answer cut off by a new question or by the deactivation phrase is not posted. In the
+[text answers mode](#text-answers) posting is how the answers arrive, so with **Off** they
+go to the voice channel's chat.
 
 Turn it on in **Post answers to Discord** in the engine's card (**Config → Codex**,
 **Claude Code** or **OpenCode**). It is off by default, because a

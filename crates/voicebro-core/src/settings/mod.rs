@@ -76,16 +76,35 @@ pub enum AssistantMode {
     /// Whisper turns speech into text and spots the phrases, Codex answers in text, a local
     /// voice speaks.
     Whisper,
+    /// The text answers mode (change `text-answers-mode`): the Whisper mode without the
+    /// voice; each answer is posted as text in a Discord chat.
+    Text,
 }
 
 impl AssistantMode {
-    pub const ALL: [AssistantMode; 2] = [AssistantMode::Realtime, AssistantMode::Whisper];
+    pub const ALL: [AssistantMode; 3] = [
+        AssistantMode::Realtime,
+        AssistantMode::Whisper,
+        AssistantMode::Text,
+    ];
 
     pub const fn name(self) -> &'static str {
         match self {
             AssistantMode::Realtime => "realtime",
             AssistantMode::Whisper => "whisper",
+            AssistantMode::Text => "text",
         }
+    }
+
+    /// Whisper recognizes the speech and the engine answers in text turns: the Whisper mode
+    /// and the text answers mode (change `text-answers-mode`, D1).
+    pub const fn hears_with_whisper(self) -> bool {
+        matches!(self, AssistantMode::Whisper | AssistantMode::Text)
+    }
+
+    /// A local voice reads the answers into the voice channel: the Whisper mode only.
+    pub const fn speaks_locally(self) -> bool {
+        matches!(self, AssistantMode::Whisper)
     }
 }
 
@@ -98,7 +117,7 @@ impl TryFrom<String> for AssistantMode {
             .find(|mode| mode.name() == value)
             .ok_or_else(|| {
                 format!(
-                    "assistant.mode: «{value}» is not an assistant mode; use one of realtime, whisper"
+                    "assistant.mode: «{value}» is not an assistant mode; use one of realtime, whisper, text"
                 )
             })
     }
@@ -1945,6 +1964,31 @@ mod tests {
         );
     }
 
+    /// Requirement "Assistant mode setting" (change `text-answers-mode`): `text` is the third
+    /// mode, taken with every engine, and the two questions on a mode answer as designed (D1).
+    #[test]
+    fn the_text_answers_mode_is_a_third_mode_for_every_engine() {
+        for engine in ["codex", "claude", "opencode"] {
+            let settings = Settings::default()
+                .with_patch(&json!({ "assistant": { "engine": engine, "mode": "text" } }))
+                .unwrap();
+            settings.validate().unwrap();
+            assert_eq!(settings.assistant.mode, AssistantMode::Text);
+            assert_eq!(
+                serde_json::to_value(&settings).unwrap()["assistant"]["mode"],
+                "text"
+            );
+        }
+        assert!(AssistantMode::Text.hears_with_whisper() && !AssistantMode::Text.speaks_locally());
+        assert!(
+            AssistantMode::Whisper.hears_with_whisper() && AssistantMode::Whisper.speaks_locally()
+        );
+        assert!(
+            !AssistantMode::Realtime.hears_with_whisper()
+                && !AssistantMode::Realtime.speaks_locally()
+        );
+    }
+
     /// Task 1.2: an unknown mode, a speed of 3 and a path as a local model are refused, each
     /// naming its field.
     #[test]
@@ -1954,7 +1998,7 @@ mod tests {
             .with_patch(&json!({ "assistant": { "mode": "local" } }))
             .unwrap_err()
             .to_string();
-        for part in ["assistant.mode", "local", "realtime", "whisper"] {
+        for part in ["assistant.mode", "local", "realtime", "whisper", "text"] {
             assert!(error.contains(part), "{part}: {error}");
         }
         let check = |patch: Value, field: &str, part: &str| {

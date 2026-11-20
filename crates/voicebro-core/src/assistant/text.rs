@@ -39,6 +39,9 @@ pub struct TextOptions {
     pub speaker_labels: SpeakerLabels,
     /// `assistant.one_speaker_at_a_time` (change `speaker-turns`, D6').
     pub one_speaker_at_a_time: bool,
+    /// The text answers mode (change `text-answers-mode`, D2): nothing is spoken, and the
+    /// latency line is written when the turn completes.
+    pub text_answers: bool,
 }
 
 /// What goes with a turn besides the question: the people in the channel with the first
@@ -314,6 +317,34 @@ impl TextSession {
             .push_report(report);
     }
 
+    /// A turn of the text answers mode completed (change `text-answers-mode`, D4): its latency
+    /// line, without the voice's times.
+    fn answered_without_voice(&self, turn: u64) {
+        let Some(timing) = self.lock().timings.remove(&turn) else {
+            return;
+        };
+        let report = WhisperTiming::without_voice(
+            timing.speech_end,
+            timing.text_at,
+            timing.first_words_at.unwrap_or_else(Instant::now),
+            timing.audio_seconds,
+            &timing.model,
+            &timing.device,
+        )
+        .with_engine(self.name())
+        .report(turn, &chrono::Local::now().format("%H:%M:%S").to_string());
+        crate::detail!(
+            "latency",
+            "{}",
+            latency::log_line(self.guild, &LatencyEvent::Report(report.clone()))
+        );
+        timing
+            .latency
+            .lock()
+            .expect("latency lock")
+            .push_report(report);
+    }
+
     /// The context of the next turn: the people in the channel with the first turn of a
     /// session, the guild's last exchanges with the first turn of a new conversation.
     fn context(&self, state: &mut TextState) -> TurnContext {
@@ -355,8 +386,11 @@ impl TextSession {
         });
     }
 
-    /// Queues the pieces of `running` for the voice.
+    /// Queues the pieces of `running` for the voice; nothing in the text answers mode.
     fn speak(&self, running: &mut Running, pieces: Vec<String>) {
+        if (self.options)().text_answers {
+            return;
+        }
         for piece in pieces {
             let turn = std::mem::take(&mut running.first_piece).then_some(running.number);
             self.tts.speak(
@@ -441,6 +475,15 @@ impl TextSession {
                 };
                 // Questions that waited for this turn start the next one (D6').
                 self.start_waiting();
+                if (self.options)().text_answers {
+                    // No voice will mark the answer: the line is written now, or dropped
+                    // with a failed turn.
+                    if ok {
+                        self.answered_without_voice(running.number);
+                    } else {
+                        self.lock().timings.remove(&running.number);
+                    }
+                }
                 if ok {
                     if let Some(text) = running.last_agent_text.filter(|text| !text.is_empty()) {
                         {

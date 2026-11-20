@@ -582,7 +582,7 @@ impl ClaudeAssistant {
 
     async fn prepare_guild(&self, guild: u64) -> Result<(), PrepareError> {
         self.bump_epoch(guild);
-        if self.config().mode != AssistantMode::Whisper {
+        if !self.config().mode.hears_with_whisper() {
             return Err(PrepareError::NotWhisper);
         }
         let executable = self.executable().ok_or(PrepareError::NotFound)?;
@@ -711,6 +711,7 @@ impl Assistant for ClaudeAssistant {
                 TextOptions {
                     speaker_labels: config.speaker_labels,
                     one_speaker_at_a_time: config.one_speaker_at_a_time,
+                    text_answers: !config.mode.speaks_locally(),
                 }
             }),
             conversation: self.conversation(guild),

@@ -769,7 +769,7 @@ impl Assistant for CodexAssistant {
                 "Codex stopped before the join finished; run /join again".to_owned(),
             ));
         };
-        if self.config().mode == AssistantMode::Whisper {
+        if self.config().mode.hears_with_whisper() {
             let tts = self
                 .inner
                 .tts
@@ -799,6 +799,7 @@ impl Assistant for CodexAssistant {
                     TextOptions {
                         speaker_labels: config.speaker_labels,
                         one_speaker_at_a_time: config.one_speaker_at_a_time,
+                        text_answers: !config.mode.speaks_locally(),
                     }
                 }),
                 conversation,
@@ -3078,7 +3079,14 @@ mod tests {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             let dir = tempfile::tempdir().unwrap();
             let mut settings = Settings::default();
-            settings.assistant.mode = AssistantMode::Whisper;
+            // VOICEBRO_ASSISTANT_MODE=text runs the turn in the text answers mode (change
+            // `text-answers-mode`): the answer is posted and nothing is spoken.
+            let text_answers = std::env::var("VOICEBRO_ASSISTANT_MODE").as_deref() == Ok("text");
+            settings.assistant.mode = if text_answers {
+                AssistantMode::Text
+            } else {
+                AssistantMode::Whisper
+            };
             settings.tts.voice = voice.clone();
             let events = EventBus::new(256);
             let assistant = CodexAssistant::new(
@@ -3160,12 +3168,23 @@ mod tests {
                 } else if voiced {
                     quiet_since.get_or_insert_with(Instant::now);
                 }
-                // Done once the answer was posted and its voice played and went quiet.
+                // Done once the answer was posted and its voice played and went quiet; in the
+                // text answers mode 2 s after the post, to hear that nothing follows.
                 if posted.is_some()
                     && quiet_since.is_some_and(|since| since.elapsed() > Duration::from_secs(2))
                 {
                     break;
                 }
+                if text_answers && posted.is_some() {
+                    let since = *quiet_since.get_or_insert_with(Instant::now);
+                    if since.elapsed() > Duration::from_secs(2) {
+                        break;
+                    }
+                }
+            }
+            if text_answers {
+                assert!(!voiced, "the text answers mode played a voice");
+                assert_eq!(tts.status().spoken, 0, "nothing was synthesized");
             }
             eprintln!("voice: {:?}", tts.status());
             for entry in assistant.chat_log().entries() {

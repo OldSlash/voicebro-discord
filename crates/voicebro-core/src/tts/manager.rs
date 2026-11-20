@@ -16,7 +16,7 @@ use super::{Synth, TtsError};
 use crate::assets::{self, Asset};
 use crate::audio::dsp::Resampler;
 use crate::events::{AppEvent, EventBus};
-use crate::settings::{AssistantMode, Settings};
+use crate::settings::Settings;
 use crate::wake::{megabytes, DownloadItem};
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -373,10 +373,11 @@ impl TtsManager {
             status.missing = items;
         });
         let agreed = self.inner.consent.lock().expect("consent lock").as_deref() == Some(&voice);
-        if settings.assistant.mode != AssistantMode::Whisper {
+        if !settings.assistant.mode.speaks_locally() {
             self.unload();
-            // A download agreed in the realtime mode (change `whisper-config-layout`)
-            // fetches the files and loads nothing.
+            // A download agreed in the realtime or text answers mode (changes
+            // `whisper-config-layout`, `text-answers-mode`) fetches the files and loads
+            // nothing.
             match missing {
                 Ok(missing) if !missing.is_empty() && agreed => {
                     let manager = self.clone();
@@ -450,7 +451,7 @@ impl TtsManager {
             .lock()
             .expect("tts settings lock")
             .as_ref()
-            .is_some_and(|settings| settings.assistant.mode == AssistantMode::Whisper);
+            .is_some_and(|settings| settings.assistant.mode.speaks_locally());
         if !whisper_mode {
             self.set_state(TtsState::Off);
             return;
@@ -578,7 +579,9 @@ impl TtsManager {
             .expect("tts settings lock")
             .clone()
             .ok_or_else(|| "the voice has not been configured yet".to_owned())?;
-        if settings.assistant.mode != AssistantMode::Whisper {
+        // Only the Whisper mode speaks; the text answers mode needs no voice for a join
+        // (change `text-answers-mode`, D2).
+        if !settings.assistant.mode.speaks_locally() {
             return Ok(());
         }
         self.inner.wanted.store(true, Ordering::Release);
@@ -815,6 +818,7 @@ fn run(
 mod tests {
     use super::*;
     use crate::audio::{Frame, FrameProvider};
+    use crate::settings::AssistantMode;
 
     /// 0.5 s of a tone per piece at 24 kHz, taking `delay`; stops when asked.
     struct FakeSynth {
@@ -986,6 +990,39 @@ mod tests {
         assert!(manager.download("piper:ru_RU-denis-medium").is_err());
         manager.download(&settings.tts.voice).unwrap();
         wait(|| fetched.lock().unwrap().len() == 2 && manager.status().missing.is_empty());
+        assert_eq!(manager.status().state, TtsState::Off);
+        assert!(read.lock().unwrap().is_empty(), "no voice was loaded");
+    }
+
+    /// Change `text-answers-mode`, D2: in the text answers mode the voice stays off, its
+    /// missing files are still listed, and a join neither needs nor loads it.
+    #[test]
+    fn the_text_answers_mode_needs_and_loads_no_voice() {
+        let dir = tempfile::tempdir().unwrap();
+        let read = Arc::new(Mutex::new(Vec::new()));
+        let manager = TtsManager::with_parts(
+            Arc::new(FakeLoader {
+                delay: Duration::ZERO,
+                read: Arc::clone(&read),
+            }),
+            Arc::new(|_: &Asset, _: &Path, _: &dyn Fn(assets::Progress)| Ok(())),
+            dir.path().to_path_buf(),
+            EventBus::default(),
+        );
+        let mut settings = Settings::default();
+        settings.assistant.mode = AssistantMode::Text;
+        manager.configure(&settings);
+        assert_eq!(manager.status().state, TtsState::Off);
+        assert_eq!(
+            manager.status().missing.len(),
+            2,
+            "the engine and Supertonic 3"
+        );
+        assert_eq!(
+            manager.prepare_join(),
+            Ok(()),
+            "the join does not need the voice"
+        );
         assert_eq!(manager.status().state, TtsState::Off);
         assert!(read.lock().unwrap().is_empty(), "no voice was loaded");
     }

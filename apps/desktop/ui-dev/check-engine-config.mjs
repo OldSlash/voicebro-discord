@@ -178,6 +178,18 @@ const scenarios = [
     expect(r.stored.engine === "codex" && r.stored.mode === "whisper", JSON.stringify(r.stored));
     expect(!r.realtime && r.note === "", "realtime still closed");
   }],
+  ["Claude Code and OpenCode in the text answers mode keep it; only the realtime mode is closed to them", async () => {
+    await load("?text_answers&whisper&notice_shown");
+    const r = await page(`
+      tab("config");
+      await choose("claude");
+      const claude = { stored: { ...stored().assistant }, options: [...$("assistant-mode").options].map((o) => [o.value, o.disabled]) };
+      await choose("opencode");
+      return { claude, opencode: stored().assistant.mode };`);
+    expect(r.claude.stored.engine === "claude" && r.claude.stored.mode === "text", JSON.stringify(r.claude.stored));
+    expect(JSON.stringify(r.claude.options) === JSON.stringify([["realtime", true], ["whisper", false], ["text", false]]), JSON.stringify(r.claude.options));
+    expect(r.opencode === "text", r.opencode);
+  }],
   // ---- settings-ui "The engine card follows the engine"
   ["an unsaved instruction edit survives a change of the engine", async () => {
     await load("?notice_shown&whisper");

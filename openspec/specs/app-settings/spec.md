@@ -332,9 +332,9 @@ as entered.
 - **THEN** the save succeeds and the settings file holds "Отбой братан"
 
 ### Requirement: Assistant mode setting
-`assistant.mode` SHALL be `realtime` or `whisper`, default `realtime`. Any other value
-SHALL be refused, naming the field and the two values. `realtime` SHALL be refused while
-`assistant.engine` is not `codex`, with a message that the voice mode works only with
+`assistant.mode` SHALL be `realtime`, `whisper` or `text`, default `realtime`. Any other
+value SHALL be refused, naming the field and the three values. `realtime` SHALL be refused
+while `assistant.engine` is not `codex`, with a message that the voice mode works only with
 Codex. A change SHALL apply at once, as the requirement "The mode switches at once" of
 `whisper-assistant-mode` says.
 
@@ -344,11 +344,15 @@ Codex. A change SHALL apply at once, as the requirement "The mode switches at on
 
 #### Scenario: Unknown value
 - **WHEN** a save sets `assistant.mode` to "local"
-- **THEN** it is refused with a message naming `assistant.mode`, `realtime` and `whisper`, and the stored settings stay
+- **THEN** it is refused with a message naming `assistant.mode`, `realtime`, `whisper` and `text`, and the stored settings stay
 
 #### Scenario: Realtime with Claude
 - **WHEN** a save sets `assistant.engine` to `claude` and `assistant.mode` to `realtime`
 - **THEN** it is refused with a message that the voice mode works only with Codex, and the stored settings stay
+
+#### Scenario: Text answers with Claude
+- **WHEN** a save sets `assistant.engine` to `claude` and `assistant.mode` to `text`
+- **THEN** it is saved
 
 ### Requirement: Whisper settings
 The `whisper` section SHALL hold:

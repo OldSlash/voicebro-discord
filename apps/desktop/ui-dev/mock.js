@@ -37,7 +37,9 @@
 // `failNextWhisperDownload()` (the next download stops at 40 % with a hash error),
 // `completeWhisperDownload()` (everything the selection needs is on disk at once),
 // `placeWhisperFiles(files)` (put there by hand), `setCuda(on)`, `whisperTurn()` (one
-// measured answer now) and `haveFiles()` serve the checks.
+// measured answer now) and `haveFiles()` serve the checks. `?text_answers` starts in the text
+// answers mode (change `text-answers-mode`; with `?whisper` or `?whisper_missing` for the
+// files): the voice is off and not needed, and a refused join names the Whisper card only.
 (() => {
   const THEMES = ["dark", "darcula", "light", "intellij"];
   const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -275,7 +277,7 @@
   }
   function wakeState() {
     // In the Whisper mode Vosk is stopped: Whisper spots the phrases (design D1).
-    if (settings.assistant.mode === "whisper" || settings.session.mode !== "wake_word") return { kind: "off" };
+    if (hearsWithWhisper() || settings.session.mode !== "wake_word") return { kind: "off" };
     if (download && download.model === settings.wake.model) {
       const item = download.items[download.index];
       if (download.failed) {
@@ -412,6 +414,8 @@
     + "lb:Luxembourgish,my:Myanmar,bo:Tibetan,tl:Tagalog,mg:Malagasy,as:Assamese,tt:Tatar,haw:Hawaiian,ln:Lingala,"
     + "ha:Hausa,ba:Bashkir,jw:Javanese,su:Sundanese,yue:Cantonese").split(",").map((pair) => pair.split(":"));
   const JOIN_NEEDS_DOWNLOADS = "The Whisper mode needs downloads: open VoiceBro → Settings and press Download in the Whisper and Local voice cards, then run /join again";
+  // The same in the text answers mode (`JOIN_NEEDS_WHISPER_FILES`, change `text-answers-mode`).
+  const JOIN_NEEDS_WHISPER_FILES = "The Whisper mode needs downloads: open VoiceBro → Settings and press Download in the Whisper card, then run /join again";
   // The start of the core's reply to a wake-word join without the Vosk files
   // (`wake::JOIN_NEEDS_WAKE_FILES`, change `models-in-settings`).
   const JOIN_NEEDS_WAKE_FILES = "The wake word needs downloads";
@@ -420,6 +424,11 @@
   const have = (asset) => haveFiles.has(asset.file);
   let cuda = !GPU_FALLBACK;
   if (WHISPER_START || GPU_FALLBACK) settings.assistant.mode = "whisper";
+  // `?text_answers`: the text answers mode (change `text-answers-mode`), with `?whisper` or
+  // `?whisper_missing` for the files.
+  if (PARAMS.has("text_answers")) settings.assistant.mode = "text";
+  // Whisper hears in the Whisper mode and in the text answers mode; only the first speaks.
+  const hearsWithWhisper = () => settings.assistant.mode === "whisper" || settings.assistant.mode === "text";
   if (PARAMS.has("whisper")) {
     for (const asset of [CPU_RUNTIME, whisperCatalog[1].asset, VAD_MODEL, VOICE_ENGINE, SUPERTONIC.asset]) haveFiles.add(asset.file);
   }
@@ -471,7 +480,7 @@
       if (download.installing) return { kind: "installing", label: item.label };
       return { kind: "downloading", label: item.label, percent: download.percent };
     }
-    if (settings.assistant.mode !== "whisper") return { kind: "off" };
+    if (!hearsWithWhisper() || (part === "tts" && settings.assistant.mode === "text")) return { kind: "off" };
     const items = missingOf(part);
     if (items.length) return { kind: "needs_download", items };
     if (!inVoice) return { kind: "idle" };
@@ -555,7 +564,7 @@
         if (download.index >= download.items.length) {
           // The realtime mode loads nothing: the state goes back to `off`.
           partDownloads[part] = null;
-          if (inVoice && settings.assistant.mode === "whisper") loadWhisper();
+          if (inVoice && hearsWithWhisper()) loadWhisper();
         } else download.installing = placed.has(download.items[download.index].file);
       } else if (failNextWhisperDownload && download.percent >= 40) {
         failNextWhisperDownload = false;
@@ -668,14 +677,16 @@
     if (safeState("whisper").kind === "ready") {
       const device = whisperDeviceUsed();
       const text = device === "gpu" ? 140 : 420;
+      // The text answers mode has no voice times (change `text-answers-mode`).
+      const voice = settings.assistant.mode !== "text";
       turns.push({
         at: new Date().toLocaleTimeString(), turn: n, kind: "whisper",
-        first_speech_to_answer_ms: null, last_speech_to_answer_ms: text + 1300, answer_to_playback_ms: 180,
+        first_speech_to_answer_ms: null, last_speech_to_answer_ms: text + 1300, answer_to_playback_ms: voice ? 180 : 0,
         first_speech_to_playback_ms: null,
         whisper: {
           speech_to_text_ms: text, audio_seconds: 2.4, model: settings.whisper.model, device,
-          text_to_first_words_ms: 1300 + 10 * (n % 5), first_words_to_voice_ms: 180,
-          speech_to_voice_ms: text + 1300 + 10 * (n % 5) + 180,
+          text_to_first_words_ms: 1300 + 10 * (n % 5), first_words_to_voice_ms: voice ? 180 : 0,
+          speech_to_voice_ms: voice ? text + 1300 + 10 * (n % 5) + 180 : 0, voice,
         },
       });
       if (turns.length > 50) turns.shift();
@@ -786,8 +797,8 @@
   }
   // The `assistant.mode`, `whisper` and `tts` checks, with the app's messages.
   function validateWhisper(doc) {
-    if (!["realtime", "whisper"].includes(doc.assistant.mode)) {
-      throw `the patch is not a settings document: assistant.mode: «${doc.assistant.mode}» is not an assistant mode; use one of realtime, whisper`;
+    if (!["realtime", "whisper", "text"].includes(doc.assistant.mode)) {
+      throw `the patch is not a settings document: assistant.mode: «${doc.assistant.mode}» is not an assistant mode; use one of realtime, whisper, text`;
     }
     // Change `claude-and-opencode-engines`, with the app's messages.
     const PRODUCTS = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode" };
@@ -998,7 +1009,7 @@
         || next.session.mode !== settings.session.mode || next.assistant.mode !== settings.assistant.mode;
       const whisperChanged = JSON.stringify([next.assistant.mode, next.whisper, next.tts])
         !== JSON.stringify([settings.assistant.mode, settings.whisper, settings.tts]);
-      const reload = inVoice && next.assistant.mode === "whisper" && (next.assistant.mode !== settings.assistant.mode
+      const reload = inVoice && (next.assistant.mode === "whisper" || next.assistant.mode === "text") && (next.assistant.mode !== settings.assistant.mode
         || next.whisper.model !== settings.whisper.model || next.whisper.device !== settings.whisper.device
         || next.tts.voice !== settings.tts.voice);
       settings = next;
@@ -1318,14 +1329,16 @@
           return false;
         }
       }
-      if (settings.assistant.mode === "whisper") {
-        if (missingOf("whisper").length || missingOf("tts").length) {
+      if (hearsWithWhisper()) {
+        // The text answers mode needs no voice (change `text-answers-mode`).
+        const text = settings.assistant.mode === "text";
+        if (missingOf("whisper").length || (!text && missingOf("tts").length)) {
           for (const part of ["whisper", "tts"]) {
             if (partDownloads[part]?.failed) partDownloads[part] = null;
           }
           emitPart("whisper");
           emitPart("tts");
-          const line = `join to guild 1091401169441656933 refused: ${JOIN_NEEDS_DOWNLOADS}`;
+          const line = `join to guild 1091401169441656933 refused: ${text ? JOIN_NEEDS_WHISPER_FILES : JOIN_NEEDS_DOWNLOADS}`;
           emit("app-event", { event: "log", line });
           emit("app-log", `[2026-11-17][12:00:00][INFO][voicebro_core::runtime] ${line}`);
           return false;
@@ -1340,7 +1353,7 @@
     leave() {
       inVoice = false;
       emit("app-event", { event: "discord" });
-      if (settings.assistant.mode === "whisper") {
+      if (hearsWithWhisper()) {
         emitPart("whisper");
         emitPart("tts");
       }
@@ -1357,7 +1370,7 @@
         for (const item of missingOf(part)) haveFiles.add(item.file);
         partDownloads[part] = null;
       }
-      if (inVoice && settings.assistant.mode === "whisper") loadWhisper();
+      if (inVoice && hearsWithWhisper()) loadWhisper();
       emitPart("whisper");
       emitPart("tts");
     },
@@ -1366,7 +1379,7 @@
     },
     setCuda(on) {
       cuda = on;
-      if (inVoice && settings.assistant.mode === "whisper") loadWhisper();
+      if (inVoice && hearsWithWhisper()) loadWhisper();
     },
     whisperTurn() {
       addTurn();
