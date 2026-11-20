@@ -141,15 +141,15 @@ const SWITCHES = [
 
 const scenarios = [
   // ---- Layout
-  ["the Settings tab holds Appearance, Diagnostics and Whisper, the Config tab the bot's seven cards", async () => {
+  ["the Settings tab holds Appearance, Diagnostics, Whisper and Local voice, the Config tab the bot's six cards", async () => {
     await load();
     const r = await page(`
       const path = $("config-path");
       return { settings: titles("settings"), config: titles("config"), preview: Boolean($("config-preview")),
         pathText: path.textContent, pathInCard: Boolean(path.closest(".card")), pathTab: path.closest(".tab-panel").dataset.panel,
         pre: document.querySelectorAll('[data-panel="config"] pre').length };`);
-    expect(same(r.settings, ["Appearance", "Diagnostics", "Whisper"]), `Settings: ${r.settings}`);
-    expect(same(r.config, ["Discord and Codex", "Access", "Audio", "Assistant", "Local voice", "Codex", "Hotkey"]), `Config: ${r.config}`);
+    expect(same(r.settings, ["Appearance", "Diagnostics", "Whisper", "Local voice"]), `Settings: ${r.settings}`);
+    expect(same(r.config, ["Discord and Codex", "Access", "Audio", "Assistant", "Codex", "Hotkey"]), `Config: ${r.config}`);
     expect(!r.preview && r.pre === 0, "the settings file's contents are still on the tab");
     expect(r.pathText === "C:\\VoiceBro\\settings.json", `path ${r.pathText}`);
     expect(!r.pathInCard && r.pathTab === "config", "the path is inside a card or not on the Config tab");

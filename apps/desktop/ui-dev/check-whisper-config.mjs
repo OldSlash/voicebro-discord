@@ -120,7 +120,8 @@ async function page(body) {
     const help = (id) => $(id).closest("label, .field").querySelector(".field-help").textContent;
     const shown = (id) => { const label = $(id).closest("label, .wide"); return !label.hidden && $(id).offsetParent !== null; };
     const optionText = (id, value) => [...$(id).options].find((o) => o.value === value)?.textContent;
-    const SETTINGS = "settings-whisper";
+    const SETTINGS = "whisper";
+    const missingNote = () => ({ shown: !$("whisper-missing").hidden && $("whisper-missing").offsetParent !== null, text: $("whisper-missing-text").textContent, card: $("whisper-missing").dataset.card });
     const configLine = () => $("config-autosave-feedback").textContent;
     const settingsLine = () => $("settings-feedback").textContent;
   `;
@@ -176,13 +177,15 @@ const scenarios = [
     expect(same(r.tabs, ["Console", "Chat", "Status", "Performance", "System", "Settings", "Config"]), `tabs: ${r.tabs}`);
     expect(!r.panel, "the Whisper tab's panel is still in the page");
   }],
-  ["the cards: Config holds Access, Audio, Assistant, Local voice, Codex and Hotkey; Settings Appearance, Diagnostics and Whisper", async () => {
+  ["the cards: Config holds Access, Audio, Assistant, Codex and Hotkey; Settings Appearance, Diagnostics, Whisper and Local voice", async () => {
     await load();
     const r = await page(`return { config: titles("config"), settings: titles("settings"), ids: [card("local-voice")?.closest(".tab-panel").dataset.panel, card("whisper")?.closest(".tab-panel").dataset.panel],
+      model: $("whisper-model").closest(".tab-panel").dataset.panel, modelCard: $("whisper-model").closest(".card").dataset.card,
       path: $("config-path").textContent, pathInCard: Boolean($("config-path").closest(".card")) };`);
-    expect(same(r.config, ["Discord and Codex", "Access", "Audio", "Assistant", "Local voice", "Codex", "Hotkey"]), `Config: ${r.config}`);
-    expect(same(r.settings, ["Appearance", "Diagnostics", "Whisper"]), `Settings: ${r.settings}`);
-    expect(same(r.ids, ["config", "settings"]), `card ids: ${r.ids}`);
+    expect(same(r.config, ["Discord and Codex", "Access", "Audio", "Assistant", "Codex", "Hotkey"]), `Config: ${r.config}`);
+    expect(same(r.settings, ["Appearance", "Diagnostics", "Whisper", "Local voice"]), `Settings: ${r.settings}`);
+    expect(same(r.ids, ["settings", "settings"]), `card ids: ${r.ids}`);
+    expect(r.model === "settings" && r.modelCard === "whisper", `the Whisper model is on ${r.model}, card ${r.modelCard}`);
     expect(r.path.endsWith("settings.json") && !r.pathInCard, `the settings file's line: ${r.path}`);
   }],
 
@@ -213,8 +216,8 @@ const scenarios = [
       window.__mock.completeWhisperDownload(); await sleep(300);
       tab("config");
       await setValue("assistant-mode", "whisper");
-      const whisper = { stored: stored().assistant.mode, rec: $("recognition-engine").value, line: configLine(), dialogs: openDialogs(),
-        shown: ["whisper-model", "whisper-activation", "whisper-deactivation", "session-mode"].map(shown),
+      const whisper = { stored: stored().assistant.mode, rec: $("recognition-engine").value, line: configLine(), dialogs: openDialogs(), note: missingNote().shown,
+        shown: ["whisper-activation", "whisper-deactivation", "session-mode"].map(shown),
         hidden: ["wake-model", "activation-phrases", "deactivation-phrases", "open-models-folder"].map((id) => !shown(id)),
         phrases: [$("whisper-activation").value, $("whisper-deactivation").value],
         disabled: ["wake-model", "activation-phrases"].map((id) => $(id).disabled),
@@ -222,13 +225,14 @@ const scenarios = [
       await setValue("assistant-mode", "realtime");
       return { whisper, back: { stored: stored().assistant.mode, rec: $("recognition-engine").value,
         values: [$("activation-phrases").value, $("deactivation-phrases").value, $("wake-model").value], shown: ["wake-model", "activation-phrases"].map(shown),
-        hidden: ["whisper-model", "whisper-activation"].map((id) => !shown(id)) } };`);
+        hidden: ["whisper-activation"].map((id) => !shown(id)) } };`);
     expect(r.whisper.stored === "whisper" && r.whisper.rec === "Whisper" && r.whisper.line === "Saved: Assistant mode", `switch: ${JSON.stringify(r.whisper)}`);
     expect(r.whisper.dialogs === 0, "a dialog opened although every file is on disk");
+    expect(!r.whisper.note, "the missing-files note shows although every file is on disk");
     expect(r.whisper.shown.every(Boolean) && r.whisper.hidden.every(Boolean), `rows: ${JSON.stringify(r.whisper)}`);
     expect(same(r.whisper.phrases, ["bro", "peace out"]), `Whisper phrases: ${r.whisper.phrases}`);
     expect(!r.whisper.disabled.some(Boolean), "the Vosk rows were disabled instead of hidden");
-    expect(same(r.whisper.order, ["assistant-mode", "recognition-engine", "assistant-engine", "whisper-model", "whisper-activation", "whisper-deactivation", "session-mode", "idle-timeout", "one-speaker"]), `order: ${r.whisper.order}`);
+    expect(same(r.whisper.order, ["assistant-mode", "recognition-engine", "assistant-engine", "whisper-activation", "whisper-deactivation", "session-mode", "idle-timeout", "one-speaker"]), `order: ${r.whisper.order}`);
     expect(r.back.stored === "realtime" && r.back.rec === "Vosk", `back: ${JSON.stringify(r.back)}`);
     expect(same(r.back.values, ["alpha", "omega", "vosk-model-small-ru-0.22"]) && r.back.shown.every(Boolean) && r.back.hidden.every(Boolean), `back: ${JSON.stringify(r.back)}`);
   }],
@@ -281,42 +285,59 @@ const scenarios = [
     expect(r.base === "base (q8_0) · 82 MB · downloaded · fast; weak for Russian", `base: ${r.base}`);
     expect(r.small === "small (q8_0) · 264 MB · to download · balanced; on a CPU about 1–2 s", `small: ${r.small}`);
     expect(r.local.includes("your own model"), `local: ${r.local}`);
-    expect(r.help.includes("Settings → Whisper"), `help: ${r.help}`);
+    expect(r.help.includes("saved at once") && r.help.includes("Whisper models folder"), `help: ${r.help}`);
   }],
-  ["start in the Whisper mode with files missing: no dialog, and the notices of Assistant and Local voice list what is missing", async () => {
+  ["start in the Whisper mode with files missing: no dialog, the notices of Settings → Whisper and Local voice list what is missing, and Config → Assistant names both", async () => {
     await load("?whisper_missing");
     await sleep(1000);
-    const r = await page(`tab("config"); await sleep(200);
-      return { dialogs: openDialogs(), whisper: notice("whisper"), tts: notice("tts"), downloads: ${DOWNLOADS}, settings: !$(SETTINGS + "-download").hidden };`);
+    const r = await page(`tab("settings"); await sleep(200);
+      const notices = { whisper: notice("whisper"), tts: notice("tts") };
+      tab("config"); await sleep(200);
+      return { dialogs: openDialogs(), ...notices, note: missingNote(), downloads: ${DOWNLOADS} };`);
     expect(r.dialogs === 0, "a dialog opened because the window started");
-    expect(!r.settings, "Settings → Whisper repeats the model's notice in the Whisper mode");
-    expect(r.whisper.shown && r.whisper.button && same(r.whisper.items, MISSING.slice(0, 3)), `Assistant notice: ${JSON.stringify(r.whisper)}`);
+    expect(r.whisper.shown && r.whisper.button && same(r.whisper.items, MISSING.slice(0, 3)), `Whisper notice: ${JSON.stringify(r.whisper)}`);
     expect(r.whisper.manual.shown && same(r.whisper.manual.files, MISSING_FILES.slice(0, 3)), `by hand: ${JSON.stringify(r.whisper.manual)}`);
     expect(r.tts.shown && r.tts.button && same(r.tts.items, MISSING.slice(3)), `Local voice notice: ${JSON.stringify(r.tts)}`);
     expect(r.whisper.text.includes("Nothing is downloaded until you press Download"), r.whisper.text);
+    expect(r.note.shown && r.note.text.includes("Whisper's files for the model base (q8_0)") && r.note.text.includes("the voice Supertonic 3 F1") && r.note.card === "whisper", `note: ${JSON.stringify(r.note)}`);
     expect(r.downloads === 0, "a download started without the OK");
   }],
-  ["the Assistant card's Download fetches Whisper's files only", async () => {
+  ["Open Settings: the Settings tab shows the Whisper card unfolded with its notice in view", async () => {
+    await load("?whisper_missing&collapsed=whisper");
+    const r = await page(`
+      tab("config"); await sleep(200);
+      $("whisper-missing-open").click(); await sleep(600);
+      const panel = document.querySelector('[data-panel="settings"]');
+      const box = $("whisper-download").getBoundingClientRect(); const view = panel.getBoundingClientRect();
+      return { active: panel.classList.contains("active"), folded: collapsed("whisper"), inView: box.top >= view.top && box.bottom <= view.bottom && box.height > 0, stored: stored().ui.collapsed_cards };`);
+    expect(r.active, "the Settings tab is not shown");
+    expect(!r.folded && !r.stored.includes("whisper"), `the Whisper card stayed folded: ${JSON.stringify(r)}`);
+    expect(r.inView, "the Whisper card's notice is not in view");
+  }],
+  ["Settings → Whisper's Download fetches Whisper's files only; the Config note then names only the voice", async () => {
     await load("?whisper_missing");
     const r = await page(`
-      tab("config");
+      tab("settings");
       $("whisper-download-button").click();
       const progress = await until(() => /^(Downloading|Checking)/.test($("whisper-download-text").textContent), 3000);
       await until(() => window.__mock.whisperState().kind === "idle", 10000); await sleep(600);
+      const notices = { whisper: notice("whisper"), tts: notice("tts") };
+      tab("config"); await sleep(200);
       return { progress, calls: [calls("whisper_download").map((c) => c.args), calls("tts_download").length], states: [window.__mock.whisperState().kind, window.__mock.ttsState().kind],
-        whisper: notice("whisper"), tts: notice("tts"), label: $("whisper-model").selectedOptions[0].textContent, dialogs: openDialogs() };`);
+        ...notices, note: missingNote(), label: $("whisper-model").selectedOptions[0].textContent, dialogs: openDialogs() };`);
     expect(r.progress, "no progress under the model");
     expect(same(r.calls, [[{ model: "whisper-base-q8_0" }], 0]), `calls: ${JSON.stringify(r.calls)}`);
     expect(same(r.states, ["idle", "needs_download"]), `states: ${r.states}`);
     expect(!r.whisper.shown && r.tts.shown, `notices: ${JSON.stringify([r.whisper.shown, r.tts.shown])}`);
+    expect(r.note.shown && !r.note.text.includes("Whisper's files") && r.note.text.includes("the voice") && r.note.card === "local-voice", `note: ${JSON.stringify(r.note)}`);
     expect(r.label.includes("· downloaded") && r.dialogs === 0, `label ${r.label}, ${r.dialogs} dialogs`);
   }],
 
-  // ---- Config → Local voice (settings-ui)
+  // ---- Settings → Local voice (settings-ui)
   ["the Local voice card: its note follows the mode, and its fields and Download work in the realtime mode", async () => {
     await load();
     const r = await page(`
-      tab("config");
+      tab("settings");
       const note = $("local-voice-note").textContent;
       const before = notice("tts");
       const texts = new Set(); const watch = setInterval(() => texts.add($("tts-download-text").textContent), 30);
@@ -325,8 +346,8 @@ const scenarios = [
       clearInterval(watch); await sleep(500);
       const after = { state: window.__mock.ttsState().kind, notice: notice("tts").shown,
         label: $("tts-voice").selectedOptions[0].textContent, calls: [calls("tts_download").map((c) => c.args), calls("whisper_download").length], dialogs: openDialogs() };
-      await setValue("assistant-mode", "whisper"); await until(() => dialog.open, 2000);
-      return { note, before, texts: [...texts], after, whisperNote: $("local-voice-note").textContent };`);
+      await setValue("assistant-mode", "whisper"); await sleep(600);
+      return { note, before, texts: [...texts], after, whisperNote: $("local-voice-note").textContent, dialogs: openDialogs() };`);
     expect(r.note.includes("Not used in the realtime voice mode") && r.note.includes("Codex → Voice"), `realtime note: ${r.note}`);
     expect(r.before.shown && same(r.before.items, MISSING.slice(3)), `before: ${JSON.stringify(r.before)}`);
     expect(r.texts.some((text) => text.startsWith("Downloading the Voice engine")), `no progress: ${JSON.stringify(r.texts)}`);
@@ -334,13 +355,14 @@ const scenarios = [
     expect(same(r.after.calls, [[{ voice: "supertonic3:F1" }], 0]) && r.after.dialogs === 0, `calls: ${JSON.stringify(r.after)}`);
     // Any engine answers in the Whisper mode (change `claude-and-opencode-engines`).
     expect(r.whisperNote === "This voice reads the assistant's answers into the voice channel.", `Whisper note: ${r.whisperNote}`);
+    expect(r.dialogs === 0, "the switch to Whisper opened a dialog");
   }],
   ["a voice choice in the realtime mode saves at once and its card lists what it misses", async () => {
     await load();
     const r = await page(`
-      tab("config");
+      tab("settings");
       await setValue("tts-voice", "piper:de_DE-thorsten-medium"); await sleep(300);
-      return { stored: stored().tts.voice, dialogs: openDialogs(), line: configLine(), tts: notice("tts"), info: $("tts-voice-info").textContent, asked: calls("whisper_requirements").length };`);
+      return { stored: stored().tts.voice, dialogs: openDialogs(), line: settingsLine(), tts: notice("tts"), info: $("tts-voice-info").textContent, asked: calls("whisper_requirements").length };`);
     expect(r.stored === "piper:de_DE-thorsten-medium" && r.dialogs === 0 && r.line === "Saved: Voice", JSON.stringify(r));
     expect(same(r.tts.items, [
       "Voice engine (sherpa-onnx 2.0.1) — 8 MB from github.com",
@@ -353,7 +375,7 @@ const scenarios = [
   ["Preview plays the sample in the window only", async () => {
     await load("?whisper");
     const r = await page(`
-      tab("config");
+      tab("settings");
       await setValue("tts-speed", "1.5");
       const since = window.__mock.calls.length;
       $("tts-preview").click();
@@ -368,7 +390,7 @@ const scenarios = [
   ["Preview with a voice not on this PC says why", async () => {
     await load();
     const r = await page(`
-      tab("config");
+      tab("settings");
       $("tts-preview").click(); await sleep(500);
       return { text: $("tts-preview-state").textContent, error: $("tts-preview-state").classList.contains("is-error"), audio: $("tts-preview-audio").hidden };`);
     expect(r.text.startsWith("Preview failed: supertonic3:F1 needs a download first") && r.error && r.audio, JSON.stringify(r));
@@ -397,23 +419,23 @@ const scenarios = [
     await load();
     const r = await page(`
       tab("settings");
-      const before = { ...notice(SETTINGS), total: $("settings-whisper-download-total").textContent, downloads: ${DOWNLOADS} };
-      $("settings-whisper-download-button").click();
-      const progress = await until(() => /^(Downloading|Checking)/.test($("settings-whisper-download-text").textContent), 3000);
-      await until(() => $("settings-whisper-download").hidden, 10000); await sleep(400);
+      const before = { ...notice(SETTINGS), total: $("whisper-download-total").textContent, downloads: ${DOWNLOADS} };
+      $("whisper-download-button").click();
+      const progress = await until(() => /^(Downloading|Checking)/.test($("whisper-download-text").textContent), 3000);
+      await until(() => $("whisper-download").hidden, 10000); await sleep(400);
       const after = { shown: notice(SETTINGS).shown, mode: stored().assistant.mode, state: window.__mock.whisperState().kind,
         now: $("whisper-now-recognition").textContent, calls: [calls("whisper_download").map((c) => c.args), calls("tts_download").length],
         files: window.__mock.haveFiles(), voice: notice("tts") };
-      tab("config"); await setValue("assistant-mode", "whisper");
-      await until(() => dialog.open, 3000);
-      return { before, progress, after, switched: { open: dialog.open, items: items(), whisperNotice: notice("whisper").shown } };`);
-    expect(r.before.shown && r.before.text.startsWith("The Whisper mode needs these files for base (q8_0), the model chosen for it (choose another in Config → Assistant once the mode is Whisper)."), `text: ${r.before.text}`);
+      tab("config"); await setValue("assistant-mode", "whisper"); await sleep(1300);
+      return { before, progress, after, switched: { dialogs: openDialogs(), note: missingNote() } };`);
+    expect(r.before.shown && r.before.text.startsWith("Whisper needs these files for base (q8_0) to write down what is said on this PC"), `text: ${r.before.text}`);
     expect(same(r.before.items, MISSING.slice(0, 3)) && r.before.total === "92 MB in total." && r.before.button, `items: ${JSON.stringify(r.before)}`);
     expect(r.before.manual.shown && same(r.before.manual.files, MISSING_FILES.slice(0, 3)) && r.before.downloads === 0, `by hand: ${JSON.stringify(r.before.manual)}`);
     expect(r.progress && !r.after.shown, `the notice did not go: ${JSON.stringify(r.after)}`);
     expect(r.after.mode === "realtime" && r.after.state === "off" && r.after.now.startsWith("Off: nothing is loaded"), `after: ${JSON.stringify(r.after)}`);
     expect(same(r.after.calls, [[{ model: "whisper-base-q8_0" }], 0]) && MISSING_FILES.slice(0, 3).every((file) => r.after.files.includes(file)), `calls: ${JSON.stringify(r.after)}`);
-    expect(same(r.switched.items, MISSING.slice(3)) && !r.switched.whisperNotice, `the later switch asked for Whisper's files again: ${JSON.stringify(r.switched)}`);
+    expect(r.switched.dialogs === 0, "the switch to Whisper opened a dialog");
+    expect(r.switched.note.shown && !r.switched.note.text.includes("Whisper's files") && r.switched.note.text.includes("the voice"), `the later switch asked for Whisper's files again: ${JSON.stringify(r.switched)}`);
   }],
   ["NVIDIA GPU chosen with only the CPU runtime: the card shows the CUDA runtime, 685 MB from github.com, and nothing is fetched until Download", async () => {
     await load();
@@ -423,9 +445,9 @@ const scenarios = [
       const cpu = notice(SETTINGS).shown;
       await setValue("whisper-device", "gpu"); await sleep(300);
       const gpu = { stored: stored().whisper.device, dialogs: openDialogs(), cuda: notice(SETTINGS), downloads: ${DOWNLOADS} };
-      $("settings-whisper-download-button").click();
-      const progress = await until(() => $("settings-whisper-download-text").textContent.startsWith("Downloading the Whisper runtime (NVIDIA GPU"), 3000);
-      await until(() => $("settings-whisper-download").hidden, 10000); await sleep(300);
+      $("whisper-download-button").click();
+      const progress = await until(() => $("whisper-download-text").textContent.startsWith("Downloading the Whisper runtime (NVIDIA GPU"), 3000);
+      await until(() => $("whisper-download").hidden, 10000); await sleep(300);
       return { cpu, gpu, progress, after: { shown: notice(SETTINGS).shown, state: window.__mock.whisperState().kind, calls: calls("whisper_download").map((c) => c.args),
         missing: window.__mock.whisperRequirements("whisper-base-q8_0", "gpu", "supertonic3:F1").length } };`);
     expect(!r.cpu, "a notice shows while nothing is missing");
@@ -435,25 +457,26 @@ const scenarios = [
     expect(r.progress && !r.after.shown && r.after.state === "off" && r.after.missing === 0, `after Download: ${JSON.stringify(r.after)}`);
     expect(same(r.after.calls, [{ model: "whisper-base-q8_0" }]), `calls: ${JSON.stringify(r.after.calls)}`);
   }],
-  ["in the Whisper mode the card shows only the CUDA runtime under the device, and the model's notice is in Config → Assistant", async () => {
+  ["in the Whisper mode the GPU's runtime is in the Whisper card's one notice, Config → Assistant names Whisper's files, and no dialog opens", async () => {
     await load();
     const r = await page(`
       window.__mock.completeWhisperDownload(); await sleep(300);
       tab("settings"); await setValue("whisper-device", "gpu");
-      const realtime = notice(SETTINGS).text;
-      tab("config"); await setValue("assistant-mode", "whisper");
-      await until(() => dialog.open, 3000); const asked = items();
-      $("wake-install-secondary").click(); await sleep(300);
-      const assistant = notice("whisper");
+      const realtime = notice(SETTINGS);
+      tab("config"); await setValue("assistant-mode", "whisper"); await sleep(1300);
+      const assistant = { dialogs: openDialogs(), note: missingNote() };
       tab("settings"); await sleep(200);
-      const cuda = notice(SETTINGS);
-      await setValue("whisper-device", "cpu"); await sleep(300);
-      return { realtime, asked, assistant, cuda, cpu: notice(SETTINGS).shown, notices: document.querySelectorAll('[data-panel="settings"] .download-notice:not([hidden])').length };`);
-    expect(r.realtime.startsWith("The Whisper mode needs these files for base (q8_0)"), `realtime: ${r.realtime}`);
-    expect(same(r.asked, [CUDA]), `dialog: ${JSON.stringify(r.asked)}`);
-    expect(r.assistant.shown && same(r.assistant.items, [CUDA]), `Assistant notice: ${JSON.stringify(r.assistant)}`);
-    expect(r.cuda.shown && same(r.cuda.items, [CUDA]) && r.cuda.text.startsWith("NVIDIA GPU needs Whisper's CUDA runtime"), `Settings notice: ${JSON.stringify(r.cuda)}`);
-    expect(!r.cpu && r.notices === 0, `with the CPU: ${JSON.stringify([r.cpu, r.notices])}`);
+      const cuda = { ...notice(SETTINGS), notices: document.querySelectorAll('[data-panel="settings"] .download-notice:not([hidden])').length };
+      await setValue("whisper-device", "cpu"); await sleep(1300);
+      const cpu = notice(SETTINGS).shown;
+      tab("config"); await sleep(200);
+      return { realtime, assistant, cuda, cpu, noteAfter: missingNote().shown, notices: document.querySelectorAll('[data-panel="settings"] .download-notice:not([hidden])').length };`);
+    expect(realtimeOk(r.realtime), `realtime: ${JSON.stringify(r.realtime)}`);
+    expect(r.assistant.dialogs === 0, "the switch opened a dialog");
+    expect(r.assistant.note.shown && r.assistant.note.text.includes("Whisper's files for the model base (q8_0)") && !r.assistant.note.text.includes("the voice"), `note: ${JSON.stringify(r.assistant.note)}`);
+    expect(r.cuda.shown && same(r.cuda.items, [CUDA]) && r.cuda.notices === 1, `Settings notice: ${JSON.stringify(r.cuda)}`);
+    expect(!r.cpu && !r.noteAfter && r.notices === 0, `with the CPU: ${JSON.stringify([r.cpu, r.noteAfter, r.notices])}`);
+    function realtimeOk(n) { return n.shown && same(n.items, [CUDA]); }
   }],
   ["GPU fallback: the card's line says GPU requested, CPU used, with the reason, and the last answer's four timings", async () => {
     await load("?gpu_fallback");
@@ -496,7 +519,7 @@ const scenarios = [
     expect(r.joined === false && r.voice === "0", `the bot joined: ${JSON.stringify([r.joined, r.voice])}`);
     expect(r.opened && r.subject === "whisper" && r.reason === "join", `dialog: ${JSON.stringify(r)}`);
     expect(same(r.items, MISSING) && r.total === "228 MB in total.", `items: ${JSON.stringify([r.items, r.total])}`);
-    expect(r.note.includes("Config → Assistant") && r.note.includes("Config → Local voice"), `note: ${r.note}`);
+    expect(r.note.includes("Settings → Whisper") && r.note.includes("Settings → Local voice") && r.note.includes("Run /join again"), `note: ${r.note}`);
     expect(r.secondary === "Not now" && r.focus === "wake-install-secondary", `buttons: ${r.secondary}, focus ${r.focus}`);
     expect(r.manual.shown && same(r.manual.files, MISSING_FILES) && r.downloads === 0, JSON.stringify(r.manual));
     expect(!r.whisperTab, "a text still names the Whisper tab");
@@ -507,7 +530,7 @@ const scenarios = [
       window.__mock.join(); await until(() => dialog.open, 3000);
       $("wake-install-secondary").click(); await sleep(400);
       const notNow = { open: dialog.open, notices: [notice("whisper").shown, notice("tts").shown] };
-      tab("config"); await sleep(200);
+      tab("settings"); await sleep(200);
       const shownOnTab = [notice("whisper").shown, notice("tts").shown];
       window.__mock.join(); await until(() => dialog.open, 3000);
       return { notNow, shownOnTab, again: dialog.open };`);
@@ -526,7 +549,7 @@ const scenarios = [
       const secondary = $("wake-install-secondary").textContent;
       const closed = await until(() => !dialog.open, 12000);
       clearInterval(watch); await sleep(600);
-      tab("config"); await sleep(200);
+      tab("settings"); await sleep(200);
       return { secondary, closed, texts: [...texts], calls: [calls("whisper_download").map((c) => c.args), calls("tts_download").map((c) => c.args)],
         states: [window.__mock.whisperState().kind, window.__mock.ttsState().kind], notices: [notice("whisper").shown, notice("tts").shown],
         labels: [$("whisper-model").selectedOptions[0].textContent, $("tts-voice").selectedOptions[0].textContent] };`);
@@ -559,66 +582,55 @@ const scenarios = [
     const r = await page(`return { open: dialog.open, state: window.__mock.whisperState().kind };`);
     expect(!r.open && r.state === "needs_download", JSON.stringify(r));
   }],
-  ["switching to Whisper with files missing: saved, then the dialog lists both parts' files", async () => {
+  ["switching to Whisper with files missing: saved, no dialog, and Config → Assistant names Whisper's files and the voice", async () => {
     await load();
     const r = await page(`
       tab("config");
-      await setValue("assistant-mode", "whisper");
-      const opened = await until(() => dialog.open, 3000);
-      return { stored: stored().assistant.mode, opened, reason: dialog.dataset.reason, items: items(), total: $("wake-install-total").textContent };`);
-    expect(r.stored === "whisper" && r.opened && r.reason === "mode", JSON.stringify(r));
-    expect(same(r.items, MISSING) && r.total === "228 MB in total.", `items: ${JSON.stringify(r.items)}`);
+      await setValue("assistant-mode", "whisper"); await sleep(1300);
+      return { stored: stored().assistant.mode, dialogs: openDialogs(), note: missingNote(), downloads: ${DOWNLOADS} };`);
+    expect(r.stored === "whisper" && r.dialogs === 0, JSON.stringify(r));
+    expect(r.note.shown && r.note.text.includes("Whisper's files for the model base (q8_0)") && r.note.text.includes("the voice Supertonic 3 F1") && r.note.text.includes("/join is refused"), `note: ${JSON.stringify(r.note)}`);
+    expect(r.downloads === 0, "a download started without the OK");
   }],
-  ["a model choice in the Whisper mode asks first; Cancel keeps the stored model", async () => {
+  ["a model choice in the Whisper mode saves at once and the Whisper card lists its file", async () => {
     await load("?whisper");
     const r = await page(`
-      tab("config");
-      await setValue("whisper-model", "whisper-small-q8_0");
-      const asked = { open: dialog.open, reason: dialog.dataset.reason, items: items(), total: $("wake-install-total").textContent, note: $("wake-install-note").textContent,
-        stored: stored().whisper.model, saves: calls("save_settings").length, downloads: ${DOWNLOADS} };
-      $("wake-install-secondary").click(); await sleep(400);
-      return { asked, open: dialog.open, value: $("whisper-model").value, stored: stored().whisper.model };`);
-    expect(r.asked.open && r.asked.reason === "choice", `dialog: ${JSON.stringify(r.asked)}`);
-    expect(same(r.asked.items, ["Whisper small (q8_0) model — 264 MB from huggingface.co"]) && r.asked.total === "264 MB in total.", JSON.stringify(r.asked));
-    expect(r.asked.note.includes("Cancel keeps base (q8_0)") && r.asked.stored === "whisper-base-q8_0" && r.asked.saves === 0 && r.asked.downloads === 0, JSON.stringify(r.asked));
-    expect(!r.open && r.value === "whisper-base-q8_0" && r.stored === "whisper-base-q8_0", `Cancel: ${JSON.stringify(r)}`);
+      tab("settings");
+      await setValue("whisper-model", "whisper-small-q8_0"); await sleep(1300);
+      return { dialogs: openDialogs(), stored: stored().whisper.model, line: settingsLine(), notice: notice(SETTINGS), total: $("whisper-download-total").textContent, downloads: ${DOWNLOADS} };`);
+    expect(r.dialogs === 0, "a dialog opened at the choice");
+    expect(r.stored === "whisper-small-q8_0" && r.line === "Saved: Whisper model", `saved: ${JSON.stringify([r.stored, r.line])}`);
+    expect(r.notice.shown && same(r.notice.items, ["Whisper small (q8_0) model — 264 MB from huggingface.co"]) && r.total === "" && r.downloads === 0, JSON.stringify(r));
   }],
-  ["choice Download: saved first, then downloaded, closed when done", async () => {
+  ["the Whisper card's Download fetches the picked model", async () => {
     await load("?whisper");
     const r = await page(`
-      tab("config");
-      await setValue("whisper-model", "whisper-small-q8_0");
-      $("wake-install-primary").click();
-      const closed = await until(() => !dialog.open, 12000);
-      const order = window.__mock.calls.filter((c) => ["save_settings", "whisper_download"].includes(c.name))
-        .map((c) => c.name + ":" + (c.args.model || c.args.patch?.whisper?.model || ""));
-      return { closed, order, stored: stored().whisper.model, state: window.__mock.whisperState().kind };`);
-    const save = r.order.indexOf("save_settings:whisper-small-q8_0");
-    const download = r.order.indexOf("whisper_download:whisper-small-q8_0");
-    expect(save >= 0 && download > save, `order: ${JSON.stringify(r.order)}`);
-    expect(r.closed && r.stored === "whisper-small-q8_0" && r.state === "idle", JSON.stringify(r));
+      tab("settings");
+      await setValue("whisper-model", "whisper-small-q8_0"); await sleep(1300);
+      $("whisper-download-button").click();
+      await until(() => $("whisper-download").hidden, 12000); await sleep(400);
+      return { dialogs: openDialogs(), calls: calls("whisper_download").map((c) => c.args), stored: stored().whisper.model, state: window.__mock.whisperState().kind };`);
+    expect(same(r.calls, [{ model: "whisper-small-q8_0" }]) && r.dialogs === 0, JSON.stringify(r));
+    expect(r.stored === "whisper-small-q8_0" && r.state === "idle", JSON.stringify(r));
   }],
-  ["a device choice in the Whisper mode asks for the GPU runtime; a first Piper voice for the phonemizer and the voice", async () => {
+  ["a device or voice choice in the Whisper mode saves at once; the cards list the GPU runtime, the phonemizer and the voice", async () => {
     await load("?whisper");
-    const gpu = await page(`
-      tab("settings"); await setValue("whisper-device", "gpu");
-      const r = { open: dialog.open, items: items(), text: $("wake-install-text").textContent, stored: stored().whisper.device };
-      $("wake-install-secondary").click(); await sleep(300);
-      return { ...r, value: $("whisper-device").value };`);
-    expect(gpu.open && same(gpu.items, [CUDA]) && gpu.text.includes("NVIDIA GPU") && gpu.stored === "cpu" && gpu.value === "cpu", JSON.stringify(gpu));
-    const voice = await page(`
-      tab("config"); await setValue("tts-voice", "piper:de_DE-thorsten-medium");
-      return { open: dialog.open, items: items(), stored: stored().tts.voice };`);
-    expect(voice.open && same(voice.items, [
+    const r = await page(`
+      tab("settings"); await setValue("whisper-device", "gpu"); await sleep(1300);
+      const gpu = { dialogs: openDialogs(), stored: stored().whisper.device, notice: notice(SETTINGS) };
+      await setValue("tts-voice", "piper:de_DE-thorsten-medium"); await sleep(1300);
+      return { gpu, voice: { dialogs: openDialogs(), stored: stored().tts.voice, notice: notice("tts") } };`);
+    expect(r.gpu.dialogs === 0 && r.gpu.stored === "gpu" && same(r.gpu.notice.items, [CUDA]), JSON.stringify(r.gpu));
+    expect(r.voice.dialogs === 0 && r.voice.stored === "piper:de_DE-thorsten-medium" && same(r.voice.notice.items, [
       "Phonemizer for Piper and Kokoro (piper-phonemize 1.5.9, GPL-3.0) — 0.4 MB from github.com",
       "Piper voice de_DE-thorsten-medium — 67 MB from github.com",
-    ]) && voice.stored === "supertonic3:F1", JSON.stringify(voice));
+    ]), JSON.stringify(r.voice));
   }],
   ["in the realtime mode no choice opens the dialog: each saves at once", async () => {
     await load();
     const r = await page(`
       tab("settings"); await setValue("whisper-device", "gpu");
-      tab("config"); await setValue("tts-voice", "kokoro-en:af_bella");
+      await setValue("tts-voice", "kokoro-en:af_bella");
       return { dialogs: openDialogs(), stored: [stored().whisper.device, stored().tts.voice], asked: calls("whisper_requirements").length, downloads: ${DOWNLOADS} };`);
     expect(r.dialogs === 0 && same(r.stored, ["gpu", "kokoro-en:af_bella"]) && r.asked === 0 && r.downloads === 0, JSON.stringify(r));
   }],
@@ -626,7 +638,7 @@ const scenarios = [
   // ---- Folding cards and tabs (settings-ui, app-window)
   ["Local voice and Settings → Whisper fold and come back folded; the removed tab's card ids are harmless", async () => {
     await load();
-    const list = await page(`tab("config"); await toggle("local-voice"); tab("settings"); await toggle("whisper"); return stored().ui.collapsed_cards;`);
+    const list = await page(`tab("settings"); await toggle("local-voice"); await toggle("whisper"); return stored().ui.collapsed_cards;`);
     expect(same(list, ["whisper", "local-voice"]), `stored ${JSON.stringify(list)}`);
     await load("?collapsed=whisper-voice,whisper-mode,local-voice,whisper");
     const r = await page(`

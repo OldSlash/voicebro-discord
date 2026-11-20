@@ -98,6 +98,7 @@ async function page(body) {
     const calls = (name) => window.__mock.calls.filter((c) => c.name === name);
     const manual = (id) => ({ shown: !$(id).hidden, files: [...$(id).querySelectorAll("code")].map((c) => c.textContent), links: [...$(id).querySelectorAll("a")].map((a) => [a.getAttribute("href"), a.target, a.rel]) });
     const joinAndWait = async () => { window.__mock.join(); return until(() => dialog.open, 3000); };
+    const noticeItems = () => $("wake-download").hidden ? [] : [...document.querySelectorAll("#wake-download-items li")].map((li) => li.textContent);
   `;
   const result = await send("Runtime.evaluate", {
     expression: `(async () => { ${helpers} ${body} })()`,
@@ -145,12 +146,14 @@ const scenarios = [
     expect(same(r.manual.links, ENGLISH_LINKS), JSON.stringify(r.manual.links));
     expect(r.downloads === 0, "a download started without the OK");
   }],
-  ["the bot joins with files missing: the dialog lists the library and the English model", async () => {
+  ["the bot joins with files missing: the join is refused and the dialog lists the library and the English model", async () => {
     await load("?fresh");
-    const r = await page(`const opened = await joinAndWait(); return { opened, reason: dialog.dataset.reason, items: items(), title: $("wake-install-title").textContent, text: $("wake-install-text").textContent, secondary: $("wake-install-secondary").textContent, downloads: calls("wake_download").length, dialogs: openDialogs(), voice: $("footer-voice").textContent, manual: manual("wake-install-manual") };`);
-    expect(r.opened, "no dialog after the join");
+    const r = await page(`const joined = window.__mock.join(); const opened = await until(() => dialog.open, 3000); await sleep(1200); return { joined, opened, reason: dialog.dataset.reason, items: items(), title: $("wake-install-title").textContent, text: $("wake-install-text").textContent, secondary: $("wake-install-secondary").textContent, note: $("wake-install-note").textContent, downloads: calls("wake_download").length, dialogs: openDialogs(), voice: $("footer-voice").textContent, manual: manual("wake-install-manual"), log: document.getElementById("console-output")?.textContent || "" };`);
+    expect(r.joined === false, "the join was not refused");
+    expect(r.opened, "no dialog after the refused join");
     expect(r.reason === "join", r.reason);
-    expect(r.voice === "1", `voice count ${r.voice}`);
+    expect(r.voice === "0", `the bot is in a channel: voice count ${r.voice}`);
+    expect(r.note.includes("Run /join again"), r.note);
     expect(r.dialogs === 1, `${r.dialogs} dialogs open`);
     expect(r.title === "The wake word is not installed", r.title);
     expect(r.text.includes("Vosk small English (US) 0.15"), r.text);
@@ -185,44 +188,46 @@ const scenarios = [
     expect(r.downloads === 0, "Enter agreed to the download");
     expect(!r.open, "Enter on Not now left the dialog open");
   }],
-  ["every join asks again: Not now, leave, join", async () => {
+  ["every join asks again: Not now, join", async () => {
     await load("?fresh");
-    const r = await page(`await joinAndWait(); $("wake-install-secondary").click(); await sleep(300); window.__mock.leave(); await sleep(1300); const closedBetween = !dialog.open; const opened = await joinAndWait(); return { closedBetween, opened, secondary: $("wake-install-secondary").textContent };`);
-    expect(r.closedBetween, "the dialog opened at the leave");
+    const r = await page(`await joinAndWait(); $("wake-install-secondary").click(); await sleep(1300); const closedBetween = !dialog.open; const joined = window.__mock.join(); const opened = await until(() => dialog.open, 3000); return { closedBetween, joined, opened, secondary: $("wake-install-secondary").textContent };`);
+    expect(r.closedBetween, "the dialog opened again by itself");
+    expect(r.joined === false, "the second join was not refused");
     expect(r.opened, "no dialog at the second join");
     expect(r.secondary === "Not now", r.secondary);
   }],
-  ["a reload with the bot in a voice channel: the dialog opens as a join", async () => {
+  ["a reload with the bot in a voice channel: no dialog", async () => {
     await load("?fresh&joined");
-    const r = await page(`await until(() => dialog.open, 3000); return { open: dialog.open, reason: dialog.dataset.reason, dialogs: openDialogs() };`);
-    expect(r.open, "no dialog with the bot in a channel");
+    const r = await page(`await sleep(2500); return { open: dialog.open, dialogs: openDialogs(), notice: !$("wake-download").hidden };`);
+    expect(!r.open && r.dialogs === 0, "a dialog opened without a refused join");
+    expect(r.notice, "no notice in the Assistant card");
+  }],
+  ["one dialog at most: a join while it is open opens no second one", async () => {
+    await load("?fresh");
+    const r = await page(`await joinAndWait(); const reason = dialog.dataset.reason; window.__mock.join(); await sleep(1300); return { dialogs: openDialogs(), reason };`);
     expect(r.reason === "join", r.reason);
     expect(r.dialogs === 1, `${r.dialogs} dialogs open`);
   }],
-  ["one dialog at most: a join while it is open opens no second one", async () => {
+  ["always listening: nothing at start, the bot joins without Vosk", async () => {
     await load("?fresh&always");
-    const r = await page(`await choose("session-mode", "wake_word"); await until(() => dialog.open, 3000); const reason = dialog.dataset.reason; window.__mock.join(); await sleep(700); return { dialogs: openDialogs(), reason };`);
-    expect(r.reason === "mode", r.reason);
-    expect(r.dialogs === 1, `${r.dialogs} dialogs open`);
-  }],
-  ["always listening: nothing at start, nothing at a join", async () => {
-    await load("?fresh&always");
-    const r = await page(`const atStart = dialog.open; window.__mock.join(); await sleep(700); return { atStart, afterJoin: dialog.open, state: window.__mock.wakeState().kind };`);
+    const r = await page(`const atStart = dialog.open; const joined = window.__mock.join(); await sleep(1300); return { atStart, joined, afterJoin: dialog.open, state: window.__mock.wakeState().kind, voice: $("footer-voice").textContent };`);
     expect(!r.atStart, "a dialog at start in always mode");
+    expect(r.joined === true && r.voice === "1", `joined ${r.joined}, voice ${r.voice}`);
     expect(!r.afterJoin, "a dialog at a join in always mode");
     expect(r.state === "off", r.state);
   }],
-  ["switched to wake word: the setting is saved and the dialog opens", async () => {
+  ["switched to wake word: the setting is saved, no dialog, the notice lists the files", async () => {
     await load("?fresh&always");
-    const r = await page(`await choose("session-mode", "wake_word"); await until(() => dialog.open, 3000); return { open: dialog.open, mode: window.__mock.settings().session.mode, items: items().length };`);
+    const r = await page(`await choose("session-mode", "wake_word"); await sleep(1500); return { open: dialog.open, mode: window.__mock.settings().session.mode, notice: noticeItems() };`);
     expect(r.mode === "wake_word", `mode ${r.mode}`);
-    expect(r.open, "no dialog after the switch");
-    expect(r.items === 2, `${r.items} items`);
+    expect(!r.open, "a dialog opened at the switch");
+    expect(r.notice.length === 2, `notice: ${JSON.stringify(r.notice)}`);
   }],
-  ["files on disk: no dialog at start or at a join", async () => {
+  ["files on disk: no dialog at start or at a join, and the bot joins", async () => {
     await load("");
-    const r = await page(`const atStart = dialog.open; window.__mock.leave(); await sleep(1300); window.__mock.join(); await sleep(1300); return { atStart, afterJoin: dialog.open, state: window.__mock.wakeState().kind };`);
+    const r = await page(`const atStart = dialog.open; window.__mock.leave(); await sleep(1300); const joined = window.__mock.join(); await sleep(1300); return { atStart, joined, afterJoin: dialog.open, state: window.__mock.wakeState().kind };`);
     expect(!r.atStart, "a dialog at start although the files are on disk");
+    expect(r.joined === true, "the join was refused although the files are on disk");
     expect(!r.afterJoin, "a dialog at a join although the files are on disk");
     expect(r.state === "ready", r.state);
   }],
@@ -338,48 +343,45 @@ const scenarios = [
     expect(r.extra === 0, "the hidden Download asked for a download");
     expect(!r.error, `the dialog shows: ${r.error}`);
   }],
-  ["choice: a model not on disk asks first and lists only what is missing", async () => {
+  ["choice: a model not on disk is saved at once, no dialog, the notice lists only what is missing", async () => {
     await load("?fresh");
     const r = await page(`
       window.__mock.setInstalled(["vosk-model-small-en-us-0.15"], true); await sleep(400);
-      await choose("wake-model", "vosk-model-small-de-0.15");
-      return { open: dialog.open, reason: dialog.dataset.reason, items: items(), manual: manual("wake-install-manual"), focus: document.activeElement?.id, secondary: $("wake-install-secondary").textContent, note: $("wake-install-note").textContent, stored: window.__mock.settings().wake.model };`);
-    expect(r.open, "no dialog for the German model");
-    expect(r.reason === "choice", r.reason);
-    expect(JSON.stringify(r.items) === JSON.stringify(["Vosk German model — 46 MB from alphacephei.com"]), JSON.stringify(r.items));
+      await choose("wake-model", "vosk-model-small-de-0.15"); await sleep(1300);
+      return { open: dialog.open, dialogs: openDialogs(), notice: noticeItems(), manual: manual("wake-download-manual"), stored: window.__mock.settings().wake.model, downloads: calls("wake_download").length };`);
+    expect(!r.open && r.dialogs === 0, "a dialog opened for the German model");
+    expect(r.stored === "vosk-model-small-de-0.15", `stored ${r.stored}`);
+    expect(same(r.notice, ["Vosk German model — 46 MB from alphacephei.com"]), JSON.stringify(r.notice));
     expect(same(r.manual.files, ["vosk-model-small-de-0.15.zip"]) && same(r.manual.links, [[MODELS_PAGE, "_blank", "noopener"]]), JSON.stringify(r.manual));
-    expect(r.focus === "wake-install-secondary", `the focus starts on ${r.focus}`);
-    expect(r.secondary === "Cancel", r.secondary);
-    expect(r.note.includes("Cancel keeps Vosk small English (US) 0.15"), r.note);
-    expect(r.stored === "vosk-model-small-en-us-0.15", `saved before the OK: ${r.stored}`);
+    expect(r.downloads === 0, "a download started without the OK");
   }],
-  ["choice Cancel: the list goes back, nothing is saved or downloaded", async () => {
+  ["choice Cancel: picking the installed model again removes the notice, nothing is downloaded", async () => {
     await load("?fresh");
     const r = await page(`
       window.__mock.setInstalled(["vosk-model-small-en-us-0.15"], true); await sleep(400);
-      const saves = calls("save_settings").length;
-      await choose("wake-model", "vosk-model-small-de-0.15");
-      $("wake-install-secondary").click(); await sleep(400);
-      return { open: dialog.open, select: $("wake-model").value, stored: window.__mock.settings().wake.model, saves: calls("save_settings").length - saves, downloads: calls("wake_download").length };`);
-    expect(!r.open, "the dialog stayed open");
-    expect(r.select === "vosk-model-small-en-us-0.15", `list on ${r.select}`);
-    expect(r.stored === "vosk-model-small-en-us-0.15" && r.saves === 0, `stored ${r.stored}, ${r.saves} saves`);
+      await choose("wake-model", "vosk-model-small-de-0.15"); await sleep(1300);
+      const before = noticeItems().length;
+      await choose("wake-model", "vosk-model-small-en-us-0.15"); await sleep(1300);
+      return { before, after: noticeItems().length, open: dialog.open, stored: window.__mock.settings().wake.model, downloads: calls("wake_download").length };`);
+    expect(r.before === 1, `notice before: ${r.before}`);
+    expect(r.after === 0, `notice after: ${r.after}`);
+    expect(!r.open, "a dialog opened");
+    expect(r.stored === "vosk-model-small-en-us-0.15", `stored ${r.stored}`);
     expect(r.downloads === 0, "a download started");
   }],
-  ["choice Download: saves the model, then downloads it", async () => {
+  ["choice Download: the notice's Download downloads the picked model", async () => {
     await load("?fresh");
     const r = await page(`
       window.__mock.setInstalled(["vosk-model-small-en-us-0.15"], true); await sleep(400);
-      await choose("wake-model", "vosk-model-small-de-0.15");
-      $("wake-install-primary").click();
-      const closed = await until(() => !dialog.open, 10000);
-      const order = window.__mock.calls.filter((c) => c.name === "save_settings" || c.name === "wake_download").map((c) => c.name + ":" + (c.args.model || c.args.patch?.wake?.model || ""));
-      return { closed, stored: window.__mock.settings().wake.model, order, state: window.__mock.wakeState().kind };`);
-    expect(r.stored === "vosk-model-small-de-0.15", `stored ${r.stored}`);
-    const save = r.order.indexOf("save_settings:vosk-model-small-de-0.15");
-    const download = r.order.indexOf("wake_download:vosk-model-small-de-0.15");
-    expect(save >= 0 && download > save, JSON.stringify(r.order));
-    expect(r.closed && r.state === "ready", `closed ${r.closed}, state ${r.state}`);
+      await choose("wake-model", "vosk-model-small-de-0.15"); await sleep(1300);
+      $("wake-download-button").click();
+      const ready = await until(() => window.__mock.wakeState().kind === "ready", 10000);
+      await sleep(1300);
+      return { ready, open: dialog.open, notice: !$("wake-download").hidden, download: calls("wake_download")[0]?.args };`);
+    expect(r.download?.model === "vosk-model-small-de-0.15", JSON.stringify(r.download));
+    expect(r.ready, "the German model was not installed");
+    expect(!r.open, "a dialog opened");
+    expect(!r.notice, "the notice stayed after the download");
   }],
   ["choice of an installed model: saved at once, no dialog", async () => {
     await load("?fresh");
@@ -390,13 +392,23 @@ const scenarios = [
     expect(!r.open, "a dialog for an installed model");
     expect(r.stored === "vosk-model-small-ru-0.22", `stored ${r.stored}`);
   }],
-  ["choice of a local model without the library: only the library", async () => {
+  ["choice of a local model without the library: saved, the notice lists only the library", async () => {
     await load("?fresh");
     const r = await page(`
-      await choose("wake-model", "local:vosk-model-small-ca-0.4");
-      return { open: dialog.open, items: items(), text: $("wake-install-text").textContent };`);
-    expect(r.open, "no dialog");
-    expect(JSON.stringify(r.items) === JSON.stringify(["Vosk library — 15 MB from github.com"]), JSON.stringify(r.items));
+      await choose("wake-model", "local:vosk-model-small-ca-0.4"); await sleep(1300);
+      return { open: dialog.open, notice: noticeItems(), stored: window.__mock.settings().wake.model };`);
+    expect(!r.open, "a dialog opened");
+    expect(r.stored === "local:vosk-model-small-ca-0.4", `stored ${r.stored}`);
+    expect(same(r.notice, ["Vosk library — 15 MB from github.com"]), JSON.stringify(r.notice));
+  }],
+  ["a refused join for a local model without the library: the dialog lists only the library", async () => {
+    await load("?fresh");
+    const r = await page(`
+      await choose("wake-model", "local:vosk-model-small-ca-0.4"); await sleep(600);
+      const joined = window.__mock.join(); await until(() => dialog.open, 3000);
+      return { joined, open: dialog.open, items: items(), text: $("wake-install-text").textContent };`);
+    expect(r.joined === false && r.open, `joined ${r.joined}, open ${r.open}`);
+    expect(same(r.items, ["Vosk library — 15 MB from github.com"]), JSON.stringify(r.items));
     expect(r.text.includes("vosk-model-small-ca-0.4"), r.text);
   }],
 ];

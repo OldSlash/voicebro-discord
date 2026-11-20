@@ -48,7 +48,7 @@ A change of `assistant.mode` SHALL take effect at once:
 
 #### Scenario: Files missing at the switch
 - **WHEN** the user switches to Whisper and the model or the voice is not downloaded
-- **THEN** the window opens the install dialog for the Whisper files, and nothing is downloaded until Download is pressed
+- **THEN** the mode is saved, no dialog opens, Config → Assistant says what is not downloaded with a button to Settings, and nothing is downloaded until Download is pressed there
 
 ### Requirement: Phrases in Whisper's text
 In Whisper mode the activation and deactivation phrases SHALL come from

@@ -30,7 +30,9 @@
 // modes, and `whisper_download({model})` and `tts_download({voice})` work in both modes (change
 // `whisper-config-layout`); in the realtime mode a download ends `off` with nothing missing. A
 // `join()` in the Whisper mode with files missing is refused as the app refuses it: the bot
-// stays out, the parts ask for the download, and the refusal is logged as an event.
+// stays out, the parts ask for the download, and the refusal is logged as an event. So is a
+// `join()` in the realtime mode with the wake word while the Vosk library or the selected
+// model is missing (change `models-in-settings`).
 // `whisperState()`, `ttsState()`, `whisperRequirements(model, device, voice)`,
 // `failNextWhisperDownload()` (the next download stops at 40 % with a hash error),
 // `completeWhisperDownload()` (everything the selection needs is on disk at once),
@@ -407,7 +409,10 @@
     + "lo:Lao,uz:Uzbek,fo:Faroese,ht:Haitian Creole,ps:Pashto,tk:Turkmen,nn:Nynorsk,mt:Maltese,sa:Sanskrit,"
     + "lb:Luxembourgish,my:Myanmar,bo:Tibetan,tl:Tagalog,mg:Malagasy,as:Assamese,tt:Tatar,haw:Hawaiian,ln:Lingala,"
     + "ha:Hausa,ba:Bashkir,jw:Javanese,su:Sundanese,yue:Cantonese").split(",").map((pair) => pair.split(":"));
-  const JOIN_NEEDS_DOWNLOADS = "The Whisper mode needs downloads: open VoiceBro → Config and press Download in the Assistant and Local voice cards";
+  const JOIN_NEEDS_DOWNLOADS = "The Whisper mode needs downloads: open VoiceBro → Settings and press Download in the Whisper and Local voice cards, then run /join again";
+  // The start of the core's reply to a wake-word join without the Vosk files
+  // (`wake::JOIN_NEEDS_WAKE_FILES`, change `models-in-settings`).
+  const JOIN_NEEDS_WAKE_FILES = "The wake word needs downloads";
   // The files on disk, by file name.
   const haveFiles = new Set();
   const have = (asset) => haveFiles.has(asset.file);
@@ -1289,8 +1294,25 @@
     // The bot joins or leaves the mock server's voice channel, as `/join` and `/leave` do.
     // In the Whisper mode a join with files missing is refused (`false`): the bot stays out,
     // both parts ask for their files again (unless a download runs), and the app logs the
-    // refusal, which the window takes as the trigger of its dialog.
+    // refusal, which the window takes as the trigger of its dialog. In the realtime mode with
+    // the wake word a join is refused the same way while the Vosk library or the selected
+    // model is missing (change `models-in-settings`).
     join() {
+      if (settings.assistant.mode === "realtime" && settings.session.mode === "wake_word") {
+        let items = [];
+        try {
+          items = requirements(settings.wake.model);
+        } catch {
+          items = []; // an unknown model is the wake state's own error and refuses nothing
+        }
+        if (items.length) {
+          const labels = items.map((item) => item.label).join(", ");
+          const line = `join to guild 1091401169441656933 refused: ${JOIN_NEEDS_WAKE_FILES} (${labels}): open VoiceBro → Config and press Download under Wake model, then run /join again`;
+          emit("app-event", { event: "log", line });
+          emit("app-log", `[2026-11-20][12:00:00][INFO][voicebro_core::runtime] ${line}`);
+          return false;
+        }
+      }
       if (settings.assistant.mode === "whisper") {
         if (missingOf("whisper").length || missingOf("tts").length) {
           for (const part of ["whisper", "tts"]) {

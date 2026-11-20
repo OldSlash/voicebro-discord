@@ -199,6 +199,13 @@ impl VoiceHost for GateHost {
 
     fn prepare_join(&self, guild: u64) -> JoinPreparation<'_> {
         Box::pin(async move {
+            // The wake word's files first (change `models-in-settings`, D5): a refusal for
+            // them starts nothing of the assistant.
+            if let Some(reason) = self.wake_files_missing() {
+                self.events
+                    .log(format!("join to guild {guild} refused: {reason}"));
+                return Err(reason);
+            }
             let prepared = match self.assistant.prepare(guild).await {
                 Ok(()) => self
                     .prepare_whisper()
@@ -355,9 +362,33 @@ impl GateHost {
         }
     }
 
+    /// The refusal of a join in the realtime mode with the wake word while the selected
+    /// model or the Vosk library is not on disk (change `models-in-settings`, D5). Reads the
+    /// disk only; `None` in always listening, in the Whisper mode, and with the files there.
+    fn wake_files_missing(&self) -> Option<String> {
+        let (mode, session, model) = {
+            let settings = self.settings.read().expect("settings lock");
+            (
+                settings.assistant.mode,
+                settings.session.mode,
+                settings.wake.model.clone(),
+            )
+        };
+        if mode != crate::settings::AssistantMode::Realtime || session != SessionMode::WakeWord {
+            return None;
+        }
+        match self.wake.requirements(&model) {
+            Ok(missing) if !missing.is_empty() => Some(crate::wake::join_refusal(&missing)),
+            Ok(_) => None,
+            // An unknown model is the wake state's own error, shown on the Status tab; it
+            // needs no download, so it does not refuse the join.
+            Err(_) => None,
+        }
+    }
+
     /// In the Whisper mode a join also loads Whisper and the voice (design D12), off the
     /// async threads; missing files refuse it with the reply that sends the user to the
-    /// Config tab's Assistant and Local voice cards.
+    /// Settings tab's Whisper and Local voice cards.
     async fn prepare_whisper(&self) -> Result<(), String> {
         let (whisper, tts) = (self.whisper.clone(), self.tts.clone());
         let result = tokio::task::spawn_blocking(move || {
@@ -1810,8 +1841,13 @@ mod tests {
         let tokio_rt = tokio::runtime::Runtime::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let (runtime, assistant) = owner_runtime(&dir, &tokio_rt);
+        // Always listening: the scratch folder has no Vosk files, which would refuse a
+        // wake-word join (change `models-in-settings`).
         runtime
-            .save_settings(&json!({ "discord": { "access": "owner" } }))
+            .save_settings(&json!({
+                "discord": { "access": "owner" },
+                "session": { "mode": "always" }
+            }))
             .unwrap();
         assistant.sign_in(Some("me@example.com"));
         let pending = runtime.start_link().unwrap();
@@ -2505,8 +2541,8 @@ mod tests {
         runtime.shutdown();
     }
 
-    /// Scenario "Join prepares the assistant" in the Whisper mode with files missing: the
-    /// join is refused with the reply that sends the user to the Config tab.
+    /// Scenario "Whisper files missing" (change `models-in-settings`): the join is refused
+    /// with the reply that sends the user to the Settings tab, and Vosk is not asked for.
     #[test]
     fn a_join_in_the_whisper_mode_without_its_files_is_refused() {
         let tokio_rt = tokio::runtime::Runtime::new().unwrap();
@@ -2523,11 +2559,64 @@ mod tests {
             Err(crate::stt::manager::JOIN_NEEDS_DOWNLOADS.to_owned())
         );
         assert!(
+            refused.unwrap_err().contains("Settings"),
+            "the reply points to the Settings tab"
+        );
+        assert!(
             !dir.path().join("assets").join("whisper-cpu-1.9.5").exists(),
             "nothing was downloaded"
         );
         runtime
-            .save_settings(&json!({ "assistant": { "mode": "realtime" } }))
+            .save_settings(&json!({
+                "assistant": { "mode": "realtime" },
+                "session": { "mode": "always" }
+            }))
+            .unwrap();
+        assert_eq!(tokio_rt.block_on(host.prepare_join(42)), Ok(()));
+        runtime.shutdown();
+    }
+
+    /// Requirement "A join needs the wake word's files" (change `models-in-settings`): in
+    /// the realtime mode with the wake word a scratch folder without Vosk refuses the join
+    /// before the assistant starts, names the files and downloads nothing; always
+    /// listening joins.
+    #[test]
+    fn a_wake_word_join_without_the_vosk_files_is_refused() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({
+                "assistant": { "mode": "realtime" },
+                "session": { "mode": "wake_word" }
+            }))
+            .unwrap();
+        let mut events = runtime.events().subscribe();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        let reason = tokio_rt
+            .block_on(host.prepare_join(42))
+            .expect_err("the join is refused");
+        assert!(
+            reason.starts_with(crate::wake::JOIN_NEEDS_WAKE_FILES),
+            "{reason}"
+        );
+        assert!(reason.contains("Vosk library"), "{reason}");
+        assert!(reason.contains("Download under Wake model"), "{reason}");
+        assert!(reason.ends_with("then run /join again"), "{reason}");
+        let mut logged = false;
+        while let Ok(event) = events.try_recv() {
+            if let AppEvent::Log { line } = event {
+                logged |= line == format!("join to guild 42 refused: {reason}");
+            }
+        }
+        assert!(logged, "the refusal is logged for the window");
+        assert!(
+            !dir.path().join("assets").join("vosk-win64-0.3.45").exists(),
+            "nothing was downloaded"
+        );
+        runtime
+            .save_settings(&json!({ "session": { "mode": "always" } }))
             .unwrap();
         assert_eq!(tokio_rt.block_on(host.prepare_join(42)), Ok(()));
         runtime.shutdown();
