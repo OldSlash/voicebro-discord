@@ -130,9 +130,10 @@ function expect(condition, message) {
   if (!condition) throw new Error(message);
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-// Change `whisper-config-layout`: Local voice after Assistant, Whisper after Diagnostics.
-const CARDS = ["discord", "access", "audio", "assistant", "local-voice", "codex", "hotkey"];
-const SETTINGS_CARDS = ["appearance", "diagnostics", "whisper"];
+// Change `whisper-config-layout`: Whisper after Diagnostics; change `models-in-settings`: Local
+// voice after Whisper on the Settings tab.
+const CARDS = ["discord", "access", "audio", "assistant", "codex", "hotkey"];
+const SETTINGS_CARDS = ["appearance", "diagnostics", "whisper", "local-voice"];
 const SWITCHES = [
   ["config", "earcons"], ["config", "one-speaker"], ["config", "codex-refresh-lists"], ["config", "save-chat-history"],
   ["settings", "diagnostics-performance"], ["settings", "diagnostics-memory"], ["settings", "diagnostics-verbose-log"],
@@ -245,7 +246,7 @@ const scenarios = [
     expect(same(list, ["assistant", "hotkey"]), `stored ${JSON.stringify(list)}`);
     await load(`?collapsed=${list.join(",")}`);
     const r = await page(`return ${JSON.stringify(CARDS)}.map((id) => [id, collapsed(id)]);`);
-    expect(same(r, [["discord", false], ["access", false], ["audio", false], ["assistant", true], ["local-voice", false], ["codex", false], ["hotkey", true]]), JSON.stringify(r));
+    expect(same(r, [["discord", false], ["access", false], ["audio", false], ["assistant", true], ["codex", false], ["hotkey", true]]), JSON.stringify(r));
   }],
   ["an id this window does not know is kept", async () => {
     await load("?collapsed=audio,later-card");
@@ -535,6 +536,44 @@ const scenarios = [
     expect(!r.before.on && r.before.label === "Off", JSON.stringify(r.before));
     expect(["realtime voice mode", "one person at a time", "Whisper mode", "waits", "deactivation phrase and Mute", "Default: off"].every((part) => r.help.includes(part)), `help: ${r.help}`);
     expect(r.stored === true && r.saves === 1 && same(r.last, { assistant: { one_speaker_at_a_time: true } }) && r.label === "On" && r.inAssistant, JSON.stringify(r));
+  }],
+
+  // ---- Assistant: stop the answer at the start of speech (change `interrupt-on-speech`)
+  ["the stop-at-speech switch: in the Whisper mode only, after One speaker at a time, off at first, saves at once", async () => {
+    await load("?whisper");
+    const r = await page(`
+      tab("config");
+      const shown = () => !$("interrupt-row").hidden && $("interrupt-on-speech").offsetParent !== null;
+      const ids = [...$("card-assistant-body").querySelectorAll("input")].map((n) => n.id);
+      const before = { shown: shown(), on: $("interrupt-on-speech").checked, label: $("interrupt-on-speech-label").textContent,
+        after: ids.indexOf("interrupt-on-speech") === ids.indexOf("one-speaker") + 1 };
+      const help = $("interrupt-on-speech").closest("label").querySelector(".field-help").textContent;
+      const saves = calls("save_settings").length;
+      $("interrupt-on-speech-label").click(); await sleep(400);
+      const saved = { stored: stored().assistant.interrupt_on_speech, saves: calls("save_settings").length - saves, last: calls("save_settings").at(-1).args.patch, label: $("interrupt-on-speech-label").textContent };
+      const mode = async (value) => { const s = $("assistant-mode"); s.value = value; s.dispatchEvent(new Event("change", { bubbles: true })); await sleep(500); return shown(); };
+      const inText = await mode("text");
+      const inRealtime = await mode("realtime");
+      const back = await mode("whisper");
+      return { before, help, saved, inText, inRealtime, back };`);
+    expect(r.before.shown && !r.before.on && r.before.label === "Off" && r.before.after, `before: ${JSON.stringify(r.before)}`);
+    expect(["600 ms", "sneeze", "steady loud sound", "recognized", "Whisper mode only", "Default: off"].every((part) => r.help.includes(part)), `help: ${r.help}`);
+    expect(r.saved.stored === true && r.saved.saves === 1 && same(r.saved.last, { assistant: { interrupt_on_speech: true } }) && r.saved.label === "On", JSON.stringify(r.saved));
+    expect(!r.inText && !r.inRealtime && r.back, `shown in text ${r.inText}, realtime ${r.inRealtime}, Whisper again ${r.back}`);
+  }],
+  ["one speaker at a time on: the stop-at-speech switch is disabled, keeps its value, and says why", async () => {
+    await load("?whisper");
+    const r = await page(`
+      tab("config");
+      $("interrupt-on-speech-label").click(); await sleep(400);
+      $("one-speaker-label").click(); await sleep(400);
+      const on = { disabled: $("interrupt-on-speech").disabled, checked: $("interrupt-on-speech").checked, label: $("interrupt-on-speech-label").textContent,
+        note: $("interrupt-note").textContent, stored: stored().assistant.interrupt_on_speech };
+      $("one-speaker-label").click(); await sleep(400);
+      return { on, off: { disabled: $("interrupt-on-speech").disabled, note: $("interrupt-note").textContent } };`);
+    expect(r.on.disabled && r.on.checked && r.on.label === "On" && r.on.stored === true, JSON.stringify(r.on));
+    expect(r.on.note.includes("No effect while One speaker at a time is on"), `note: ${r.on.note}`);
+    expect(!r.off.disabled && r.off.note === "", JSON.stringify(r.off));
   }],
 
   // ---- Access: who the assistant hears (changes `owner-only-access` and `voice-consent`)

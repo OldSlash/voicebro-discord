@@ -375,6 +375,7 @@
       if (control.id === "codex-model") applyEffortList();
       if (control.dataset.path.startsWith("diagnostics.")) applyDiagnostics();
       if (control.dataset.path === "assistant.mode") applyAssistantMode();
+      if (control.dataset.path === "assistant.one_speaker_at_a_time") applyInterruptSwitch();
       // The access mode's warnings follow a saved mode or URL at once, and so does the
       // Claude subscription notice.
       if (control.dataset.path.startsWith("discord.")) {
@@ -1455,7 +1456,19 @@
       : mode === "whisper"
         ? ": the assistant runs in the Whisper mode."
         : ": turn it on in Config → Assistant → Assistant mode.";
+    applyInterruptSwitch();
     if (lastStatus) renderWhisperNotices(lastStatus);
+  }
+  // Change `interrupt-on-speech`: the switch shows in the Whisper mode only (the text answers
+  // mode has no voice to stop) and is disabled, keeping its value, while One speaker at a time
+  // is on, which never stops an answer for a question.
+  function applyInterruptSwitch() {
+    $("interrupt-row").hidden = !whisperMode() || textMode();
+    const oneAtATime = Boolean(readByPath(stored, "assistant.one_speaker_at_a_time"));
+    $("interrupt-on-speech").disabled = oneAtATime;
+    $("interrupt-note").textContent = oneAtATime
+      ? "No effect while One speaker at a time is on: a question then waits for the answer instead of stopping it."
+      : "";
   }
 
   // ---------- The engine (change `claude-and-opencode-engines`) ----------

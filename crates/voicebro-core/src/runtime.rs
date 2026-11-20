@@ -1889,6 +1889,52 @@ mod tests {
     /// Change `post-assistant-answers`: a save of only the two answer posting fields
     /// restarts nothing. The gate stays (same gate, same settings), the wake engine is not
     /// configured again, the assistant gets no new settings, so no call is touched.
+    /// Change `interrupt-on-speech`, requirement "Interrupt on speech setting": a save of
+    /// only the switch keeps the gate (no rebuild) and reaches its settings for the next
+    /// tick; in the Whisper mode the gate's flag is on.
+    #[test]
+    fn a_save_of_the_interrupt_switch_rebuilds_no_gate() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({
+                "assistant": { "mode": "whisper" },
+                "session": { "mode": "always", "earcons": false }
+            }))
+            .unwrap();
+        let (output, _source) = output_pair();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.on_join(42, output);
+        let gate = runtime.host.registry.get(42).unwrap();
+        assert!(
+            !runtime
+                .host
+                .gate_settings
+                .lock()
+                .unwrap()
+                .interrupt_on_speech
+        );
+        runtime
+            .save_settings(&json!({ "assistant": { "interrupt_on_speech": true } }))
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&gate, &runtime.host.registry.get(42).unwrap()),
+            "the same gate"
+        );
+        assert!(
+            runtime
+                .host
+                .gate_settings
+                .lock()
+                .unwrap()
+                .interrupt_on_speech
+        );
+        host.on_leave(42);
+        runtime.shutdown();
+    }
+
     #[test]
     fn a_save_of_the_answer_posting_fields_restarts_nothing() {
         let tokio_rt = tokio::runtime::Runtime::new().unwrap();

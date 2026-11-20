@@ -57,7 +57,7 @@
     // `post_answers` and `answers_channel` as the app fills them for a file without them;
     // `mode`, `whisper` and `tts` likewise (change `whisper-mode`).
     // `instructions` moved here from `codex` (change `claude-and-opencode-engines`).
-    assistant: { engine: "codex", mode: "realtime", speaker_labels: "start", instructions: "Answer briefly.", save_chat_history: false, post_answers: "off", answers_channel: "", one_speaker_at_a_time: false },
+    assistant: { engine: "codex", mode: "realtime", speaker_labels: "start", instructions: "Answer briefly.", save_chat_history: false, post_answers: "off", answers_channel: "", one_speaker_at_a_time: false, interrupt_on_speech: false },
     whisper: { model: "whisper-base-q8_0", device: "cpu", threads: 0, language: "auto", phrases: {} },
     tts: { voice: "supertonic3:F1", speed: 1.0 },
     // `handoff_mode` and `refresh_lists_at_start` as the app fills them for a file without
@@ -784,6 +784,9 @@
     if (url && !url.startsWith("https://")) throw "discord.privacy_url: the URL must start with https://";
     if (url && /\s/.test(url)) throw "discord.privacy_url: the URL must not contain spaces";
     if (url && !url.slice(8).split(/[/?#]/)[0]) throw "discord.privacy_url: the URL has no host after https://";
+    if (typeof doc.assistant.interrupt_on_speech !== "boolean") {
+      throw `the patch is not a settings document: assistant.interrupt_on_speech must be true or false, not ${JSON.stringify(doc.assistant.interrupt_on_speech)}`;
+    }
     if (typeof doc.assistant.one_speaker_at_a_time !== "boolean") {
       throw `the patch is not a settings document: assistant.one_speaker_at_a_time must be true or false, not ${JSON.stringify(doc.assistant.one_speaker_at_a_time)}`;
     }

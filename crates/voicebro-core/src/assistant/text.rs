@@ -819,6 +819,24 @@ impl AssistantSession for TextSession {
     fn working(&self) -> bool {
         self.lock().running.is_some() || !self.player.is_empty()
     }
+
+    /// Change `interrupt-on-speech`, D3: the barge-in without the new turn. The voice stops
+    /// at once and the running turn is interrupted; the utterance that caused it reaches the
+    /// session later as a question, or not at all when Whisper finds no words in it.
+    fn stop_answer(&self) {
+        let previous = {
+            let mut state = self.lock();
+            self.stop_running(&mut state)
+        };
+        self.events.log(format!(
+            "{} {}: the answer stopped at the start of speech",
+            self.name(),
+            self.guild
+        ));
+        if let Some(previous) = previous {
+            self.interrupt(previous);
+        }
+    }
 }
 
 #[cfg(test)]

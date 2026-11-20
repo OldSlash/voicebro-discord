@@ -493,6 +493,48 @@ fn a_second_question_interrupts_the_first_and_only_it_is_posted() {
     rig.assistant.stop();
 }
 
+/// Change `interrupt-on-speech`, D3: `stop_answer` stops the voice and interrupts the
+/// running turn without starting another; nothing is posted for it, and the question that
+/// follows starts a new turn and is answered.
+#[test]
+fn stop_answer_interrupts_the_turn_and_the_next_question_is_answered() {
+    let Some(mut rig) = rig(false) else {
+        return;
+    };
+    rig.control(json!({ "subtype": "fake_delay", "ms": 40 }));
+    rig.session.user_text(question("Alex", "first question"));
+    wait(|| !rig.read.lock().unwrap().is_empty());
+    assert!(rig.session.working());
+    rig.session.stop_answer();
+    wait(|| {
+        log_lines(rig.dir.path())
+            .iter()
+            .any(|line| line.contains("\"interrupt\""))
+    });
+    assert!(!rig.session.working(), "the voice and the turn stopped");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        rig.answers.try_recv().is_err(),
+        "the stopped turn is not posted"
+    );
+    let questions = log_lines(rig.dir.path())
+        .iter()
+        .filter(|line| line.contains("question"))
+        .count();
+    rig.session.user_text(question("Alex", "second question"));
+    let answer = rig.answer();
+    assert_eq!(answer.task.as_deref(), Some("second question"));
+    assert!(
+        log_lines(rig.dir.path())
+            .iter()
+            .filter(|line| line.contains("question"))
+            .count()
+            > questions,
+        "the second question started a new turn"
+    );
+    rig.assistant.stop();
+}
+
 /// Requirement "Claude Code questions wait their turn".
 #[test]
 fn with_one_at_a_time_the_second_question_is_answered_after_the_first() {

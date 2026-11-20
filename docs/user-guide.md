@@ -637,6 +637,24 @@ In both modes VoiceBro tells people apart by their own Discord stream: two voice
 reach Discord through one microphone (a friend beside you, speakers without headphones)
 still go to the assistant together.
 
+### Stopping the answer as soon as someone talks
+
+In the Whisper mode the voice normally stops when your new question has ended and Whisper
+has written it down. Turn on **Stop the answer when someone starts talking**
+(**Config → Assistant**, off by default) to stop it sooner: once a person has talked for
+600 ms, the voice stops at once and the engine's answer is dropped, and what that person
+says becomes the next question as usual. Say "wait" and go on talking, and the assistant
+stops while you speak.
+
+- Shorter sounds stop nothing: a sneeze, a click or a short "yes". A single word like the
+  activation phrase is usually shorter, too.
+- A long cough, laughter or a steady loud sound in someone's microphone (a game played
+  through speakers) can stop the answer. If that happens often, leave the switch off.
+- It works only in the Whisper mode. The realtime voice call stops its own answer when
+  someone talks, and the text answers mode has no voice to stop.
+- With **One speaker at a time** on it has no effect, because a question then waits for
+  the answer; the switch is disabled and says so.
+
 ### Posting the answers to Discord
 
 When the assistant hands a question to Codex (a web search, a recipe, a price), Codex
@@ -774,7 +792,7 @@ remembers which cards are folded.
 | Config → Discord and Codex | The Discord bot token, the server ID, the path of `codex.exe` when it is not found on its own. Press **Save changes**. |
 | Config → Access | **Who the assistant hears** (Everyone by default, People who agreed, Only my Discord account), **Privacy policy URL**, the link to your Discord account and the people who agreed with `/optin` ([section 8](#who-the-assistant-hears)). |
 | Config → Audio | How loud the assistant hears the channel and how loud it speaks; the short tones at session start and end. |
-| Config → Assistant | **Assistant mode** (realtime voice, the default, or Whisper), the grey **Recognition** field and the **Engine** (Codex, Claude Code or OpenCode, [section 4](#4-set-up-the-engine)); wake word or always listening, the phrases, the auto-stop time; the wake model with its download in the realtime mode, the Whisper phrases and the note on what the Whisper mode misses in the Whisper mode; **One speaker at a time** (off by default, [section 8](#when-two-people-talk-at-once)). |
+| Config → Assistant | **Assistant mode** (realtime voice, the default, or Whisper), the grey **Recognition** field and the **Engine** (Codex, Claude Code or OpenCode, [section 4](#4-set-up-the-engine)); wake word or always listening, the phrases, the auto-stop time; the wake model with its download in the realtime mode, the Whisper phrases and the note on what the Whisper mode misses in the Whisper mode; **One speaker at a time** (off by default, [section 8](#when-two-people-talk-at-once)); in the Whisper mode **Stop the answer when someone starts talking** (off by default, [section 8](#stopping-the-answer-as-soon-as-someone-talks)). |
 | Config → Codex, Claude Code or OpenCode | The card of the engine in use, titled after it. **Codex:** the model and reasoning effort for looked-up answers (in the Whisper mode, for every answer), the voice of the realtime call; the model, reasoning and voice lists come from the last time VoiceBro read them from Codex, the card says when that was, **Refresh lists** reads them now, and **Refresh the lists at start** (off by default) reads them at every start of VoiceBro. **Claude Code** and **OpenCode:** the program's path when it is not found on its own, and the model. **Every engine:** your instructions for the assistant (one text for all three), whether it gets the names of the people in the channel, **Save chat history**, **Post answers to Discord** and the channel for it ([section 8](#posting-the-answers-to-discord)). |
 | Config → Hotkey | The mute hotkey. |
 
