@@ -847,6 +847,21 @@ pub struct ClaudeSettings {
     /// The window asked once, at the first choice of Claude Code with a subscription,
     /// whether only the owner's voice should pass (design D6).
     pub subscription_notice_shown: bool,
+    /// The user pressed Hide in the subscription notice of the Claude Code card: the notice
+    /// is not shown again (change `claude-notice-hide`, D2). The dialog does not read it.
+    #[serde(deserialize_with = "notice_hidden_flag")]
+    pub subscription_notice_hidden: bool,
+}
+
+/// `claude.subscription_notice_hidden` takes only `true` or `false`; anything else is
+/// refused with the field's path.
+fn notice_hidden_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    match Value::deserialize(deserializer)? {
+        Value::Bool(hidden) => Ok(hidden),
+        other => Err(serde::de::Error::custom(format!(
+            "claude.subscription_notice_hidden must be true or false, not {other}"
+        ))),
+    }
 }
 
 /// OpenCode as the engine (change `claude-and-opencode-engines`).
@@ -2529,6 +2544,45 @@ mod tests {
         assert_eq!(
             Settings::default().changed_sections(&claude),
             vec!["claude"]
+        );
+    }
+
+    /// Requirement "Claude Code settings" (change `claude-notice-hide`): the Hide flag of the
+    /// subscription notice defaults to false, an older file loads it as false and the next
+    /// save writes it, and only a boolean is taken.
+    #[test]
+    fn the_notice_hidden_flag_defaults_to_false_and_takes_only_a_boolean() {
+        assert!(!Settings::default().claude.subscription_notice_hidden);
+        let older: Settings = serde_json::from_value(json!({
+            "version": 2,
+            "claude": { "executable": "", "model": "", "subscription_notice_shown": true }
+        }))
+        .unwrap();
+        assert!(!older.claude.subscription_notice_hidden);
+        assert!(older.claude.subscription_notice_shown);
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(
+            written["claude"]["subscription_notice_hidden"],
+            json!(false)
+        );
+
+        let hidden = Settings::default()
+            .with_patch(&json!({ "claude": { "subscription_notice_hidden": true } }))
+            .unwrap();
+        assert!(hidden.claude.subscription_notice_hidden);
+        assert_eq!(
+            Settings::default().changed_sections(&hidden),
+            vec!["claude"]
+        );
+
+        let error = Settings::default()
+            .with_patch(&json!({ "claude": { "subscription_notice_hidden": "yes" } }))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("claude.subscription_notice_hidden"),
+            "{error}"
         );
     }
 }

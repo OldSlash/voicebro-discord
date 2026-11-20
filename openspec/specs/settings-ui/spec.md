@@ -750,17 +750,22 @@ keys are set up in OpenCode itself and that web searches go to OpenCode's search
 
 ### Requirement: The Claude subscription notice in the window
 While requirement "The Claude subscription notice" of `claude-assistant` calls for it, the
-Assistant card SHALL show the notice under the Engine list and the Access card under "Who
-the assistant hears". It SHALL link to Anthropic's Consumer Terms and to Claude Code's legal
-page, and offer a button "Hear only me" that acts as in the dialog below.
+Claude Code card SHALL show the notice at its top; the Assistant and Access cards SHALL not
+show it. It SHALL link to Anthropic's Consumer Terms and to Claude Code's legal page, and
+offer a button "Hear only me" that acts as in the dialog below and a button "Hide" that
+saves `claude.subscription_notice_hidden` as `true` and hides the notice for good.
 
 #### Scenario: Notice in both cards
 - **WHEN** the engine is Claude Code with a subscription and the access mode is "Everyone"
-- **THEN** the Assistant and Access cards show the notice with both links and the button
+- **THEN** the Claude Code card shows the notice with both links, "Hear only me" and "Hide", and neither the Assistant nor the Access card shows it
 
 #### Scenario: Notice gone
 - **WHEN** the user picks "Only my Discord account" in the Access card
-- **THEN** the notice disappears from both cards
+- **THEN** the notice disappears from the Claude Code card
+
+#### Scenario: Hide
+- **WHEN** the user presses "Hide" in the notice
+- **THEN** the notice disappears, `claude.subscription_notice_hidden` is saved as `true`, the access mode stays as it was, and the notice does not come back after a restart or another switch to Claude Code
 
 ### Requirement: The Claude subscription dialog
 The first time the user picks Claude Code in the window while its sign-in is a subscription
@@ -779,7 +784,7 @@ should reach the assistant, with "Hear only me" and "Not now". Either answer SHA
 
 #### Scenario: Not now
 - **WHEN** the user presses "Not now" or closes the dialog
-- **THEN** the access mode stays as it was, and the notice stays in the Assistant and Access cards
+- **THEN** the access mode stays as it was, and the notice stays in the Claude Code card
 
 #### Scenario: Shown once
 - **WHEN** the dialog was answered before and the user picks Codex and then Claude Code again
