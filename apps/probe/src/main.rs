@@ -103,8 +103,8 @@ const PROBES: &[Probe] = &[
     },
     Probe {
         name: "claude-smoke",
-        summary: "Claude Code as the app runs it: version, sign-in kind, initialize's models, two stream-json turns with the lockdown flags and an appended canary, no session file; args: [model, default haiku]",
-        needs: "Claude Code installed and signed in (a subscription or an API key); two small model calls",
+        summary: "Claude Code as the app runs it: version, sign-in kind, initialize's models, three stream-json turns with the lockdown flags and an appended canary (memory, a web search that must not be denied), no session file; args: [model, default haiku]",
+        needs: "Claude Code installed and signed in (a subscription or an API key); three small model calls",
         run: claude::smoke,
     },
     Probe {

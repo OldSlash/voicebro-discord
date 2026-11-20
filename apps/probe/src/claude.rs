@@ -41,6 +41,29 @@ impl Collector {
             .collect()
     }
 
+    /// Each tool result Claude Code handed back: whether it succeeded, and its first words.
+    fn tool_results(&self) -> Vec<(bool, String)> {
+        self.messages
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|message| message["type"] == "user")
+            .filter_map(|message| message["message"]["content"].as_array())
+            .flatten()
+            .filter(|part| part["type"] == "tool_result")
+            .map(|part| {
+                let text = part["content"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| part["content"].to_string());
+                (
+                    !part["is_error"].as_bool().unwrap_or(false),
+                    text.chars().take(120).collect::<String>(),
+                )
+            })
+            .collect()
+    }
+
     fn tools(&self) -> Option<Value> {
         self.messages
             .lock()
@@ -159,13 +182,37 @@ pub fn smoke(args: &[String]) -> anyhow::Result<Outcome> {
         while collector.results().len() < 2 && started.elapsed() < Duration::from_secs(180) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        // A web search, which the don't-ask mode denies unless it is allowed in advance.
+        process
+            .send_user(
+                "What is the weather in London today? Search the web, then answer in one sentence.",
+            )
+            .map_err(anyhow::Error::msg)?;
+        while collector.results().len() < 3 && started.elapsed() < Duration::from_secs(300) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let results = collector.results();
         let tools = collector.tools();
+        let tool_results = collector.tool_results();
         process.kill();
-        anyhow::Ok((lines, results, tools))
+        anyhow::Ok((lines, results, tools, tool_results))
     })?;
-    let (lines, results, tools) = outcome;
+    let (lines, results, tools, tool_results) = outcome;
     details.extend(lines);
+    for (ok, text) in &tool_results {
+        details.push(format!(
+            "tool result: {} {text}",
+            if *ok { "ok" } else { "ERROR" }
+        ));
+    }
+    let denials: Vec<String> = results
+        .iter()
+        .filter_map(|result| result.get("permission_denials").and_then(Value::as_array))
+        .flatten()
+        .map(|denial| denial["tool_name"].as_str().unwrap_or("?").to_owned())
+        .collect();
+    details.push(format!("permission denials: {denials:?}"));
+    let searched = tool_results.iter().any(|(ok, _)| *ok) && denials.is_empty();
     let answers: Vec<String> = results
         .iter()
         .map(|result| result["result"].as_str().unwrap_or("").to_owned())
@@ -174,7 +221,7 @@ pub fn smoke(args: &[String]) -> anyhow::Result<Outcome> {
         details.push(format!("answer {}: {answer}", index + 1));
     }
     details.push(format!("tools: {}", tools.clone().unwrap_or(Value::Null)));
-    let canary = answers.len() == 2 && answers.iter().all(|answer| answer.starts_with("BANANA"));
+    let canary = answers.len() == 3 && answers.iter().all(|answer| answer.starts_with("BANANA"));
     let remembered = answers
         .get(1)
         .is_some_and(|answer| answer.to_lowercase().contains("cobalt"));
@@ -198,7 +245,7 @@ pub fn smoke(args: &[String]) -> anyhow::Result<Outcome> {
         })
         .unwrap_or(0);
     details.push(format!(
-        "canary followed: {canary}; remembered: {remembered}; web tools only: {web_only}; session files: {session_files}"
+        "canary followed: {canary}; remembered: {remembered}; web tools only: {web_only}; searched: {searched}; session files: {session_files}"
     ));
     // Claude Code makes an empty folder with an empty `memory` folder for the working folder;
     // nothing else was written. Leave nothing behind.
@@ -207,9 +254,11 @@ pub fn smoke(args: &[String]) -> anyhow::Result<Outcome> {
         let _ = std::fs::remove_dir(&folder);
     }
     let _ = std::fs::remove_dir_all(&workspace);
-    Ok(if canary && remembered && web_only && session_files == 0 {
-        Outcome::pass(details)
-    } else {
-        Outcome::fail(details)
-    })
+    Ok(
+        if canary && remembered && web_only && searched && session_files == 0 {
+            Outcome::pass(details)
+        } else {
+            Outcome::fail(details)
+        },
+    )
 }

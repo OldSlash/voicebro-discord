@@ -11,7 +11,7 @@ use super::process::{ClaudeListener, ClaudeProcess};
 use crate::assistant::text::{TurnBackend, TurnContext, TurnEvent, TurnSink};
 use crate::settings::AssistantEngine;
 use serde_json::{json, Value};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 #[derive(Default)]
@@ -19,6 +19,8 @@ struct Turns {
     /// The turns sent and not yet ended, oldest first: the first is running.
     queue: VecDeque<String>,
     next: u64,
+    /// The tool of each call of this process, by its id, so a failed result can name it.
+    tools: HashMap<String, String>,
 }
 
 pub struct ClaudeTurns {
@@ -51,6 +53,58 @@ impl ClaudeTurns {
             .queue
             .front()
             .cloned()
+    }
+
+    /// A tool result Claude Code reports as an error, as a chat line: "Web search failed: …"
+    /// with the first line of its message. `names` holds the tool of each call seen.
+    fn failed_tool_line(block: &Value, names: &HashMap<String, String>) -> Option<String> {
+        if !block
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let name = block
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .and_then(|id| names.get(id))
+            .map(String::as_str)
+            .unwrap_or("");
+        let label = match name {
+            "WebSearch" => "Web search",
+            "WebFetch" => "Web fetch",
+            "" => "A tool",
+            other => other,
+        };
+        let content = block.get("content");
+        let text = content
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| {
+                content.and_then(Value::as_array).map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(|part| part.get("text").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+            })
+            .unwrap_or_default();
+        let first = text.lines().next().unwrap_or("").trim();
+        let message: String = if first.chars().count() > 200 {
+            first.chars().take(200).chain("…".chars()).collect()
+        } else {
+            first.to_owned()
+        };
+        Some(format!(
+            "{label} failed: {}",
+            if message.is_empty() {
+                "no reason given"
+            } else {
+                &message
+            }
+        ))
     }
 
     /// A tool use as a chat line.
@@ -146,6 +200,16 @@ impl ClaudeTurns {
                             });
                         }
                         Some("tool_use") | Some("server_tool_use") => {
+                            if let (Some(id), Some(name)) = (
+                                block.get("id").and_then(Value::as_str),
+                                block.get("name").and_then(Value::as_str),
+                            ) {
+                                self.turns
+                                    .lock()
+                                    .expect("claude turns lock")
+                                    .tools
+                                    .insert(id.to_owned(), name.to_owned());
+                            }
                             self.send(TurnEvent::Chat {
                                 turn: turn.clone(),
                                 kind: "tool",
@@ -153,6 +217,34 @@ impl ClaudeTurns {
                             });
                         }
                         _ => {}
+                    }
+                }
+            }
+            // Claude Code hands each tool's result back as a `user` message.
+            Some("user") => {
+                let Some(turn) = self.running() else {
+                    return;
+                };
+                let blocks = message
+                    .get("message")
+                    .and_then(|message| message.get("content"))
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                for block in blocks {
+                    if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                        continue;
+                    }
+                    let line = {
+                        let turns = self.turns.lock().expect("claude turns lock");
+                        Self::failed_tool_line(&block, &turns.tools)
+                    };
+                    if let Some(text) = line {
+                        self.send(TurnEvent::Chat {
+                            turn: turn.clone(),
+                            kind: "tool",
+                            text,
+                        });
                     }
                 }
             }
@@ -278,6 +370,31 @@ mod tests {
                 &json!({ "name": "WebSearch", "input": { "query": "London weather" } })
             ),
             "Web search: London weather"
+        );
+    }
+
+    /// The denial Claude Code 2.1.317 gave a live search on 2026-11-20 before the tools were
+    /// allowed in advance.
+    #[test]
+    fn a_failed_tool_is_a_chat_line() {
+        let names = HashMap::from([("toolu_1".to_owned(), "WebSearch".to_owned())]);
+        let denied = json!({
+            "type": "tool_result", "tool_use_id": "toolu_1", "is_error": true,
+            "content": "Permission to use WebSearch has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt…",
+        });
+        assert_eq!(
+            ClaudeTurns::failed_tool_line(&denied, &names).as_deref(),
+            Some("Web search failed: Permission to use WebSearch has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt…")
+        );
+        let ok = json!({ "type": "tool_result", "tool_use_id": "toolu_1", "content": "results" });
+        assert_eq!(ClaudeTurns::failed_tool_line(&ok, &names), None);
+        let unknown = json!({
+            "type": "tool_result", "tool_use_id": "toolu_9", "is_error": true,
+            "content": [{ "type": "text", "text": "Fetch failed\nsecond line" }],
+        });
+        assert_eq!(
+            ClaudeTurns::failed_tool_line(&unknown, &names).as_deref(),
+            Some("A tool failed: Fetch failed")
         );
     }
 }

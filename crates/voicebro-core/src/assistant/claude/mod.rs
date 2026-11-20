@@ -38,7 +38,11 @@ const LEAVE_STOP_DELAY: Duration = Duration::from_millis(500);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(20);
 /// The connection error key of this engine.
 const ERROR_SOURCE: &str = "claude";
-/// The tools Claude Code may use: the web only.
+/// The tools Claude Code may use: the web only. They are both the only tools offered
+/// (`--tools`) and allowed in advance (`--allowedTools`): with `--permission-mode dontAsk`
+/// a tool that is only offered is denied at its first use ("Permission to use WebSearch has
+/// been denied because Claude Code is running in don't ask mode", Claude Code 2.1.317,
+/// 2026-11-20).
 pub const TOOLS: &str = "WebSearch,WebFetch";
 
 /// Why a join is refused; the message is the Discord reply.
@@ -239,8 +243,11 @@ pub fn claude_args(model: &str, instructions_file: Option<&Path>, mcp_file: &Pat
     .into_iter()
     .map(str::to_owned)
     .collect();
-    // `--tools` and `--mcp-config` take several values: each is followed by another flag.
+    // `--tools`, `--allowedTools` and `--mcp-config` take several values: each is followed
+    // by another flag.
     args.push("--tools".to_owned());
+    args.push(TOOLS.to_owned());
+    args.push("--allowedTools".to_owned());
     args.push(TOOLS.to_owned());
     args.push("--mcp-config".to_owned());
     args.push(mcp_file.display().to_string());
