@@ -227,8 +227,8 @@ answers without it.
 This section is about the default mode, **Realtime voice**, where Vosk listens for the wake
 phrase. The first field of **Config → Assistant**, **Assistant mode**, chooses the mode, and
 the grey **Recognition** field under it shows "Vosk". In the
-[Whisper mode](#7-the-whisper-mode) the same card shows the Whisper model and the Whisper
-phrases in place of the wake model and its phrases.
+[Whisper mode](#7-the-whisper-mode) the same card shows the Whisper phrases in place of the
+wake model and its phrases; the Whisper model is in **Settings → Whisper**.
 
 Open **Config → Assistant**.
 
@@ -279,13 +279,18 @@ Open **Config → Assistant**.
   lists what is needed: the Vosk recognizer, 15 MB from github.com, once, and the model,
   32 to 53 MB depending on the language, from alphacephei.com. Starting VoiceBro does not
   interrupt you with it.
-- A window, **The wake word is not installed**, asks about the same files when the bot
-  joins a voice channel (`/join`), when you switch to **Wake word**, and when you choose
-  a model that is not downloaded yet. Nothing is downloaded until you press
-  **Download**; the window shows the progress and closes when the files are in place.
+- Choosing a model that is not on this PC saves it at once; the notice under **Wake model**
+  then lists its files with **Download**. No window pops up for a choice or for a switch to
+  **Wake word**.
+- While the wake word's files are missing, `/join` is refused: the bot stays out of the
+  channel and its reply names the missing files and says to press **Download** under
+  **Wake model**. At the same time a window, **The wake word is not installed**, asks
+  about the same files. Nothing is downloaded until you press **Download**; the window
+  shows the progress and closes when the files are in place. Then run `/join` again.
+  With **Always listening** Vosk is not used, and `/join` does not need its files.
 - **Not now** closes the window and downloads nothing. The notice under **Wake model**
-  keeps its own **Download** button, and the window comes back at the next `/join`. When
-  you were choosing a model, **Cancel** keeps the model you had.
+  keeps its own **Download** button, and the window comes back at the next refused
+  `/join`.
 - **Rather download the files yourself?** The window and the notice name each file and
   link to the official page it is published on. A link opens in your browser:
   - `vosk-win64-0.3.45.zip`, the recognizer, from its release page on GitHub
@@ -371,25 +376,27 @@ whole time the bot is in it.
 
 ### Where the settings are
 
-The Whisper mode's settings sit with the others: what the bot does is on the **Config** tab,
-how Whisper runs on this PC is on the **Settings** tab. Every field saves as soon as you
-change it. All of them but the Whisper model and the Whisper phrases, which show only in
-the Whisper mode, can be changed in either mode.
+The Whisper mode's settings sit with the others: what the bot does is on the **Config** tab;
+the Whisper model, the voice and how Whisper runs on this PC are on the **Settings** tab.
+Every field saves as soon as you change it, also a model or voice that is not downloaded
+yet. All of them but the Whisper phrases, which show only in the Whisper mode, can be
+changed in either mode.
 
 - **Config → Assistant**: **Assistant mode** first, then the grey **Recognition** field,
   which shows "Vosk" or "Whisper" and follows the mode. In the Whisper mode the card shows
-  the **Whisper model** with its download notice and **Download**, and the Whisper mode's
-  **Activation phrases** and **Deactivation phrases**, where the realtime mode shows the
-  wake model and its phrases. **Activation** (wake word or always listening) and the
-  auto-stop stay below, shared by both modes.
-- **Config → Local voice**, the card after Assistant: **Voice**, **Speed**, **Preview** and
+  the Whisper mode's **Activation phrases** and **Deactivation phrases**, where the
+  realtime mode shows the wake model and its phrases. **Activation** (wake word or always
+  listening) and the auto-stop stay below, shared by both modes. While the Whisper mode's
+  files are not all here, a note under **Assistant mode** says what is not downloaded,
+  and **Open Settings** takes you to the card where you download it.
+- **Settings → Whisper**, the card after Diagnostics: an **On** or **Off** label that
+  follows the mode (switch it in **Config → Assistant**), the **Whisper model**, **Device**,
+  **CPU threads**, **Language**, the download notice with **Download**, a line with what is
+  in use and the timings of the last answer, and **Open Whisper models folder**.
+- **Settings → Local voice**, the card after Whisper: **Voice**, **Speed**, **Preview** and
   the voice's download notice with **Download**. A note on top says whether the voice is in
   use: in the realtime mode it is not, because the Codex call speaks with its own voice, but
   you can choose and download one now.
-- **Settings → Whisper**, the card after Diagnostics: an **On** or **Off** label that
-  follows the mode (switch it in **Config → Assistant**), **Device**, **CPU threads**,
-  **Language**, a line with what is in use and the timings of the last answer, and **Open
-  Whisper models folder**.
 
 ### Downloads
 
@@ -410,32 +417,27 @@ Nothing is downloaded until you press **Download**, and you can download in eith
 Each notice lists what is still missing, with each size, and its **Download** fetches only
 that:
 
-- **Config → Assistant**, under the Whisper model (in the Whisper mode): the runtime, the
-  model and the voice activity model;
-- **Config → Local voice**, under the voice: the voice engine, the phonemizer when the
-  voice needs it, and the voice;
-- **Settings → Whisper**: in the realtime mode, everything the Whisper model chosen for the
-  Whisper mode still needs on the chosen device, so you can download it all before you
-  switch; in the Whisper mode, the NVIDIA runtime under **Device** when you chose the GPU
-  and it is not here yet.
+- **Settings → Whisper**: everything the chosen Whisper model still needs on the chosen
+  device: the runtime (the NVIDIA one when you chose the GPU), the model and the voice
+  activity model, so you can download it all before you switch;
+- **Settings → Local voice**, under the voice: the voice engine, the phonemizer when the
+  voice needs it, and the voice.
 
 A download in the realtime mode only installs the files; nothing is loaded until you use
 the Whisper mode. The consent counts for this choice only: another model, device or voice
 asks again for what it adds.
 
-In the Whisper mode, a window, **The Whisper mode is not installed**, lists everything your
-model, device and voice still need, with each size and the total. It opens:
+Choosing a model, a device or a voice never opens a window: it is saved at once, and its
+card's notice lists what it still needs. Neither does switching to the Whisper mode: the
+note in **Config → Assistant** says what is missing instead.
 
-- when `/join` is refused because files are missing; the bot then replies "Not joined: The
-  Whisper mode needs downloads: open VoiceBro → Config and press Download in the Assistant
-  and Local voice cards";
-- when you switch to the Whisper mode and files are missing;
-- when you choose a Whisper model, a device or a voice that is not on this PC yet. Nothing
-  is saved until you press **Download**, and **Cancel** keeps what you had.
-
-In the realtime mode such a choice is saved at once, and its card shows the notice instead.
-Starting VoiceBro never opens the window. **Not now** closes it; the notices keep their
-**Download** buttons.
+While files are missing, `/join` in the Whisper mode is refused, and the bot replies "Not
+joined: The Whisper mode needs downloads: open VoiceBro → Settings and press Download in
+the Whisper and Local voice cards, then run /join again". At the same time a window, **The
+Whisper mode is not installed**, lists everything your model, device and voice still need,
+with each size and the total; **Download** fetches it all. Starting VoiceBro never opens
+the window. **Not now** closes it; the notices keep their **Download** buttons. After the
+download, run `/join` again.
 
 **Rather download the files yourself?** As for the wake word (section 5), the window and
 the notices name each file and link to the page it is published on. Press **Open assets
@@ -448,9 +450,8 @@ published as `ggml-model.bin`, so rename the file after the download.
 These are in **Settings → Whisper**.
 
 - **Device**: **CPU** (the default) or **NVIDIA GPU (CUDA)**. The GPU needs an NVIDIA
-  graphics card with its driver and the larger runtime download. In the Whisper mode its
-  notice and **Download** appear under **Device**; in the realtime mode it is part of the
-  card's notice. Whisper on AMD or Intel graphics is not available.
+  graphics card with its driver and the larger runtime download, which the card's notice
+  lists with **Download**. Whisper on AMD or Intel graphics is not available.
 - Without a usable NVIDIA card, Whisper runs on the CPU. The line on the **Whisper** card
   then reads "GPU requested, CPU used" with the reason, and so does the **Whisper device**
   tile on the **Status** tab.
@@ -465,9 +466,9 @@ These are in **Settings → Whisper**.
 
 ### Choosing a model
 
-Choose the Whisper model in **Config → Assistant** while the mode is Whisper. In the
-realtime mode the choice is kept, and while it misses files the notice on **Settings →
-Whisper** names it (base (q8_0) until you choose another). The model decides how well Whisper hears and how long you wait after a question. Whisper
+Choose the Whisper model in **Settings → Whisper**, in either mode. A model that is not on
+this PC is saved at once, and the card's notice lists its files with **Download** (base
+(q8_0) until you choose another). The model decides how well Whisper hears and how long you wait after a question. Whisper
 always works on a 30-second window, so a short phrase takes almost as long as a long one.
 In our tests on a gaming laptop (Intel Core Ultra 9 275HX with 24 threads, NVIDIA GeForce
 RTX 5090 Laptop GPU), one utterance took:
@@ -530,7 +531,7 @@ in normal game talk. The **Console** shows a "heard" line for everything Whisper
 
 ### The voice
 
-Choose it in **Config → Local voice**.
+Choose it in **Settings → Local voice**.
 
 | Voice | Languages | Notes |
 |---|---|---|
@@ -565,12 +566,14 @@ a running session ends with the falling tone, the bot stays in the channel, and 
 session uses the new mode.
 
 - Switching to Whisper loads Whisper and the voice in the background; the line on
-  **Settings → Whisper** shows it. If files are missing, the download window asks first.
-  Downloading them beforehand, in the realtime mode, avoids the wait.
+  **Settings → Whisper** shows it. If files are missing, no window pops up: the note in
+  **Config → Assistant** says what is not downloaded, **Open Settings** takes you to it,
+  and the bot hears nothing in the Whisper mode until the files are here. Downloading them
+  beforehand, in the realtime mode, avoids the wait.
 - Switching back to realtime voice unloads them.
 - **Config → Assistant** swaps its rows with the mode: the wake model and its phrases in the
-  realtime mode, the Whisper model and the Whisper phrases in the Whisper mode. Each keeps
-  its values for the way back.
+  realtime mode, the Whisper phrases in the Whisper mode. Each keeps its values for the way
+  back.
 
 The Whisper model and the voice load when the bot joins a voice channel, so `/join` takes a
 moment longer, and they are unloaded half a second after the bot leaves its last channel.
@@ -750,12 +753,12 @@ remembers which cards are folded.
 |---|---|
 | Settings → Appearance | Theme and font size. |
 | Settings → Diagnostics | **Performance monitoring**, **Memory measurement**, **Verbose log**. All are off by default and cost nothing while off. **Opus codec (experiment)**: which Opus implementation encodes and decodes the voice (the assistant toward Discord, your speech toward Codex and its answer, the people in the channel): libopus, the C library VoiceBro has always used and the default, or opus-rs, written in Rust and being tried as its replacement. A change applies at the next `/join` and the next call; the line under the list shows the codec in use. |
-| Settings → Whisper | Whether the Whisper mode is on (it is switched in Config → Assistant), CPU or NVIDIA GPU, the CPU threads, the language, what is in use and the last answer's timings, the Whisper models folder, and, in the realtime mode, the download of the Whisper files ahead of the switch ([section 7](#7-the-whisper-mode)). |
+| Settings → Whisper | Whether the Whisper mode is on (it is switched in Config → Assistant), the Whisper model, CPU or NVIDIA GPU, the CPU threads, the language, the download of the Whisper files (in either mode), what is in use and the last answer's timings, and the Whisper models folder ([section 7](#7-the-whisper-mode)). |
+| Settings → Local voice | The voice that reads the answers in the Whisper mode, its speed, **Preview**, and its download. Not used in the realtime mode. |
 | Config → Discord and Codex | The Discord bot token, the server ID, the path of `codex.exe` when it is not found on its own. Press **Save changes**. |
 | Config → Access | **Who the assistant hears** (Everyone by default, People who agreed, Only my Discord account), **Privacy policy URL**, the link to your Discord account and the people who agreed with `/optin` ([section 8](#who-the-assistant-hears)). |
 | Config → Audio | How loud the assistant hears the channel and how loud it speaks; the short tones at session start and end. |
-| Config → Assistant | **Assistant mode** (realtime voice, the default, or Whisper), the grey **Recognition** field and the **Engine** (Codex, Claude Code or OpenCode, [section 4](#4-set-up-the-engine)); wake word or always listening, the phrases, the auto-stop time, and the model with its download: the wake model in the realtime mode, the Whisper model in the Whisper mode, each with its own phrases; **One speaker at a time** (off by default, [section 8](#when-two-people-talk-at-once)). |
-| Config → Local voice | The voice that reads the answers in the Whisper mode, its speed, **Preview**, and its download. Not used in the realtime mode. |
+| Config → Assistant | **Assistant mode** (realtime voice, the default, or Whisper), the grey **Recognition** field and the **Engine** (Codex, Claude Code or OpenCode, [section 4](#4-set-up-the-engine)); wake word or always listening, the phrases, the auto-stop time; the wake model with its download in the realtime mode, the Whisper phrases and the note on what the Whisper mode misses in the Whisper mode; **One speaker at a time** (off by default, [section 8](#when-two-people-talk-at-once)). |
 | Config → Codex, Claude Code or OpenCode | The card of the engine in use, titled after it. **Codex:** the model and reasoning effort for looked-up answers (in the Whisper mode, for every answer), the voice of the realtime call; the model, reasoning and voice lists come from the last time VoiceBro read them from Codex, the card says when that was, **Refresh lists** reads them now, and **Refresh the lists at start** (off by default) reads them at every start of VoiceBro. **Claude Code** and **OpenCode:** the program's path when it is not found on its own, and the model. **Every engine:** your instructions for the assistant (one text for all three), whether it gets the names of the people in the channel, **Save chat history**, **Post answers to Discord** and the channel for it ([section 8](#posting-the-answers-to-discord)). |
 | Config → Hotkey | The mute hotkey. |
 
@@ -847,7 +850,8 @@ longer need them.
 | The wake phrase does nothing | Look at **Wake word** on the **Status** tab: it says when the model still waits for its download (press **Download** under **Wake model** in **Config → Assistant**, or put the files there yourself as section 5 describes), when no phrases are set, or which words the model does not know. The **Console** shows a "heard:" line for everything the recognizer understood, so you can pick phrases it hears correctly. |
 | The bot joins but does not hear or speak | Check that the bot has **Connect** and **Speak** in that channel, and look for errors in the **Console**. |
 | The answers are not posted in Discord | Check **Post answers to Discord** in the engine's card. In the realtime mode only answers Codex looked up are posted, not what the voice answers on its own. With **A chosen channel**, only answers from that channel's server go there. Look for an `answers` error on the **Status** tab: it names the channel and what Discord refused, usually a missing **Send Messages** or **Embed Links** ([section 8](#posting-the-answers-to-discord)). |
-| `/join` replies "The Whisper mode needs downloads" | The Whisper model, its runtime or the voice is not on this PC yet. Press **Download** in the window that opens in VoiceBro, or in the notices of **Config → Assistant** and **Config → Local voice**, or put the files there yourself ([section 7](#downloads)). Then `/join` again. |
+| `/join` replies "The Whisper mode needs downloads" | The Whisper model, its runtime or the voice is not on this PC yet. Press **Download** in the window that opens in VoiceBro, or in the notices of **Settings → Whisper** and **Settings → Local voice**, or put the files there yourself ([section 7](#downloads)). Then `/join` again. |
+| `/join` replies "The wake word needs downloads" | The Vosk recognizer or the wake model is not on this PC yet. Press **Download** in the window that opens in VoiceBro or under **Wake model** in **Config → Assistant**, or put the files there yourself ([section 5](#5-set-the-wake-phrase)). Then `/join` again. |
 | Whisper runs on the CPU although you chose the NVIDIA GPU | The line on **Settings → Whisper** and the **Whisper device** tile on the **Status** tab say why: no NVIDIA graphics card or driver, the GPU runtime not downloaded yet, or the CPU runtime was already in use since VoiceBro started, in which case restart VoiceBro. |
 | Answers in the Whisper mode come slowly | Look at the last answer's timings on **Settings → Whisper**. A long time from the end of speech to the text means the Whisper model is too slow for this PC: choose a smaller model in **Config → Assistant**, or the NVIDIA GPU. A long time from the text to the engine's first words is the engine: with Codex choose a lower **Reasoning** in **Config → Codex**, with Claude Code or OpenCode a faster **Model** in its card. |
 | In the Whisper mode, side talk cuts off the answers | During a session everything said is a question, and a new question replaces the one being answered. End the session with the deactivation phrase before you talk among yourselves, or use **Mute**. |

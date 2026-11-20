@@ -8,16 +8,18 @@ clear messages, so the settings file never has to be edited by hand.
 
 ### Requirement: Every setting is editable
 Every field of the settings document SHALL have a control, split between the Settings and
-Config tabs. The Settings tab holds the window's own settings: Appearance (theme, font
-size) and Diagnostics (performance monitoring, memory measurement, verbose log, Opus
-codec). The Config tab holds the bot's settings: "Discord and Codex" (token, guild id, Codex
-executable), then Access (who the assistant hears, privacy policy URL); Audio (both gains,
-earcons and their volume); Assistant (session mode, idle timeout, engine, wake engine and
-model, activation and deactivation phrases, one speaker at a time); the engine card, titled
-after the selected engine: for Codex refresh the lists at start, model, reasoning effort,
-voice and answer handoff, for Claude Code its executable and model, for OpenCode its
-executable and model, and for every engine speaker labels, save chat history, post answers
-to Discord and its channel, and instructions; Hotkey (mute), in that order.
+Config tabs. The Settings tab holds the window's own settings and what runs on this PC:
+Appearance (theme, font size), Diagnostics (performance monitoring, memory measurement,
+verbose log, Opus codec), Whisper (the Whisper model, device, CPU threads, language) and
+Local voice (voice, speed). The Config tab holds the bot's settings: "Discord and Codex"
+(token, guild id, Codex executable), then Access (who the assistant hears, privacy policy
+URL); Audio (both gains, earcons and their volume); Assistant (assistant mode, engine, wake
+model, activation and deactivation phrases, session mode, idle timeout, one speaker at a
+time); the engine card, titled after the selected engine: for Codex refresh the lists at
+start, model, reasoning effort, voice and answer handoff, for Claude Code its executable and
+model, for OpenCode its executable and model, and for every engine speaker labels, save chat
+history, post answers to Discord and its channel, and instructions; Hotkey (mute), in that
+order.
 
 #### Scenario: Field for each setting
 - **WHEN** the Settings and Config tabs are opened
@@ -25,20 +27,20 @@ to Discord and its channel, and instructions; Hotkey (mute), in that order.
 
 #### Scenario: The Settings tab
 - **WHEN** the user opens the Settings tab
-- **THEN** it shows the Appearance and Diagnostics cards and no Access, Audio, Assistant, Codex or Hotkey card
+- **THEN** it shows the Appearance, Diagnostics, Whisper and Local voice cards, in that order, and no Access, Audio, Assistant, engine or Hotkey card
 
 #### Scenario: The Config tab
 - **WHEN** the user opens the Config tab with Codex as the engine
-- **THEN** it shows the cards "Discord and Codex", Access, Audio, Assistant, Codex and Hotkey, in that order
+- **THEN** it shows the cards "Discord and Codex", Access, Audio, Assistant, Codex and Hotkey, in that order, and no Local voice card
 
 #### Scenario: The engine card with Claude Code
 - **WHEN** the user opens the Config tab with Claude Code as the engine
-- **THEN** the card after Local voice is titled "Claude Code" and holds the executable, the model, speaker labels, save chat history, post answers and instructions, and no Codex voice, handoff or reasoning field
+- **THEN** the card after Assistant is titled "Claude Code" and holds the executable, the model, speaker labels, save chat history, post answers and instructions, and no Codex voice, handoff or reasoning field
 
 ### Requirement: Config tab fields
 The Config tab's "Discord and Codex" card SHALL hold the Discord token (write-only, with set
-and clear), the guild id and the Codex executable. The Access, Audio, Assistant, Local
-voice, engine and Hotkey cards follow it on the same tab, in that order.
+and clear), the guild id and the Codex executable. The Access, Audio, Assistant, engine and
+Hotkey cards follow it on the same tab, in that order.
 
 #### Scenario: Config fields
 - **WHEN** the Config tab is opened
@@ -46,7 +48,7 @@ voice, engine and Hotkey cards follow it on the same tab, in that order.
 
 #### Scenario: Card order
 - **WHEN** the user opens the Config tab
-- **THEN** the cards after "Discord and Codex" are Access, Audio, Assistant, Local voice, the engine card and Hotkey
+- **THEN** the cards after "Discord and Codex" are Access, Audio, Assistant, the engine card and Hotkey
 
 ### Requirement: No auto-connect control
 The window SHALL have no control for connecting at start-up: the bot always connects when a
@@ -333,33 +335,33 @@ saved and the Chat tab still shows it, and that files saved earlier stay.
 
 ### Requirement: Choosing a model that is not installed
 When the user picks a model in the wake model list whose files or the Vosk library are not
-on disk, the window SHALL open the install dialog before saving. Download SHALL save the
-choice and start that model's download; Cancel SHALL put the list back on the stored model
-and save nothing. A model whose files are all on disk SHALL be saved at once, as before.
+on disk, the window SHALL save the choice at once and open no dialog. The Assistant card's
+download notice SHALL then list the missing files with Download, and nothing SHALL be
+downloaded until Download is pressed.
 
 #### Scenario: Missing model picked
 - **WHEN** the English model is installed and selected and the user picks the German model, which is not on disk
-- **THEN** the install dialog lists the German model with its size and site, and the settings file still names the English model
+- **THEN** no dialog opens, the settings file names the German model, and the notice under Wake model lists the German model with its size and site and a Download button
 
 #### Scenario: Download chosen
-- **WHEN** the user presses Download in that dialog
-- **THEN** the German model is saved as the wake model, its download starts, and the dialog shows the progress
+- **WHEN** the user presses Download in that notice
+- **THEN** the German model's download starts and the notice shows the progress
 
 #### Scenario: Cancel chosen
-- **WHEN** the user presses Cancel in that dialog
-- **THEN** the list shows the English model again, nothing is saved, and nothing is downloaded
+- **WHEN** the user picks the English model again before pressing Download
+- **THEN** the English model is saved, the notice disappears, and nothing is downloaded
+
+#### Scenario: The list while the dialog is open
+- **WHEN** the install dialog of a refused join is open and the wake model list changes anyway (a script, a keyboard path)
+- **THEN** the list goes back to the stored model, nothing is saved, and the dialog's Download keeps naming the model it asked about
 
 #### Scenario: Installed model picked
 - **WHEN** the user picks a model whose files and the Vosk library are on disk
-- **THEN** no dialog opens and the choice is saved at once
-
-#### Scenario: The list while the dialog is open
-- **WHEN** the install dialog is open and the wake model list changes anyway (a script, a keyboard path)
-- **THEN** the list goes back to the stored model, nothing is saved, and the dialog's Download keeps naming the model it asked about
+- **THEN** no dialog opens, the choice is saved at once, and no notice shows
 
 #### Scenario: Local model without the library
 - **WHEN** the user picks a local model while the Vosk library is not on disk
-- **THEN** the dialog lists only the Vosk library
+- **THEN** the choice is saved and the notice lists only the Vosk library
 
 ### Requirement: The download notice offers the download by hand
 Next to its Download button the Assistant card's download notice SHALL show the same
@@ -586,17 +588,6 @@ mode. Below it a grey Recognition field SHALL show "Vosk" in the realtime mode a
 - **WHEN** the user picks Whisper as the assistant mode on the Config tab
 - **THEN** the mode is saved at once, and the Recognition field shows "Whisper"
 
-### Requirement: Whisper model in the Assistant card
-In the Whisper mode the Assistant card's model field SHALL list the Whisper models instead
-of the Vosk models: grouped as Multilingual, English only, Russian-tuned and Your models,
-each entry with its size, its note and whether it is downloaded. Its download notice and
-Download button SHALL work as the Vosk model's do. In the realtime mode the field SHALL be
-the Vosk wake model, as before.
-
-#### Scenario: Whisper model not downloaded
-- **WHEN** the mode is Whisper and the selected Whisper model is not on disk
-- **THEN** the Assistant card shows the notice with the runtime, the model and the VAD model, their sizes and sites, and a Download button
-
 ### Requirement: Phrase fields follow the mode
 The Assistant card's activation and deactivation phrase fields SHALL hold the selected Vosk
 model's phrases in the realtime mode and the Whisper phrases (`whisper.phrases`) in the
@@ -608,7 +599,7 @@ set the fields hold. The activation control (wake word or always) SHALL stay bel
 - **THEN** the fields show the Vosk model's phrases again, and "hey bro" is kept in `whisper.phrases`
 
 ### Requirement: Local voice card
-The Config tab SHALL have a Local voice card after the Assistant card. It SHALL hold:
+The Settings tab SHALL have a Local voice card after the Whisper card. It SHALL hold:
 
 - the voice, grouped by engine and language, each entry with its size and whether it is
   downloaded or built into Windows, and the voice's data license;
@@ -616,9 +607,16 @@ The Config tab SHALL have a Local voice card after the Assistant card. It SHALL 
 - Preview;
 - the voice's download notice with a Download button.
 
+A voice that misses files SHALL be saved at once when picked, in either assistant mode, and
+its notice SHALL list the missing files; no dialog SHALL open.
+
 #### Scenario: Preview
 - **WHEN** the user presses Preview with a downloaded voice
 - **THEN** a short neutral sample sentence in the voice's language plays in the window, and nothing is sent to Discord
+
+#### Scenario: A voice that is not downloaded
+- **WHEN** the mode is Whisper and the user picks a Piper voice whose files and phonemizer are not on disk
+- **THEN** no dialog opens, the voice is saved, and the card's notice lists the phonemizer and the voice with their sizes and a Download button
 
 ### Requirement: The Local voice card says when the voice is used
 The Local voice card SHALL show a note that follows the assistant mode. In the realtime
@@ -634,7 +632,9 @@ into the channel.
 The Settings tab SHALL have a Whisper card after Appearance and Diagnostics. It SHALL hold:
 
 - a label "On" or "Off" that follows the assistant mode, saying where to switch it;
+- the Whisper model, grouped, each entry with its size, note and download state;
 - the device (CPU, NVIDIA GPU), the CPU threads and the language;
+- the card's download notice;
 - the line with what is loaded, on which device, and the last answer's timings;
 - "Open Whisper models folder".
 
@@ -646,24 +646,17 @@ The Settings tab SHALL have a Whisper card after Appearance and Diagnostics. It 
 - **WHEN** the device is NVIDIA GPU and the status says the CPU is used
 - **THEN** the Whisper card's line says "GPU requested, CPU used" with the reason
 
-### Requirement: Whisper's files can be downloaded before the switch
-While the assistant mode is realtime voice and the Whisper model chosen for the Whisper mode
-(`whisper.model`) misses files, the Settings tab's Whisper card SHALL show a notice naming
-that model and listing every missing file for the chosen device, with a Download button.
-In the Whisper mode that notice SHALL be under the Whisper model on the Config tab instead.
+#### Scenario: A model that is not downloaded
+- **WHEN** the mode is Whisper and the user picks the model "small", which is not on disk
+- **THEN** no dialog opens, the model is saved, and the card's notice lists the model with its size and a Download button
 
-#### Scenario: Realtime mode with nothing of Whisper downloaded
-- **WHEN** the assistant mode is realtime voice and nothing of Whisper is on disk
-- **THEN** the Settings tab's Whisper card names the model "base (q8_0)" and lists the runtime, the model and the VAD model with their sizes and a Download button
+#### Scenario: The model list's groups
+- **WHEN** the user opens the Whisper model list
+- **THEN** it is grouped as Multilingual, English only, Russian-tuned and Your models
 
-### Requirement: The CUDA runtime's notice sits under the device
-When NVIDIA GPU is chosen on the Settings tab's Whisper card and the CUDA runtime is not on
-disk, the card SHALL show the runtime's notice under the device field: its size, site and a
-Download button.
-
-#### Scenario: GPU chosen without the CUDA runtime
-- **WHEN** the user chooses NVIDIA GPU on a PC with only the CPU runtime
-- **THEN** the card shows the CUDA runtime, 685 MB from github.com, with Download, and nothing is fetched until Download is pressed
+#### Scenario: A device that misses files in the realtime mode
+- **WHEN** the mode is realtime voice and the user picks NVIDIA GPU without the CUDA runtime on disk
+- **THEN** no dialog opens, the device is saved, and the card's notice lists the CUDA runtime
 
 ### Requirement: Realtime-only Codex fields say so
 The Codex card's Voice and Answer handoff fields SHALL say in their help lines that they
@@ -718,7 +711,7 @@ disabled with "The voice mode works only with Codex".
 
 #### Scenario: Whisper files missing
 - **WHEN** the mode is Realtime voice, the Whisper files are not downloaded and the user picks OpenCode
-- **THEN** the install dialog for the Whisper files opens as it does when Whisper is picked as the mode
+- **THEN** no download dialog opens, and the Assistant card shows the note that the Whisper files are not downloaded with its button to Settings
 
 #### Scenario: Back to Codex
 - **WHEN** the engine is Claude Code in the Whisper mode and the user picks Codex
@@ -798,4 +791,46 @@ should reach the assistant, with "Hear only me" and "Not now". Either answer SHA
 
 #### Scenario: Both dialogs
 - **WHEN** the user picks Claude Code for the first time in the realtime mode with the Whisper files missing
-- **THEN** the subscription dialog opens first and the Whisper files dialog after it is answered
+- **THEN** the subscription dialog opens, no download dialog follows it, and Config → Assistant shows the note that the Whisper files are not downloaded
+
+### Requirement: The Whisper card's download notice
+The Settings tab's Whisper card SHALL show one download notice while the selected Whisper
+model misses files for the selected device, in both assistant modes. It SHALL list each
+missing file (the runtime for the device, the model, the VAD model) with its size and site,
+the total, the download by hand and a Download button. Nothing SHALL be downloaded until
+Download is pressed.
+
+#### Scenario: Realtime mode with nothing of Whisper downloaded
+- **WHEN** the assistant mode is realtime voice and nothing of Whisper is on disk
+- **THEN** the Whisper card's notice lists the CPU runtime, the model "base (q8_0)" and the VAD model with their sizes, the total and a Download button
+
+#### Scenario: GPU chosen without the CUDA runtime
+- **WHEN** the user chooses NVIDIA GPU on a PC with only the CPU runtime and the selected model on disk
+- **THEN** the notice lists the CUDA runtime, 685 MB from github.com, with Download, and nothing is fetched until Download is pressed
+
+#### Scenario: Everything on disk
+- **WHEN** the selected model, the runtime for the device and the VAD model are on disk
+- **THEN** the Whisper card shows no download notice
+
+### Requirement: Config → Assistant says what the Whisper mode misses
+In the Whisper mode, while the selected Whisper model, its runtime or VAD model, or the
+voice misses files, the Assistant card SHALL show a note under the assistant mode naming
+what is not downloaded and saying to download it first, with an "Open Settings" button. The
+button SHALL show the Settings tab with the first card that misses files expanded and in
+view. The note SHALL go once nothing is missing, and SHALL not show in the realtime mode.
+
+#### Scenario: Switched to Whisper with nothing downloaded
+- **WHEN** the user picks Whisper as the assistant mode and nothing of Whisper or the voice is on disk
+- **THEN** the mode is saved, and the Assistant card says that the Whisper model and the voice are not downloaded and to download them first in Settings, with "Open Settings"
+
+#### Scenario: Open Settings
+- **WHEN** the user presses "Open Settings" in that note while the Whisper card is collapsed
+- **THEN** the Settings tab shows with the Whisper card expanded and its download notice in view
+
+#### Scenario: Only the voice missing
+- **WHEN** the Whisper files are on disk and the selected voice is not
+- **THEN** the note names only the voice, and "Open Settings" shows the Local voice card
+
+#### Scenario: Downloads done
+- **WHEN** the downloads of the Whisper files and the voice finish
+- **THEN** the note disappears from the Assistant card

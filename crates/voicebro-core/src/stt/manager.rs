@@ -28,8 +28,10 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The reply to a `/join` in Whisper mode while files are missing (design D12).
-pub const JOIN_NEEDS_DOWNLOADS: &str = "The Whisper mode needs downloads: open VoiceBro → Config and press Download in the Assistant and Local voice cards";
+/// The reply to a `/join` in Whisper mode while files are missing (design D12; the places
+/// since change `models-in-settings`). Its start, up to the colon, is what the window looks
+/// for in the log.
+pub const JOIN_NEEDS_DOWNLOADS: &str = "The Whisper mode needs downloads: open VoiceBro → Settings and press Download in the Whisper and Local voice cards, then run /join again";
 /// Whisper unloads this long after the bot left its last voice channel.
 pub const UNLOAD_AFTER: Duration = Duration::from_millis(500);
 /// About 5 s of one speaker's frames toward the cutter.

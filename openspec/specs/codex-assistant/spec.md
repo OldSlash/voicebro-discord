@@ -132,7 +132,7 @@ and what to do.
 
 #### Scenario: Whisper files missing
 - **WHEN** a member runs `/join` in Whisper mode and the selected Whisper model is not downloaded
-- **THEN** the bot stays out of the channel, the reply says to open VoiceBro's Config tab and press Download in the Assistant and Local voice cards, then run `/join` again, and the window opens the install dialog
+- **THEN** the bot stays out of the channel, the reply says to open VoiceBro's Settings tab and press Download in the Whisper and Local voice cards, then run `/join` again, and the window opens the install dialog
 
 #### Scenario: Whisper mode join
 - **WHEN** a member runs `/join` in Whisper mode with every file on disk

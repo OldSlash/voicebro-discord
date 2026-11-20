@@ -718,7 +718,8 @@ pub struct Phrase { pub text: String, pub words: Vec<String> }
   counter) applies the newest settings instead of publishing its own result.
   `WakeManager::requirements(model)` (command `wake_requirements {model}`) lists what
   choosing any catalog or local model would download, without changing anything; the
-  window's model choice asks it before saving.
+  window's install dialog lists it after a refused join, and the join's preparation asks it
+  in the realtime mode with the wake word (4.10, change `models-in-settings`).
   Every transition is published as `AppEvent::Wake(WakeStatus)` and visible in
   `Status.wake`. The manager implements `WakeFeed`; `feed` drops when the worker's queue is
   full and counts the drop.
@@ -1485,12 +1486,20 @@ hands to the assistant (`use_tts`); both live in the gate host (4.12).
 - *The feed.* Every gate's feed is a `ModeFeed`, which hands each frame and tick to the wake
   manager and to Whisper. Each takes them only while it runs: Vosk only in the realtime mode
   with the wake word, Whisper only while a model is loaded.
-- *Join.* `GateHost::prepare_join` awaits the assistant's preparation, then in the Whisper
-  mode `prepare_whisper`: `WhisperManager::prepare_join` and `TtsManager::prepare_join` on a
-  blocking thread. Missing files refuse the join with "The Whisper mode needs downloads:
-  open VoiceBro → Config and press Download in the Assistant and Local voice cards"
-  (`JOIN_NEEDS_DOWNLOADS`), and the window opens its dialog (4.8); a load error refuses it
-  with the error.
+- *Join.* `GateHost::prepare_join` first checks the wake word's files (change
+  `models-in-settings`): in the realtime mode with the wake word, a selected model or Vosk
+  library not on disk (`WakeManager::requirements`, the disk only) refuses the join before
+  the assistant starts, with "The wake word needs downloads (<labels>): open VoiceBro →
+  Config and press Download under Wake model, then run /join again"
+  (`wake::join_refusal`, its start `JOIN_NEEDS_WAKE_FILES`); always listening and the
+  Whisper mode do not need Vosk. It then awaits the assistant's preparation, and in the
+  Whisper mode `prepare_whisper`: `WhisperManager::prepare_join` and
+  `TtsManager::prepare_join` on a blocking thread. Missing files refuse the join with "The
+  Whisper mode needs downloads: open VoiceBro → Settings and press Download in the Whisper
+  and Local voice cards, then run /join again" (`JOIN_NEEDS_DOWNLOADS`); a load error
+  refuses it with the error. Either refusal is logged as "join to guild <id> refused:
+  <reply>", and the window opens its install dialog when it sees one of the two starts in
+  that line (4.8).
 - *Leave.* `on_leave` detaches the assistant and drops what Whisper cut or queued for the
   guild. After the last leave it calls `release` on both, which unload 0.5 s later unless
   the bot joined again first.
@@ -1702,10 +1711,10 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     with a link to its `page`, an "Open assets folder" button (`open_assets_folder`) and a
     line on putting the `.zip` files into that folder and pressing Download. It is hidden
     while the state is `downloading` or `installing`, and after a failure it is filled
-    again from `wake_requirements`, so it lists only what is still missing. Choosing a wake model first asks `wake_requirements {model}`:
-    nothing missing saves at once; otherwise the install dialog opens with the `choice`
-    reason and nothing is saved until its Download (which saves, then calls
-    `wake_download`); Cancel puts the list back on the stored model. The Codex model, reasoning effort and
+    again from `wake_requirements`, so it lists only what is still missing. Choosing a wake
+    model saves it at once, whatever it misses (change `models-in-settings`, D3); the notice
+    then lists its files with Download. While the install dialog is open the list cannot
+    change (a change from a script or a keyboard path goes back to the stored model). The Codex model, reasoning effort and
     voice are selects filled from `capabilities` when the engine has lists, read in this
     run or saved from the last read (`codex-lists.json`, 4.5), and text inputs with a
     datalist only while none was ever read; the effort list follows the chosen model. The Codex card's
@@ -1719,37 +1728,37 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     button, with the earcon switch, and under each gain the last second's peak and the clip
     count from `Status.audio`.
   - **Install dialog** (`<dialog id="wake-install">`, opened with `showModal()`): one modal
-    dialog for the wake word's missing files, driven by `status.wake`, armed by `start()`
-    once the model list and the settings are loaded. In wake-word mode and
-    `needs_download` it opens when the number of `discord.voice_channels` grows (`join`;
-    a bot already in a channel at the first status after arming counts too, which only a
-    reload of the window can show), when the wake state turns into `needs_download` from
-    another kind, as after a switch to wake word (`mode`), and from the wake model choice
-    (`choice`). The window's start alone never opens it (the user's decision of
-    2026-11-12; until then a `start` trigger opened it at the first status). The reason is
-    in the dialog's `data-reason`. It names the model and each missing file with its size
+    dialog for the wake word's missing files, armed by `start()` once the model list and
+    the settings are loaded. Since change `models-in-settings` (D4) it opens only for a
+    `/join` refused because files are missing: the core logs "join to guild <id> refused:
+    <reply>", the `log` event carries the line, and a line holding "The wake word needs
+    downloads" makes the window ask `wake_requirements` for the stored model and open the
+    dialog with the reason `join` (in `data-reason`). Never at the window's start (the
+    user's decision of 2026-11-12), at a switch of the mode or the activation, or for a
+    choice (the user's decision of 2026-11-20): a choice saves at once and its notice lists
+    the files. It names the model and each missing file with its size
     and site, the total, and the download-by-hand part. Download calls `wake_download`
     ("Starting…", not "the download", since files from the folder are not downloaded) and
     shows the progress in the dialog (one button, Hide): "Downloading the <label>: N %"
     and "Checking and unpacking the <label>…". It closes when the state leaves
     `downloading` or `installing` for `ready`, `no_phrases` or `loading`, and shows an
     error with Try again and Close. Not now, Hide, Close and Escape store nothing: the
-    state stays `needs_download`, so only a new trigger opens it again, and the card's
-    notice stays.
+    state stays `needs_download`, so only another refused join opens it again, and the
+    card's notice stays. Its note says to run `/join` again once the files are here: the
+    bot does not join by itself after the download.
     `apps/desktop/ui-dev/check-wake-dialog.mjs` runs all of this against the mock.
     **The Whisper subject** (changes `whisper-mode` and `whisper-config-layout`): the same
     dialog, with `data-subject="whisper"` and the title "The Whisper mode is not
     installed", lists every file the selected Whisper model, device and voice need
     (`whisper_requirements {model, device, voice}`: Whisper's files, then the voice's, each
-    file once), always with the total, and the download-by-hand part. It opens only while
-    the mode is Whisper and files are missing: after a `/join` refused for them (`join`: the
-    refusal's log line seen within 5 s), after a switch to the Whisper mode (`mode`, within
-    10 s), and before a Whisper model (Config → Assistant), a device (Settings → Whisper)
-    or a voice (Config → Local voice) that adds missing files is saved (`choice`: nothing is
-    saved until Download, and Cancel puts the previous value back). In the realtime mode a
-    choice saves at once, and its card shows the notice. Never because the window started.
-    Download calls both `whisper_download {model}` and `tts_download {voice}`, which give
-    each manager its consent, and the progress follows `status.whisper` and `status.tts`.
+    file once), always with the total, and the download-by-hand part. It opens only after
+    a `/join` refused for them in the Whisper mode (`join`: the refusal's log line, holding
+    "The Whisper mode needs downloads", seen within 5 s), and waits while the Claude
+    subscription dialog is open. Never because the window started, the mode was switched or
+    a Whisper model, device or voice was picked (change `models-in-settings`, D4): each
+    choice saves at once in both modes and its card shows the notice. Download calls both
+    `whisper_download {model}` and `tts_download {voice}`, which give each manager its
+    consent, and the progress follows `status.whisper` and `status.tts`.
   - **Codec failure notice** (`<dialog id="codec-failure">`, change
     `opus-codec-experiment`): opened with `showModal()` by `AppEvent::CodecFailure`
     (`showCodecFailure`), in the install dialog's style with the error colour as its border.
@@ -1774,7 +1783,7 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     an "Auto-start enabled" badge, Save changes (one settings patch for the edited fields
     plus `set_secret` when a token was typed) and Reset (back to the stored values); its
     fields (`data-config-path`) are the only ones that wait for Save changes. Below it come
-    the Access, Audio, Assistant, Local voice, Codex and Hotkey cards, which save each change at once, then the
+    the Access, Audio, Assistant, Codex (the engine card) and Hotkey cards, which save each change at once, then the
     tab's feedback line and one line with the path of `settings.json` (`#config-path`),
     outside every card. The tab never shows the contents of the settings file.
   - **Access** (Config, after "Discord and Codex"; changes `owner-only-access` and
@@ -1799,8 +1808,8 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     `owner_link_cancel` and `owner_unlink`, disable the three buttons meanwhile and refresh
     the status.
   - **Collapsible cards** (Settings and Config): each of the ten cards has `data-card`
-    (`appearance`, `diagnostics`, `whisper` on Settings; `discord`, `access`, `audio`,
-    `assistant`, `local-voice`, `codex`, `hotkey` on Config; the ids that change
+    (`appearance`, `diagnostics`, `whisper`, `local-voice` on Settings; `discord`, `access`,
+    `audio`, `assistant`, `codex`, `hotkey` on Config; the ids that change
     `whisper-mode`'s removed cards may have stored are kept and ignored), its title inside a `<button class=
     "card-toggle" aria-expanded aria-controls>` with a CSS chevron, and its body in
     `.card-body`, which `hidden` hides; "Discord and Codex" keeps its badge in the title
@@ -1839,27 +1848,46 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
     join publish an `assistant` event, which loads them) and rebuilds the lists only when
     the models or voices changed, keeping the stored choice.
   - **The Whisper mode's fields** (change `whisper-mode`, laid out by change
-    `whisper-config-layout`, designs D3 to D5). There is no tab of their own: the bot's
-    settings are on Config, how Whisper runs on this PC is on Settings. Every field saves
-    each change through the normal path, with its help line and validation message.
+    `whisper-config-layout`, designs D3 to D5, and moved by change `models-in-settings`,
+    D1 and D2). There is no tab of their own: the bot's behaviour is on Config, the models,
+    the voice and how Whisper runs on this PC are on Settings. Every field saves each change
+    through the normal path, with its help line and validation message; a model, device or
+    voice that misses files saves at once too, in both modes, and no dialog opens.
     - *Config → Assistant* follows the mode and swaps rows, not data: each row writes only
       its own path, and the other mode's rows are hidden, not disabled.
       - "Assistant mode" (`assistant.mode`: Realtime voice or Whisper) is the first field;
-        its help line says what runs on the PC and what leaves it in each mode, and that
+        its help line says what runs on the PC and what leaves it in each mode, that
         `codex.model` and `codex.reasoning_effort` set how fast each answer comes in the
-        Whisper mode.
+        Whisper mode, and that Whisper and the voice are set in Settings.
+      - In the Whisper mode, under the mode, the note `#whisper-missing`
+        (`renderWhisperMissing`, from `status.whisper.missing` and `status.tts.missing`,
+        never the form) names what is not on this PC ("Whisper's files for the model
+        <name>", "the voice <name>"), says that `/join` is refused until then, and holds
+        "Open Settings": it shows the Settings tab, unfolds the first card with missing
+        files (Whisper, else Local voice; through `toggleCard`, so the stored list follows)
+        and scrolls its notice into view. It is hidden in the realtime mode and once nothing
+        is missing.
       - "Recognition" is a grey read-only field, "Vosk" or "Whisper", which follows the
         mode. It replaces the wake engine select.
       - The realtime mode shows the wake model row (`wake.model`) with its notice and the
         selected Vosk model's phrase fields, as above.
-      - The Whisper mode shows, in the same place, the Whisper model row (`whisper.model`,
-        from `whisper_models`, grouped as Multilingual, English only, Russian-tuned and
-        Your models, each with its size, note and download state) with its own notice and
-        Download (`whisper_download {model}`), and a second phrase pair bound to
+      - The Whisper mode shows, in the same place, a second phrase pair bound to
         `whisper.phrases` (commas or line breaks; a list never set shows "bro" or "peace
         out"). The help line says which set the fields hold.
       - Activation (`session.mode`) and the auto-stop stay below.
-    - *Config → Local voice* (`local-voice`, after Assistant) works in both modes. A note on
+    - *Settings → Whisper* (`whisper`, after Diagnostics): an "On" or "Off" label that
+      follows `assistant.mode` and says to switch it in Config → Assistant; the Whisper
+      model (`whisper.model`, from `whisper_models`, grouped as Multilingual, English only,
+      Russian-tuned and Your models, each with its size, note and download state); Device
+      (CPU or NVIDIA GPU (CUDA)), CPU threads and Language (`whisper_languages`: Automatic,
+      the ten wake catalog languages, then the rest of Whisper's list); one notice
+      (`#whisper-download`) listing every file the selected model misses for the selected
+      device (runtime, model, VAD model) with the total and Download
+      (`whisper_download {model}`), in both modes; the in-use line from `status.whisper`
+      and `status.tts` (what is loaded, the device or "GPU requested, CPU used: <reason>",
+      the last answer's four timings); and "Open Whisper models folder"
+      (`open_whisper_models_folder`).
+    - *Settings → Local voice* (`local-voice`, after Whisper) works in both modes. A note on
       top follows the mode: in the realtime mode the local voice is not used, because the
       Codex call speaks with its own voice, and it can be downloaded now; in the Whisper mode
       this voice reads Codex's answers into the channel. Then Voice (`tts.voice`, from
@@ -1869,18 +1897,6 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
       release), Preview (`tts_preview {voice, speed}` returns WAV bytes, played in an
       `<audio>` element in the window only) and the voice's notice with Download
       (`tts_download {voice}`).
-    - *Settings → Whisper* (`whisper`, after Diagnostics): an "On" or "Off" label that
-      follows `assistant.mode` and says to switch it in Config → Assistant; Device (CPU or
-      NVIDIA GPU (CUDA)), CPU threads and Language (`whisper_languages`: Automatic, the ten
-      wake catalog languages, then the rest of Whisper's list); the in-use line from
-      `status.whisper` and `status.tts` (what is loaded, the device or "GPU requested, CPU
-      used: <reason>", the last answer's four timings); and "Open Whisper models folder"
-      (`open_whisper_models_folder`). In the Whisper mode, while NVIDIA GPU is chosen and
-      the CUDA runtime is missing, the runtime's items of `status.whisper.missing` show
-      under the device with Download. In the realtime mode the card shows instead the full
-      notice for the model chosen for the Whisper mode: every file it still needs on the
-      chosen device (runtime, model, VAD model) with Download, so everything can be fetched
-      before the switch.
 
     The notices render from `status.whisper.missing` and `status.tts.missing`, which the
     core fills in both modes, and the progress from their states. Each Download fetches
@@ -1929,17 +1945,20 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
   `?whisper_missing` (nothing downloaded) and `?gpu_fallback` (Whisper loaded in a channel,
   the GPU asked for and the CPU used, one measured answer), a refused `join()` with files
   missing, and `failNextWhisperDownload`, `completeWhisperDownload`, `placeWhisperFiles`,
-  `setCuda` and `whisperTurn`),
+  `setCuda` and `whisperTurn`; a `join()` in the realtime mode with the wake word is refused
+  too while the Vosk files are missing, with the core's reply in its log line),
   `make.mjs`, which writes `ui-dev/index.html` from `ui/index.html` with the mock loaded
   first, and `serve.mjs`, which serves it on `http://127.0.0.1:5174/` for browsers that do
-  not run scripts from `file://`. Three headless checks drive the mock in Edge and stop at
-  the first failure: `check-wake-dialog.mjs` (the install dialog),
+  not run scripts from `file://`. Four headless checks drive the mock in Edge and stop at
+  the first failure: `check-wake-dialog.mjs` (the install dialog at a refused join, the
+  wake model's choice and notice),
   `check-config-tab.mjs` (which cards each tab holds, the two ways of saving on Config,
   the collapsible cards of both tabs, the switches' size, label and keyboard, the Codex lists and
-  Refresh lists, and Post answers to Discord with its channel list) and
+  Refresh lists, and Post answers to Discord with its channel list),
   `check-whisper-config.mjs` (the Whisper mode's fields on Config and Settings: the rows of
-  each mode, the Local voice and Settings → Whisper cards, the notices and Download in both
-  modes, and when the install dialog's Whisper subject opens).
+  each mode, the Settings → Whisper and Local voice cards, the notices and Download in both
+  modes, the Config note with Open Settings, and that only a refused join opens the
+  install dialog's Whisper subject) and `check-engine-config.mjs` (the engines).
 - Window lifecycle: destroying the main window exits the app, which stops `codex.exe`.
 
 ### 4.9 Probe binary (`apps/probe`)

@@ -461,8 +461,13 @@ input.switch:checked + .switch-state { color: var(--accent); }
 .claude-notice[hidden] { display: none; }
 .download-notice .notice-total { color: var(--ink-dim); }
 .download-notice .notice-total:empty { display: none; }
+/* Change `models-in-settings` (D6): what the Whisper mode misses, on Config → Assistant, in
+   the same frame as the notices, with the button to the card that downloads it. */
+.missing-note { align-self: stretch; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); background: var(--field); }
+.missing-note p { margin: 0 0 8px; line-height: 1.45; }
+.missing-note[hidden] { display: none; }
 
-/* Settings → Whisper: what is in use now (status); Config → Local voice: Preview. */
+/* Settings → Whisper: what is in use now (status); Settings → Local voice: Preview. */
 .whisper-now { margin: 0; padding: 2px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--field); }
 .whisper-now div { grid-template-columns: 110px minmax(0, 1fr); padding: 5px 0; }
 .whisper-now div[hidden] { display: none; }

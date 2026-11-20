@@ -294,6 +294,24 @@ impl DownloadItem {
     }
 }
 
+/// The start of the reply to a `/join` refused in the realtime mode with the wake word while
+/// the Vosk files are missing (change `models-in-settings`, design D5). The window opens its
+/// install dialog when a log line holds it.
+pub const JOIN_NEEDS_WAKE_FILES: &str = "The wake word needs downloads";
+
+/// The whole reply to that refused join: [`JOIN_NEEDS_WAKE_FILES`], the missing files and
+/// what to do.
+pub fn join_refusal(missing: &[DownloadItem]) -> String {
+    let labels = missing
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{JOIN_NEEDS_WAKE_FILES} ({labels}): open VoiceBro → Config and press Download under Wake model, then run /join again"
+    )
+}
+
 /// A model as the window lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModelInfo {

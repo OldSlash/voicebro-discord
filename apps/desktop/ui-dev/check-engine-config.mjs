@@ -1,7 +1,7 @@
 // Runs the window's scenarios of change `claude-and-opencode-engines` against the command
 // mock in a headless Edge and stops at the first failure with its name (exit code 1): the
 // Engine list and the realtime mode only Codex has, the engine card, the Claude subscription
-// notice and its dialog (with the Whisper files dialog after it), the Status tab of each
+// notice and its dialog (no download dialog after it since change `models-in-settings`), the Status tab of each
 // engine with its install offer and sign-in, the Chat tab's labels and the System tab's
 // memory share. Each scenario loads the page afresh. Needs Node 24 (built-in WebSocket) and
 // Microsoft Edge; writes its browser profile under target\. Local only; never shipped.
@@ -156,15 +156,17 @@ const scenarios = [
       expect(!r.rows.includes(id) && !r.rows.includes(`${id}-select`), `${id} shown with Claude Code`);
     }
   }],
-  ["OpenCode chosen with the Whisper files missing: the install dialog for them opens", async () => {
+  ["OpenCode chosen with the Whisper files missing: no download dialog, and Config → Assistant says what is not downloaded", async () => {
     await load("?notice_shown");
     const r = await page(`
       tab("config");
       await choose("opencode");
-      await until(filesDialog, 6000);
-      return { files: filesDialog(), title: $("engine-card-title").textContent, mode: stored().assistant.mode };`);
+      await sleep(1500);
+      return { files: filesDialog(), dialogs: document.querySelectorAll("dialog[open]").length, note: !$("whisper-missing").hidden && $("whisper-missing").offsetParent !== null,
+        text: $("whisper-missing-text").textContent, title: $("engine-card-title").textContent, mode: stored().assistant.mode };`);
     expect(r.mode === "whisper", r.mode);
-    expect(r.files, "no Whisper files dialog");
+    expect(!r.files && r.dialogs === 0, "a download dialog opened at the engine choice");
+    expect(r.note && r.text.startsWith("Not downloaded:"), `note: ${r.text}`);
     expect(r.title === "OpenCode", r.title);
   }],
   ["back to Codex: the mode stays Whisper and the voice mode can be chosen again", async () => {
@@ -296,7 +298,7 @@ const scenarios = [
       return { open: dialogOpen(), engine: stored().assistant.engine, shown: stored().claude.subscription_notice_shown };`);
     expect(!r.open && r.engine === "claude" && !r.shown, JSON.stringify(r));
   }],
-  ["both dialogs: the subscription dialog first, the Whisper files dialog after it is answered", async () => {
+  ["both dialogs: the subscription dialog opens, no download dialog follows it, and Config → Assistant says what is not downloaded", async () => {
     await load();
     const r = await page(`
       tab("config");
@@ -305,10 +307,10 @@ const scenarios = [
       await sleep(1500);
       const first = { notice: dialogOpen(), files: filesDialog() };
       $("claude-notice-later").click();
-      await until(filesDialog, 6000);
-      return { first, then: { notice: dialogOpen(), files: filesDialog() } };`);
+      await sleep(2000);
+      return { first, then: { notice: dialogOpen(), files: filesDialog(), note: !$("whisper-missing").hidden } };`);
     expect(r.first.notice && !r.first.files, `first ${JSON.stringify(r.first)}`);
-    expect(!r.then.notice && r.then.files, `then ${JSON.stringify(r.then)}`);
+    expect(!r.then.notice && !r.then.files && r.then.note, `then ${JSON.stringify(r.then)}`);
   }],
   // ---- status-view
   ["Status with Claude Code: its sign-in, its buttons, no Codex button and no call tile", async () => {
