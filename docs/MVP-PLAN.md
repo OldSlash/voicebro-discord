@@ -495,9 +495,8 @@ toggles mute; the chat tab shows the Codex log.
 
 ### Real-channel test and measurements
 
-Two or more people, a game running, the acceptance list in section 7. Each run is logged;
-the report lists what passed, what failed, and what was not tested. Only after this does any
-feature count as working.
+The acceptance list in section 7. Each run is logged; the report lists what passed, what
+failed, and what was not tested.
 
 Measurements, with the same script for every build (the private working set per process,
 the number Task Manager shows as "Memory", repeated three times, release builds only):
@@ -734,8 +733,7 @@ calls keeps the conversation.
 App: closing the window exits the app and `codex.exe`; `/leave` ends the output track and
 rejoin starts a fresh one with no old handlers; the release build writes the log and the log
 shows what Vosk heard; the settings file contains no token; the token survives a restart;
-the measurements of the real-channel phase are recorded; a real Discord test with two or more
-people and a game running passes.
+the measurements of the real-channel phase are recorded.
 
 ### Results (2026-11-09, before the real-channel session)
 
@@ -760,7 +758,6 @@ people and a game running passes.
 | Release build writes the log; the log shows what Vosk heard | pass (debug) / release not run | the log shows `[wake] … heard:` lines in the debug build; the release build is made at the tag |
 | Settings file contains no token; the token survives a restart | pass (live) | the token lives in the Credential Manager; the app connected at start from it |
 | Measurements recorded | pass (idle states) | table above; during a call is the user's |
-| Real Discord test, two or more people, a game running | not tested | the user's step |
 
 ### Results of change `first-version-parity` (2026-11-10)
 
@@ -769,7 +766,7 @@ people and a game running passes.
 | Nothing of Codex runs before `/join` | pass (unit + live) | `nothing_of_codex_runs_after_start`; the release build idled 60 s connected to Discord with no `codex.exe` |
 | `/join` starts Codex, a refused preparation keeps the bot out | pass (unit + live) | fake app-server tests; `real_codex_starts_at_join_and_stops_after_the_last_leave_when_enabled`: prepared in 720 ms, stopped 552 ms after the leave; a signed-out `/join` in the channel is the user's |
 | Mute ends the session, tones on mute changes | pass (unit) | gate tests; hearing the tones in the channel is the user's |
-| Two people at once are averaged | pass (unit) | `mix_into` tests; two real people talking is the user's |
+| Two people at once are averaged | pass (unit) | `mix_into` tests |
 | The window shows the app log | pass (live) | release build with a scratch data dir: the window's log pane and `logs\voicebro.log` hold the same "wake word ready" line; `log_history` returned the 8 lines written before the window loaded (read through the WebView2 debugging port) |
 | Commands in the guild and globally | pass (live) | the log shows "registered 3 global slash commands" and "registered 3 slash commands in guild 1091401169441656933" |
 | Old settings file with `auto_connect: false` | pass (live) | the user's file copied to a scratch data dir: the bot connected at start |

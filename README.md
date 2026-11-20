@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/chat.png" width="820" alt="The Codex chat tab: two players ask questions and the assistant answers, once after a web search">
+  <img src="docs/images/chat.png" width="820" alt="The Chat tab: two players ask questions and the assistant answers, once after a web search">
 </p>
 
 ## Features
@@ -30,7 +30,10 @@
   on your PC (on the CPU or an NVIDIA GPU), the assistant answers the text, and a local voice
   reads the answer into the channel. Only text leaves your PC. Models and voices are
   downloaded after you agree. ([Whisper mode](docs/user-guide.md#7-the-whisper-mode))
-- **Three engines.** Codex is the default. In the Whisper mode the answers can also come
+- **Or read the answers.** A third mode, Whisper with text answers, works like the Whisper
+  mode but posts each answer as text in Discord instead of speaking it.
+  ([Text answers](docs/user-guide.md#text-answers))
+- **Three engines.** Codex is the default. In the Whisper modes the answers can also come
   from [Claude Code](https://code.claude.com) with your Claude sign-in or an API key, or
   from [OpenCode](https://opencode.ai) with the AI providers you set up in it. You switch in
   Config → Assistant, also while the bot is in a channel.
@@ -50,10 +53,10 @@
 - Windows 10 or 11, 64-bit
 - A Discord server where you can add a bot
 - One of the engines:
-  - a ChatGPT account with access to Codex (the realtime voice and the Whisper mode);
-  - Claude Code with a Claude account or an Anthropic API key (the Whisper mode; see
+  - a ChatGPT account with access to Codex (the realtime voice and the Whisper modes);
+  - Claude Code with a Claude account or an Anthropic API key (the Whisper modes; see
     [A Claude subscription is yours alone](#a-claude-subscription-is-yours-alone));
-  - OpenCode with an AI provider set up in it (the Whisper mode).
+  - OpenCode with an AI provider set up in it (the Whisper modes).
 
 ## Download
 
@@ -85,7 +88,10 @@ Get the latest version from [Releases](https://github.com/OldSlash/voicebro-disc
    ([Set up the engine](docs/user-guide.md#4-set-up-the-engine))
 4. **Choose a wake phrase.** In **Config → Assistant**, pick the wake model for your
    language, enter a phrase such as `hey bro`, and press **Download** under **Wake model**
-   for the speech model, or download its files yourself from the linked pages.
+   for the speech model, or download its files yourself from the linked pages. With Claude
+   Code or OpenCode (the Whisper mode) press **Download** in **Settings → Whisper** and
+   **Settings → Local voice** instead; the Whisper mode's phrases are `bro` and `peace out`
+   until you change them.
 5. **Talk.** Join a voice channel, type `/join`, say your phrase and ask a question.
 
 The [user guide](docs/user-guide.md) covers each step in detail, as well as other
@@ -100,7 +106,7 @@ its owner. VoiceBro gives you optional tools for them; using them is your choice
   only people who agreed with `/optin`, or only your own linked Discord account.
 - **`/optin`, `/optout` and `/privacy`**: people agree, withdraw and read your privacy
   policy in Discord; the Access card lists who agreed and can remove them.
-- **A privacy policy template**: [docs/PRIVACY-POLICY-TEMPLATE.md](docs/PRIVACY-POLICY-TEMPLATE.md).
+- **A privacy policy template**: [docs/PRIVACY-POLICY-TEMPLATE.md](https://github.com/OldSlash/voicebro-discord/blob/main/docs/PRIVACY-POLICY-TEMPLATE.md).
   Fill it in, publish it, and put its address into the Access card and into your
   application in the Discord Developer Portal.
 
@@ -132,13 +138,12 @@ This is not legal advice; read the terms that apply to your account.
 
 - **The realtime voice is only OpenAI's Codex.** In the default mode the assistant listens
   and speaks through the Codex CLI with your ChatGPT sign-in. Claude Code and OpenCode
-  answer only in the Whisper mode, which hears and speaks on your PC while the engine writes
-  every answer. Without an engine, its sign-in or provider and a connection to it, the
+  answer only in the Whisper modes, which hear on your PC while the engine writes every
+  answer, then speak it on your PC or post it as text. Without an engine, its sign-in or provider and a connection to it, the
   assistant cannot answer. Only the wake word, speech recognition in the Whisper mode and
   its voice work offline.
-- **The Whisper mode is new.** It has been tested on one PC, not yet in a real voice
-  channel with several people while a game runs. Whisper on the GPU needs an NVIDIA card;
-  on a CPU, only the smaller models answer quickly.
+- **The Whisper mode needs a capable PC.** Whisper on the GPU needs an NVIDIA card; on a
+  CPU, only the smaller models answer quickly.
 - **The voice needs a low ping to the Discord voice server.** VoiceBro sends the
   assistant's voice to Discord from the PC it runs on, so it works best when that PC has a
   low ping to the voice channel's server. At a very high ping, around 300 ms or more, the
@@ -205,7 +210,7 @@ This writes a test installer, the portable zip and their checksums to
 | `docs/` | The architecture description and the user guide. |
 | `openspec/` | Specifications and the record of changes. |
 
-Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing code.
+Read [docs/ARCHITECTURE.md](https://github.com/OldSlash/voicebro-discord/blob/main/docs/ARCHITECTURE.md) before changing code.
 
 ## Built with
 
@@ -216,10 +221,11 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing code.
 | [serenity](https://github.com/serenity-rs/serenity) | The Discord bot: connection and slash commands. | ISC |
 | [songbird](https://github.com/serenity-rs/songbird) and [davey](https://github.com/Snazzah/davey) | Discord voice, with Discord's end-to-end encryption (DAVE). | ISC; MIT |
 | [Opus](https://opus-codec.org), through [opus2](https://github.com/cijiugechu/opus2) | Encodes and decodes the voice. The C library is compiled into the app. | BSD-3-Clause; MIT or Apache-2.0 |
+| [opus-rs](https://github.com/restsend/opus-rs) 0.1.42 | A pure-Rust Opus codec, compiled into the app; chosen instead of the C library in Settings → Diagnostics → Opus codec. | BSD-3-Clause |
 | [webrtc-rs](https://github.com/webrtc-rs/webrtc) | The voice call to ChatGPT. | MIT or Apache-2.0 |
 | [Vosk](https://alphacephei.com/vosk/) | The offline wake word. Downloaded with the model of your language after you agree. | Apache-2.0; the Czech model MIT |
 | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | Speech to text in the Whisper mode, with OpenAI's Whisper models and the Silero voice activity model. Downloaded after you agree; the NVIDIA GPU build includes NVIDIA's CUDA runtime. | MIT; CUDA runtime: NVIDIA's CUDA EULA; the models MIT or Apache-2.0 |
-| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with [ONNX Runtime](https://github.com/microsoft/onnxruntime) | The local voice of the Whisper mode. Downloaded after you agree. | Apache-2.0; MIT |
+| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with [ONNX Runtime](https://onnxruntime.ai) | The local voice of the Whisper mode. Downloaded after you agree. | Apache-2.0; MIT |
 | Voices: [Supertonic 3](https://huggingface.co/Supertone/supertonic-3), [Piper](https://huggingface.co/rhasspy/piper-voices), [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) | The voices of the Whisper mode, each downloaded after you agree. The Windows voices need no download. | Supertonic 3: BigScience OpenRAIL-M, with use restrictions; Piper: MIT, each voice's data under its own license (CC0, CC BY 4.0, public domain and others); Kokoro: Apache-2.0 |
 | [piper-phonemize](https://github.com/csukuangfj/piper-phonemize) | Turns text into phonemes for the Piper and Kokoro voices. Not part of VoiceBro: a separate download, only for those voices. | GPL-3.0 |
 | [Codex CLI](https://github.com/openai/codex) | The default engine: the ChatGPT sign-in, the voice call and the web search. Installed separately. | Apache-2.0 |

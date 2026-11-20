@@ -45,7 +45,7 @@ The recipient in its first point follows the engine you use:
 |---|---|
 | Codex | "OpenAI, through Codex" |
 | Claude Code | "Anthropic, through Claude Code" |
-| OpenCode | The company of the model's provider (for example "Anthropic"), then "through OpenCode, and, for the web searches the assistant makes, OpenCode's web search service" |
+| OpenCode | The company of the model's provider (for example "Anthropic"; "the OpenCode project (OpenCode Zen)" for OpenCode's own provider; "the AI provider set up in OpenCode (or, for its free models, the OpenCode project's own service)" when no model is chosen), then "through OpenCode, and, for the web searches the assistant makes, OpenCode's web search service" |
 
 This template is not legal advice. The laws where you and the people in your channel live
 may ask for more.
@@ -85,9 +85,10 @@ Contact: {{CONTACT_EMAIL}}
   assistant after the activation phrase.
 - *[Access: Only my Discord account]* Only my own voice reaches the assistant; the bot
   drops everyone else's audio as it arrives.
-- Your speech is not stored on my computer.
-- *[Access: People who agreed]* `/optout` stops it at once and deletes your consent
-  record.
+- *[Optional: delete if "Save chat history" or "Verbose log" is on]* Your speech is not
+  stored on my computer.
+- *[Access: People who agreed]* `/optout` stops it for what you say from then on and
+  deletes your consent record.
 
 ## What the bot receives from Discord
 
@@ -114,18 +115,27 @@ to my voice only.
    say is sent to {{AI_PROVIDER}} so that the assistant can answer:
    - *[Optional: keep if you use the voice mode]* in the voice mode, your voice as audio,
      starting shortly before the phrase;
-   - *[Optional: keep if you use the Whisper mode]* in the Whisper mode, the text that
-     VoiceBro writes down from your speech on my computer; no audio leaves my computer.
-3. *[Optional: delete if Speaker labels is Off]* Your display name is sent with it, so
+   - *[Optional: keep if you use the Whisper mode or the Whisper, text answers mode]* in
+     those modes, the text that VoiceBro writes down from your speech on my computer; no
+     audio leaves my computer.
+3. *[Optional: delete if Speaker names is Off]* Your display name is sent with it, so
    that the assistant can tell speakers apart. *[Access: People who agreed or Only my
    Discord account]* Only the names of the people whose voice the bot lets through are
    sent.
-4. The answer is spoken in the voice channel. *[Optional: keep if answer posting is on]*
-   It is also posted as a message in {{ANSWERS_CHANNEL}}, where it is public and stays until
-   it is deleted.
+4. *[Optional: keep if you use the voice mode or the Whisper mode]* The answer is spoken in
+   the voice channel. *[Optional: keep if answer posting is on]* It is also posted as a
+   message in {{ANSWERS_CHANNEL}}, where it is public and stays until it is deleted.
 
-*[Optional: replace steps 1 and 2 with this if Session mode is Always]* There is no
-activation phrase: everything you say while the bot is in the channel is sent to
+   *[Optional: keep if you use the Whisper, text answers mode]* The answer is not spoken:
+   it is posted as a message in {{ANSWERS_CHANNEL}}, where it is public and stays until it
+   is deleted.
+
+   *[Optional: keep if answers are posted in the Whisper mode or the Whisper, text answers
+   mode]* Each posted answer starts with a small line holding the question it answers, as
+   VoiceBro wrote it down from the speech (up to 150 characters).
+
+*[Optional: replace steps 1 and 2 with this if Activation is "Always listening"]* There is
+no activation phrase: everything you say while the bot is in the channel is sent to
 {{AI_PROVIDER}}.
 
 The bot tells people apart by their own Discord audio stream, not by the sound of their
@@ -137,12 +147,15 @@ voice.
 
 {{AI_PROVIDER}} handles what is sent under its own terms and privacy policy:
 {{AI_PROVIDER_PRIVACY_URL}}. It may keep it for a limited time, for example to detect
-abuse, and may process it outside your country.
+abuse, and may process it outside your country. Depending on its terms and my data
+settings there, it may also use the conversations to train its models.
 
 *[Optional: keep if you sign in with a personal subscription rather than an API key]* The
-bot uses my personal {{AI_PROVIDER}} subscription. Depending on my data settings there,
-{{AI_PROVIDER}} may use the conversations to improve its models. *[Keep one:]* I have
-turned this off. / This is on.
+bot uses my personal {{AI_PROVIDER}} subscription. *[Keep one:]* I have turned off the use
+of my conversations for training in its data settings. / This is on.
+
+The program that connects the bot to {{AI_PROVIDER}} on my computer (Codex, Claude Code or
+OpenCode) may also send its maker usage data under its own terms.
 
 ## What is stored on my computer
 
@@ -155,29 +168,47 @@ turned this off. / This is on.
 - *[Optional: keep if you use OpenCode]* **OpenCode's copy of the conversation:** OpenCode,
   the program that talks to {{AI_PROVIDER}} for the bot, keeps the conversation in its
   database on my computer while the bot is in the channel; VoiceBro deletes it when the bot
-  leaves.
-- **The app's log:** technical events such as joins, errors and timings, which can include
-  your display name. It does not contain what you said. Log files stay on my computer until
-  I delete them.
+  leaves. If I close the app or change the engine while the bot is in the channel, or the
+  app stops unexpectedly, it stays there until I delete it.
+- **The app's log:** technical events such as joins, errors and timings. It names people:
+  your display name when you agree or withdraw, when the bot does not listen to you because
+  of who it is set to hear, and when you stop an answer by speaking; and my own Discord
+  user ID if I linked my account. *[Optional: delete if "Verbose log" is on]* It does not
+  contain what you said. The log keeps about the last 2 MB; older lines are overwritten,
+  and log files stay on my computer until I delete them.
 - *[Optional: keep if "Save chat history" is on]* **Chat history:** who said what and the
   answers are written to text files on my computer and kept until I delete them.
-- *[Optional: keep if the verbose log is on]* **Recognized speech:** what the speech
-  recognizer heard is written to the log files.
+- *[Optional: keep if "Verbose log" is on]* **Recognized speech:** what the speech
+  recognizer heard and the assistant's answers are written to the log files.
+
+How it is protected: the consent records and my linked account are encrypted for my
+Windows account, the bot's Discord token is kept in the Windows Credential Manager, and
+VoiceBro sends nothing about you to its developers.
 
 ## Who else gets your data
 
-Only {{AI_PROVIDER}}, as described above, and Discord, which carries the bot's voice and
-messages as it does for any member. I do not sell your data, share it for advertising, or
-use it to train AI models.
+{{AI_PROVIDER}}, as described above, Discord, which carries the bot's voice and messages
+as it does for any member, and what the paragraphs below name. I do not sell your data,
+share it for advertising, or use it to train AI models myself.
 
 *[Optional: keep if you use OpenCode]* When a question needs the web, the assistant writes
 search queries from it, and those queries go to {{SEARCH_SERVICE}}, a web search service,
 under its own terms and privacy policy: {{SEARCH_SERVICE_PRIVACY_URL}}.
 
+*[Optional: keep if you use Claude Code or OpenCode]* When the assistant reads a web page to
+answer, my computer fetches that page, so the website sees my computer's address and the
+address of the page the assistant chose.
+
+*[Optional: keep if you use Codex with MCP servers set up in your Codex configuration]*
+The assistant can also use the tools I set up for Codex on my computer, and what you ask
+may reach them.
+
 ## Your choices and rights
 
-- Run `/optin` to let the bot hear you and `/optout` to stop. `/optout` takes effect at
-  once and deletes your consent record.
+- Run `/optin` to let the bot hear you and `/optout` to stop. `/optout` deletes your
+  consent record at once and stops what you say from then on; what the bot was still
+  holding at that moment can still be sent: a sentence you were in the middle of, the last
+  few seconds it replays when a new session starts, or speech waiting its turn.
 - Run `/privacy` to see this policy.
 - Email {{CONTACT_EMAIL}} to get a copy of what I hold about you or to have it deleted. I
   answer within 30 days.

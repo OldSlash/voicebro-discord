@@ -72,7 +72,7 @@ In a folder such as `C:\Program Files` it shows a message and does not start.
 > `SHA256SUMS.txt` from the same release:
 >
 > ```powershell
-> Get-FileHash .\VoiceBro_1.0.0_x64-setup.exe -Algorithm SHA256
+> Get-FileHash .\VoiceBro_1.3.0_x64-setup.exe -Algorithm SHA256
 > ```
 
 ## 3. Connect the bot
@@ -95,14 +95,16 @@ The engine is what writes the answers. Choose it in **Config → Assistant → E
 
 | Engine | Sign-in | Modes |
 |---|---|---|
-| **Codex** (the default) | Your ChatGPT account | Realtime voice and Whisper |
-| **Claude Code** | Your Claude account, or an Anthropic API key | Whisper only |
-| **OpenCode** | The AI providers you set up in OpenCode | Whisper only |
+| **Codex** (the default) | Your ChatGPT account | Realtime voice, Whisper, and Whisper with text answers |
+| **Claude Code** | Your Claude account, or an Anthropic API key | Whisper, and Whisper with text answers |
+| **OpenCode** | The AI providers you set up in OpenCode | Whisper, and Whisper with text answers |
 
 Only Codex has the realtime voice mode. Choosing Claude Code or OpenCode while the realtime
-voice mode is on switches to the [Whisper mode](#7-the-whisper-mode), which may ask to
-download its files. You can switch the engine at any time, also while the bot is in a
-voice channel: the running session ends and the next question goes to the new engine.
+voice mode is on switches to the [Whisper mode](#7-the-whisper-mode). No window opens for
+its files: while they are not on this PC, a note in **Config → Assistant** says what is
+missing and **Open Settings** leads to the cards that download them. You can switch the
+engine at any time, also while the bot is in a voice channel: the running session ends and
+the next question goes to the new engine.
 
 Each engine is installed separately and may only search and fetch the web: VoiceBro gives
 none of them a tool that reads, writes or runs anything on your PC.
@@ -244,7 +246,7 @@ Open **Config → Assistant**.
   Czech, Dutch, French, German, Italian, Polish, Portuguese (Brazil) or Spanish. None of
   them comes with the installer; each is downloaded once, after you agree. Each model
   keeps its own phrases, so switching languages loses nothing.
-- **Activation phrases** and **Deactivation phrases** belong to the model chosen below
+- **Activation phrases** and **Deactivation phrases** belong to the model chosen above
   them. Separate phrases with commas; a phrase may have several words, for example
   `Отбой братан, Заканчивай, Братан всё` holds three deactivation phrases. A line break
   separates too. Every word must be in the model's vocabulary: words the model does not
@@ -293,7 +295,7 @@ Open **Config → Assistant**.
 - **Not now** closes the window and downloads nothing. The notice under **Wake model**
   keeps its own **Download** button, and the window comes back at the next refused
   `/join`.
-- **Rather download the files yourself?** The window and the notice name each file and
+- **Rather download them yourself?** The window and the notice name each file and
   link to the official page it is published on. A link opens in your browser:
   - `vosk-win64-0.3.45.zip`, the recognizer, from its release page on GitHub
     (`github.com/alphacep/vosk-api/releases/tag/v0.3.45`), under **Assets**;
@@ -337,8 +339,9 @@ you add comes with its own license, shown on the models page.
 
 ## 7. The Whisper mode
 
-VoiceBro has two ways to talk to the assistant. Choose one in **Config → Assistant →
-Assistant mode**:
+VoiceBro has three ways to talk to the assistant: the realtime voice, the Whisper mode, and
+the Whisper mode with text answers ([below](#text-answers)). Choose one in **Config →
+Assistant → Assistant mode**. The first two compare like this:
 
 | | Realtime voice (the default) | Whisper |
 |---|---|---|
@@ -349,7 +352,7 @@ Assistant mode**:
 | What it downloads | Vosk and a wake model, about 50 to 70 MB. | Whisper and a model, and a voice: about 230 MB on the CPU with the defaults, more with an NVIDIA GPU or a larger model. |
 
 Your instructions, **Speaker names**, **Post answers to Discord**, **Who the assistant
-hears**, the mute, the tones and the auto-stop work in both modes and with every engine.
+hears**, the mute, the tones and the auto-stop work in every mode and with every engine.
 
 ### Text answers
 
@@ -400,7 +403,7 @@ changed in either mode.
   which shows "Vosk" or "Whisper" and follows the mode. In the Whisper mode the card shows
   the Whisper mode's **Activation phrases** and **Deactivation phrases**, where the
   realtime mode shows the wake model and its phrases. **Activation** (wake word or always
-  listening) and the auto-stop stay below, shared by both modes. While the Whisper mode's
+  listening) and the auto-stop stay below, shared by every mode. While the Whisper mode's
   files are not all here, a note under **Assistant mode** says what is not downloaded,
   and **Open Settings** takes you to the card where you download it.
 - **Settings → Whisper**, the card after Diagnostics: an **On** or **Off** label that
@@ -453,7 +456,7 @@ with each size and the total; **Download** fetches it all. Starting VoiceBro nev
 the window. **Not now** closes it; the notices keep their **Download** buttons. After the
 download, run `/join` again.
 
-**Rather download the files yourself?** As for the wake word (section 5), the window and
+**Rather download them yourself?** As for the wake word (section 5), the window and
 the notices name each file and link to the page it is published on. Press **Open assets
 folder** and put the files there as they are, without unpacking them, then press
 **Download**. A Whisper model must have the file name the window shows: some models are
@@ -511,7 +514,8 @@ RTX 5090 Laptop GPU), one utterance took:
   every utterance. A fixed language is quicker and more exact on short phrases.
 
 The line on **Settings → Whisper** shows the last answer's timings: from the end of the
-question to the text, from the text to Codex's first words, and from those to the voice.
+question to the text, from the text to the engine's first words, and from those to the
+voice.
 
 ### Phrases
 
@@ -549,23 +553,27 @@ Choose it in **Settings → Local voice**.
 
 | Voice | Languages | Notes |
 |---|---|---|
-| **Supertonic 3**, F1 to F5 and M1 to M5 (the default is F1) | 31, among them all ten wake languages | Reads each answer in the language of the question. The first words come about half a second after Codex's first sentence. |
-| **Piper** | One each: English, Russian, Czech, Dutch, French, German, Italian, Polish, Portuguese, Spanish | The quickest. Needs the phonemizer. |
+| **Supertonic 3**, F1 to F5 and M1 to M5 (the default is F1) | 31, among them all ten wake languages | Reads each answer in the language of the question. The first words come about half a second after the engine's first sentence. |
+| **Piper**, 17 voices | English (US, UK), Russian, Czech, Dutch (Netherlands, Belgium), French, German, Italian, Polish, Portuguese (Brazil), Spanish (Spain, Mexico) | The quickest. Needs the phonemizer. |
 | **Kokoro English** | English | Eleven voices. Needs the phonemizer. |
 | **Windows** | The speech languages your Windows has | No download and instant, but robotic. A Windows speech pack adds languages. |
 
 The voice list shows each voice's data license. Supertonic 3 is under BigScience
 OpenRAIL-M, which allows commercial use but comes with use restrictions; the phonemizer
 that Piper and Kokoro need, piper-phonemize, is GPL-3.0 and a separate download.
-`THIRD-PARTY-NOTICES.txt` lists them all.
+`THIRD-PARTY-NOTICES.txt` lists them all. For each Piper voice it also gives where its
+recordings come from, their license and credit, and the voice it was fine-tuned from, as
+the voice's model card states them. All Piper voices but the English (UK) Cori voice were
+fine-tuned from the English lessac voice, whose recordings are licensed for research
+purposes only. The Russian Irina voice's recordings have no stated license.
 
 - **Speed**: 0.5 to 2 times the voice's own pace. It applies from the next answer and to
   **Preview**.
 - **Preview** reads a short sample sentence about the weather in London in the voice's
   language (in English for Supertonic 3) and plays it in the window only, never in Discord.
   The voice's files must be on this PC.
-- The voice starts while Codex is still writing, after its first sentence. Every message
-  Codex writes is read, also a short "let me check that" before a web search.
+- The voice starts while the engine is still writing, after its first sentence. Every
+  message the engine writes is read, also a short "let me check that" before a web search.
 - Code and tables are not read, and a link is read as its site's name. A posted answer
   ([section 8](#posting-the-answers-to-discord)) keeps them.
 
@@ -594,8 +602,9 @@ moment longer, and they are unloaded half a second after the bot leaves its last
 Between joins they are not in memory; only the libraries that run them stay loaded until
 VoiceBro closes.
 
-In Discord, `/status` says "Mode: Whisper mode." or "Mode: Realtime voice.", and the panel
-that `/join` posts shows the same under **Mode**.
+In Discord, `/status` says "Mode: Realtime voice.", "Mode: Whisper mode." or "Mode:
+Whisper mode, text answers.", and the panel that `/join` posts shows the same under
+**Mode**.
 
 ## 8. Using VoiceBro
 
@@ -604,8 +613,14 @@ that `/join` posts shows the same under **Mode**.
 | `/join` | The bot joins your voice channel and replies with a panel that shows the engine, its state and a **Mute assistant** button. |
 | Say the activation phrase and a question | A session starts and the assistant answers in the channel. |
 | Say the deactivation phrase, or stay quiet | The session ends, at once or after the auto-stop time. |
-| `/status` | Shows what VoiceBro is doing, and the mode: realtime voice or Whisper. |
+| `/status` | Shows what VoiceBro is doing, and the mode: realtime voice, Whisper, or Whisper with text answers. |
 | `/leave` | The bot leaves the channel. |
+| `/link` | With the code that **Link my Discord account** in **Config → Access** shows, makes your Discord account VoiceBro's owner. Also in a direct message to the bot ([Who the assistant hears](#who-the-assistant-hears)). |
+| `/optin` | Shows you the consent text and the privacy policy link, with **I agree** and **Cancel**. Also in a direct message to the bot. |
+| `/optout` | Withdraws your consent and deletes your record. Also in a direct message to the bot. |
+| `/privacy` | Shows the privacy policy link the operator set. Also in a direct message to the bot. |
+
+Only you see the replies to `/link`, `/optin`, `/optout` and `/privacy`.
 
 **Mute** ends the current session at once and sends nothing until you unmute. Use the
 **Mute assistant** button in Discord, the button on the **Status** tab, or the hotkey
@@ -625,7 +640,7 @@ Turn on **One speaker at a time** (**Config → Assistant**, off by default) to 
 - **Realtime voice:** the assistant hears one person at a time. Whoever talks over them is
   kept and follows when they pause for about a third of a second, with a short note
   telling the assistant who is speaking now, so it can answer each person by name; nobody
-  is mixed in. **Speaker names** set to off (Config → Codex) sends no note. Speech kept
+  is mixed in. **Speaker names** set to off (in the engine's card) sends no note. Speech kept
   for someone who waits never cuts an answer that is playing: it follows the answer.
 - **Whisper:** a question asked while the engine works on an answer is handed to it
   without stopping it. Codex adds it to that answer, OpenCode takes it up as soon as it can,
@@ -633,7 +648,7 @@ Turn on **One speaker at a time** (**Config → Assistant**, off by default) to 
   asked while the answer is being read waits and is answered after it. Talking over the
   voice no longer stops it; the deactivation phrase or **Mute** does.
 
-In both modes VoiceBro tells people apart by their own Discord stream: two voices that
+In every mode VoiceBro tells people apart by their own Discord stream: two voices that
 reach Discord through one microphone (a friend beside you, speakers without headphones)
 still go to the assistant together.
 
@@ -698,7 +713,7 @@ channel's own settings can take them away. If the answers do not appear in one c
 right-click that channel, choose **Edit Channel → Permissions** and check the bot's role.
 When Discord refuses an answer, the **Status** tab shows an `answers` error that names
 the channel and the reason; the next answer that gets through clears it. A change of the
-setting applies from the next answer. An answer Codex is still looking up when someone
+setting applies from the next answer. An answer the engine is still writing when someone
 types `/leave` is not posted.
 
 ### Who the assistant hears
@@ -785,18 +800,26 @@ remembers which cards are folded.
 
 | Where | What you set |
 |---|---|
-| Settings → Appearance | Theme and font size. |
+| Settings → Appearance | **Theme**: Dark (the default), Darcula, Light or IntelliJ. **Font size**: 11 to 20 pixels, 13 by default. |
 | Settings → Diagnostics | **Performance monitoring**, **Memory measurement**, **Verbose log**. All are off by default and cost nothing while off. **Opus codec (experiment)**: which Opus implementation encodes and decodes the voice (the assistant toward Discord, your speech toward Codex and its answer, the people in the channel): libopus, the C library VoiceBro has always used and the default, or opus-rs, written in Rust and being tried as its replacement. A change applies at the next `/join` and the next call; the line under the list shows the codec in use. |
-| Settings → Whisper | Whether the Whisper mode is on (it is switched in Config → Assistant), the Whisper model, CPU or NVIDIA GPU, the CPU threads, the language, the download of the Whisper files (in either mode), what is in use and the last answer's timings, and the Whisper models folder ([section 7](#7-the-whisper-mode)). |
-| Settings → Local voice | The voice that reads the answers in the Whisper mode, its speed, **Preview**, and its download. Not used in the realtime mode. |
+| Settings → Whisper | Whether the Whisper mode is on (it is switched in Config → Assistant), the Whisper model (base by default), CPU (the default) or NVIDIA GPU, the CPU threads (0, automatic, by default), the language (**Automatic** by default), the download of the Whisper files (in either mode), what is in use and the last answer's timings, and the Whisper models folder ([section 7](#7-the-whisper-mode)). |
+| Settings → Local voice | The voice that reads the answers in the Whisper mode (Supertonic 3 F1 by default), its speed (0.5 to 2, 1 by default), **Preview**, and its download. Not used in the realtime mode or the text answers mode. |
 | Config → Discord and Codex | The Discord bot token, the server ID, the path of `codex.exe` when it is not found on its own. Press **Save changes**. |
 | Config → Access | **Who the assistant hears** (Everyone by default, People who agreed, Only my Discord account), **Privacy policy URL**, the link to your Discord account and the people who agreed with `/optin` ([section 8](#who-the-assistant-hears)). |
-| Config → Audio | How loud the assistant hears the channel and how loud it speaks; the short tones at session start and end. |
-| Config → Assistant | **Assistant mode** (realtime voice, the default, or Whisper), the grey **Recognition** field and the **Engine** (Codex, Claude Code or OpenCode, [section 4](#4-set-up-the-engine)); wake word or always listening, the phrases, the auto-stop time; the wake model with its download in the realtime mode, the Whisper phrases and the note on what the Whisper mode misses in the Whisper mode; **One speaker at a time** (off by default, [section 8](#when-two-people-talk-at-once)); in the Whisper mode **Stop the answer when someone starts talking** (off by default, [section 8](#stopping-the-answer-as-soon-as-someone-talks)). |
-| Config → Codex, Claude Code or OpenCode | The card of the engine in use, titled after it. **Codex:** the model and reasoning effort for looked-up answers (in the Whisper mode, for every answer), the voice of the realtime call; the model, reasoning and voice lists come from the last time VoiceBro read them from Codex, the card says when that was, **Refresh lists** reads them now, and **Refresh the lists at start** (off by default) reads them at every start of VoiceBro. **Claude Code** and **OpenCode:** the program's path when it is not found on its own, and the model. **Every engine:** your instructions for the assistant (one text for all three), whether it gets the names of the people in the channel, **Save chat history**, **Post answers to Discord** and the channel for it ([section 8](#posting-the-answers-to-discord)). |
-| Config → Hotkey | The mute hotkey. |
+| Config → Audio | **What the assistant hears** and **How loud the assistant speaks**: 0 to 400 %, 100 % by default. **Earcons**, the short tones at session start and end (on by default), and **Earcon volume** (0 to 100 %, 18 % by default). |
+| Config → Assistant | **Assistant mode** (realtime voice, the default, Whisper, or Whisper with text answers), the grey **Recognition** field and the **Engine** (Codex, the default, Claude Code or OpenCode, [section 4](#4-set-up-the-engine)); **Activation**, Wake word (offline, the default) or Always listening; the phrases; **Auto-stop after no input** (60 seconds by default; 0 means only the deactivation phrase ends a session, otherwise 5 to 3600); the wake model with its download in the realtime mode, the Whisper phrases and the note on what the Whisper mode misses in the Whisper mode; **One speaker at a time** (off by default, [section 8](#when-two-people-talk-at-once)); in the Whisper mode **Stop the answer when someone starts talking** (off by default, [section 8](#stopping-the-answer-as-soon-as-someone-talks)). |
+| Config → Codex, Claude Code or OpenCode | The card of the engine in use, titled after it. **Codex:** the model and reasoning effort for looked-up answers (in the Whisper mode, for every answer), the voice of the realtime call; the model, reasoning and voice lists come from the last time VoiceBro read them from Codex, the card says when that was, **Refresh lists** reads them now, and **Refresh the lists at start** (off by default) reads them at every start of VoiceBro. **Answer handoff**, for the realtime mode only: how the voice hands a looked-up question to Codex and gets the answer back, Conversation items (the default), Commentary, Tagged channels or Built-in (thinking); keep the default unless you are testing. **Claude Code** and **OpenCode:** the program's path when it is not found on its own, and the model. **Every engine:** your instructions for the assistant (one text for all three); **Speaker names**, whether the assistant gets the names of the people in the channel: At call start (the default), At call start and when the speaker changes, or Off; **Save chat history** (off by default); **Post answers to Discord**: Off (the default), The voice channel's chat, The channel of /join or A chosen channel ([section 8](#posting-the-answers-to-discord)). |
+| Config → Hotkey | The mute hotkey, **Ctrl+Alt+M** by default. |
 
 The bottom of the **Config** tab shows where `settings.json` is.
+
+The other tabs: **Status** shows the connection, the engine, the bot's channels and what
+is missing, with the buttons to install and sign in to the engines; **Chat** shows the
+questions, answers and the engine's work; **Console** shows the app's log as it is
+written; **Performance** shows the voice path's audio timing and packet counts while
+**Settings → Diagnostics → Performance monitoring** is on; **System** shows the build,
+Windows, VoiceBro's files and, while **Memory measurement** is on, the memory VoiceBro, its
+window and the engine use.
 
 ## 10. Privacy and your files
 
@@ -814,14 +837,35 @@ What leaves your PC:
   session, unless you turn this off in **Speaker names** in the engine's card.
 - **Questions the assistant looks up** may lead to web searches: Codex's and Claude Code's
   go through their own provider, OpenCode's to its web search service, another company.
-- **The engine's answers** are posted in Discord, if you turned on **Post answers to
-  Discord**. Everyone who can read that channel sees them, and they stay in its history
-  until someone deletes them.
+- **The engine's answers** are posted in Discord if you turned on **Post answers to
+  Discord**, and always in the **Whisper, text answers** mode (in the voice channel's chat
+  while posting is off). In the Whisper modes each post starts with a small line holding
+  the question as Whisper wrote it down, up to 150 characters. Everyone who can read that
+  channel sees them, and they stay in its history until someone deletes them.
 - **The engine's own working folder.** Codex and Claude Code put the path of the folder
   they run in (`codex-workspace\` or `claude-workspace\` inside VoiceBro's folder) into
   their own instructions to the model, and OpenCode does the same with
   `opencode-workspace\`. When VoiceBro is installed under your user folder, that path holds
   your Windows user name, and the model may say it if someone asks where it runs.
+- **What the providers do with it.** Each engine's provider handles what it receives under
+  its own terms and your account's settings there, which may include training its models
+  on it: OpenAI for Codex ([privacy policy](https://openai.com/policies/privacy-policy/)),
+  Anthropic for Claude Code ([privacy policy](https://www.anthropic.com/legal/privacy)),
+  and the provider you chose for OpenCode. The engines may also send their makers their
+  own usage data and update themselves; VoiceBro turns off only OpenCode's automatic
+  update.
+- **Web pages the model fetches.** Claude Code and OpenCode fetch the pages the model picks
+  from your PC, so those sites see your IP address.
+- **Your own Codex configuration.** Codex runs with your sign-in and the configuration in
+  `~\.codex\config.toml`. VoiceBro turns off Codex's shell, but not MCP servers you set up
+  there, so the assistant may use them when someone in the channel asks. Remove them from
+  that configuration if they should not be reachable from Discord.
+- **After someone is no longer heard.** When a person runs `/optout`, you press **Remove**
+  next to them or **Unlink** the owner, or you change **Who the assistant hears** so that
+  someone is no longer heard, what VoiceBro already holds of their voice can still reach
+  the engine: the sentence they were in the middle of (up to 28 s, in the Whisper modes),
+  the last 5 s replayed into the call when the next session starts (in the realtime voice
+  mode), and speech waiting its turn with **One speaker at a time** on (up to 15 s).
 
 Everything VoiceBro stores is in its own folder, next to `voicebro.exe`:
 
@@ -831,7 +875,7 @@ Everything VoiceBro stores is in its own folder, next to `voicebro.exe`:
 | `owner-link.bin` | The Discord account you linked, encrypted so that only your Windows user on this PC can read it. Only if you linked one. |
 | `consents.bin` | The people who agreed with `/optin`: their Discord account, name and the time they agreed, encrypted so that only your Windows user on this PC can read it. Only while someone has agreed. |
 | `codex-lists.json` | The Codex models, reasoning levels and voices of your account, from the last time VoiceBro read them. |
-| `logs\` | The app log, at most about 2 MB, without what people said. The chat history too (`chat-<date>.log`), if you turned on **Save chat history**; files called `codex-chat-<date>.log` come from versions before 1.3.0. |
+| `logs\` | The app log, at most about 2 MB. It names people: the Discord account you link (with its account ID), each person who agrees or withdraws, each person the bot does not listen to because of **Who the assistant hears**, and whoever stops an answer by talking. What people said and the answers are in it only while **Verbose log** is on. The chat history too (`chat-<date>.log`), if you turned on **Save chat history**: every question and answer, kept until you delete the files; files called `codex-chat-<date>.log` come from versions before 1.3.0. Delete `logs\` to remove all of it. |
 | `assets\` | What VoiceBro downloaded: the Vosk recognizer and its models, and for the Whisper mode the Whisper runtime and models and the voices. |
 | `models\` | Vosk models you added yourself. |
 | `whisper-models\` | Whisper models you added yourself. |
@@ -847,7 +891,15 @@ with its sign-in in `~\.codex`; Claude Code with its sign-in in `~\.claude` and
 empty folder for VoiceBro's working folder under `~\.claude\projects`; VoiceBro's
 conversations are not saved there); OpenCode with its providers, keys and conversation
 database under `~\.local\share\opencode` (VoiceBro deletes its own conversations there when
-the bot leaves the channel; after a crash some may stay).
+the bot leaves the channel; when you close VoiceBro or switch the engine while the bot is
+in a channel, or after a crash, that conversation stays there, so leave with `/leave`
+first).
+
+How it is protected: the token is only in the Credential Manager, never in a file or the
+log; the linked account and the consents are encrypted for your Windows user; OpenCode's
+server listens only on this PC (127.0.0.1), with a new password at each start that is
+never written down. VoiceBro has no telemetry and no update check of its own, and every
+download comes over https and is checked against a fixed SHA-256 before it is used.
 
 ## 11. Updating
 
@@ -860,7 +912,10 @@ Uninstall VoiceBro in **Windows Settings → Apps**. To remove your settings, lo
 (the Whisper models and voices too), the linked Discord account and the stored token as
 well, check **Delete the application data** in the uninstaller;
 leave it unchecked to keep them for a later install. An installed copy and a portable copy
-share the stored token, so deleting the data of one removes the token of both.
+share the stored token, so deleting the data of one removes the token of both. The box
+leaves `codex-lists.json` and the engines' folders `claude\`, `claude-workspace\`,
+`opencode\` and `opencode-workspace\`, which hold your instructions, so the folder stays:
+delete it by hand afterwards.
 
 The engines stay installed. Remove them with `winget uninstall OpenAI.Codex`,
 `winget uninstall Anthropic.ClaudeCode` or `winget uninstall Anomaly.OpenCode` if you no
@@ -884,10 +939,10 @@ longer need them.
 | The wake phrase does nothing | Look at **Wake word** on the **Status** tab: it says when the model still waits for its download (press **Download** under **Wake model** in **Config → Assistant**, or put the files there yourself as section 5 describes), when no phrases are set, or which words the model does not know. The **Console** shows a "heard:" line for everything the recognizer understood, so you can pick phrases it hears correctly. |
 | The bot joins but does not hear or speak | Check that the bot has **Connect** and **Speak** in that channel, and look for errors in the **Console**. |
 | The answers are not posted in Discord | Check **Post answers to Discord** in the engine's card. In the realtime mode only answers Codex looked up are posted, not what the voice answers on its own. With **A chosen channel**, only answers from that channel's server go there. Look for an `answers` error on the **Status** tab: it names the channel and what Discord refused, usually a missing **Send Messages** or **Embed Links** ([section 8](#posting-the-answers-to-discord)). |
-| `/join` replies "The Whisper mode needs downloads" | The Whisper model, its runtime or the voice is not on this PC yet. Press **Download** in the window that opens in VoiceBro, or in the notices of **Settings → Whisper** and **Settings → Local voice**, or put the files there yourself ([section 7](#downloads)). Then `/join` again. |
+| `/join` replies "The Whisper mode needs downloads" | The Whisper model, its runtime or, outside the text answers mode, the voice is not on this PC yet. Press **Download** in the window that opens in VoiceBro, or in the notices of **Settings → Whisper** and **Settings → Local voice**, or put the files there yourself ([section 7](#downloads)). Then `/join` again. |
 | `/join` replies "The wake word needs downloads" | The Vosk recognizer or the wake model is not on this PC yet. Press **Download** in the window that opens in VoiceBro or under **Wake model** in **Config → Assistant**, or put the files there yourself ([section 5](#5-set-the-wake-phrase)). Then `/join` again. |
 | Whisper runs on the CPU although you chose the NVIDIA GPU | The line on **Settings → Whisper** and the **Whisper device** tile on the **Status** tab say why: no NVIDIA graphics card or driver, the GPU runtime not downloaded yet, or the CPU runtime was already in use since VoiceBro started, in which case restart VoiceBro. |
-| Answers in the Whisper mode come slowly | Look at the last answer's timings on **Settings → Whisper**. A long time from the end of speech to the text means the Whisper model is too slow for this PC: choose a smaller model in **Config → Assistant**, or the NVIDIA GPU. A long time from the text to the engine's first words is the engine: with Codex choose a lower **Reasoning** in **Config → Codex**, with Claude Code or OpenCode a faster **Model** in its card. |
+| Answers in the Whisper mode come slowly | Look at the last answer's timings on **Settings → Whisper**. A long time from the end of speech to the text means the Whisper model is too slow for this PC: choose a smaller model in **Settings → Whisper**, or the NVIDIA GPU. A long time from the text to the engine's first words is the engine: with Codex choose a lower **Reasoning** in **Config → Codex**, with Claude Code or OpenCode a faster **Model** in its card. |
 | In the Whisper mode, side talk cuts off the answers | During a session everything said is a question, and a new question replaces the one being answered. End the session with the deactivation phrase before you talk among yourselves, or use **Mute**. |
 | The wake phrase does nothing in the Whisper mode | Look at **Whisper** on the **Status** tab: the model must be loaded. The **Console** shows a "heard" line for everything Whisper wrote down; if it writes your phrase differently, use its spelling, or pick a two-word phrase. Choose your language in **Settings → Whisper → Language** instead of **Automatic** if Whisper mixes languages up. |
 | A link in a posted answer has no preview | Discord shows no preview for a link the answer puts in parentheses, as in "(source: link)". The link itself works. |

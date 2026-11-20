@@ -628,7 +628,7 @@
   // A sample session for the documentation's screenshots (the page opened with `?sample`),
   // whose build stamp then reads like a release.
   const SAMPLE = new URLSearchParams(location.search).has("sample");
-  const STAMP = SAMPLE ? "1.0.0 2026-11-11" : "1.0.0+mock 2026-11-11";
+  const STAMP = SAMPLE ? "1.3.0 2026-11-20" : "1.3.0+mock 2026-11-20";
   const SAMPLE_CHAT = [
     ["20:14:02", "system", null, "Call started"],
     ["20:14:02", "context", null, "In the channel: Alex, Sam. Addressed by: Alex."],
@@ -1037,7 +1037,7 @@
       tokenSet = false;
     },
     system_status: () => ({
-      version: "1.0.0", build_stamp: STAMP, process_id: 4242,
+      version: "1.3.0", build_stamp: STAMP, process_id: 4242,
       uptime_seconds: Math.floor((Date.now() - started) / 1000), runtime: "Rust / Tauri 2 / WebView2 (mock)",
       platform: "Windows (mock)", architecture: "x86_64", cpu_cores: 8,
     }),
@@ -1112,7 +1112,7 @@
       { id: 1, at: "12:00:01", guild_id: "1091401169441656933", kind: "user", who: "Alex", text: "What time is it?" },
       { id: 2, at: "12:00:03", guild_id: "1091401169441656933", kind: "assistant", who: null, text: "It is noon." },
     ]),
-    log_history: () => ["[2026-11-11][12:00:00][INFO][voicebro] VoiceBro 1.0.0+mock (mock log)"],
+    log_history: () => ["[2026-11-20][12:00:00][INFO][voicebro] VoiceBro 1.3.0+mock (mock log)"],
     set_muted: ({ muted: next }) => {
       muted = next;
       return muted;
@@ -1207,7 +1207,7 @@
     codex_sign_in: () => "https://chatgpt.com/mock",
     codex_models: () => clone(capabilities.models),
     open_log_folder: () => "C:\\VoiceBro\\logs",
-    app_info: () => ({ version: "1.0.0", build_stamp: STAMP, data_dir: "C:\\VoiceBro" }),
+    app_info: () => ({ version: "1.3.0", build_stamp: STAMP, data_dir: "C:\\VoiceBro" }),
     // `null` while the switch is off, as the app answers when its reader is not running.
     memory_status: () => (settings.diagnostics.memory
       ? {
