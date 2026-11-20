@@ -1245,8 +1245,11 @@ the user's unmodified `claude.exe` and never reads, stores or passes a Claude cr
   `claude-workspace\` with `claude_args`: `-p --input-format stream-json --output-format
   stream-json --verbose --include-partial-messages --permission-mode dontAsk
   --strict-mcp-config --setting-sources "" --no-session-persistence --tools
-  WebSearch,WebFetch --mcp-config claude\mcp.json [--model m]
-  [--append-system-prompt-file claude\instructions.txt]`. The instruction file holds
+  WebSearch,WebFetch --allowedTools WebSearch,WebFetch --mcp-config claude\mcp.json
+  [--model m] [--append-system-prompt-file claude\instructions.txt]`. `--tools` makes the
+  two web tools the only ones offered, `--allowedTools` allows them in advance: in the
+  don't-ask mode an offered tool that is not allowed is denied at its first use (Claude Code
+  2.1.317, found in the user's live test on 2026-11-20). The instruction file holds
   `assistant.instructions` (none when empty); `mcp.json` is `{"mcpServers":{}}`. `--bare`
   is never used: it accepts only an API key. When the app itself runs inside a Claude Code
   session (`CLAUDECODE` set, development only), every `CLAUDE*`, `ANTHROPIC*` and `OTEL_*`
@@ -1260,7 +1263,8 @@ the user's unmodified `claude.exe` and never reads, stores or passes a Claude cr
   lines in order, so the backend numbers its turns and gives every message to the oldest
   turn without a `result`: `stream_event` `text_delta` → `Delta`, each `assistant` text
   block → `Message` and an `agent` chat line, a `tool_use` → a `tool` chat line ("Web
-  search: …", "Web fetch: …"), `result` → `Completed` (`success` and not `is_error`;
+  search: …", "Web fetch: …"), a `tool_result` with `is_error` in a `user` message →
+  a `tool` chat line "<tool> failed: <first line>", `result` → `Completed` (`success` and not `is_error`;
   `aborted_streaming` reads "interrupted"). `interrupt` is a `control_request` with subtype
   `interrupt`, sent only for the running turn. `add` is refused ("Claude Code answers one
   question at a time"), so with one speaker at a time the question waits and starts the
@@ -1268,7 +1272,8 @@ the user's unmodified `claude.exe` and never reads, stores or passes a Claude cr
   `claude` connection error). The conversation id is the process's number, so a new
   process gets the guild's history in its first question.
 - Tests: `testdata/fake-claude` (Node) answers `--version`, `auth status` (`--kind=api_key`,
-  `--kind=none`), stream-json turns with deltas, a web search and a `result`, a queue, and
+  `--kind=none`), stream-json turns with deltas, a web search (denied, as the real CLI denies
+  it, in the don't-ask mode without `--allowedTools`) and a `result`, a queue, and
   the control requests `initialize`, `interrupt` and its own `fake_delay`,
   `fake_last_user` and `fake_exit`; `--fake-log` records the arguments and every stdin
   line. Live: `VOICEBRO_CLAUDE_LIVE=1 cargo test -p voicebro-core

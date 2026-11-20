@@ -91,6 +91,8 @@ fn the_arguments_lock_claude_code_down() {
         args[index + 1].clone()
     };
     assert_eq!(after("--tools"), "WebSearch,WebFetch");
+    // Offered and allowed in advance: the don't-ask mode denies an offered tool otherwise.
+    assert_eq!(after("--allowedTools"), "WebSearch,WebFetch");
     assert_eq!(after("--permission-mode"), "dontAsk");
     assert_eq!(after("--setting-sources"), "");
     assert_eq!(after("--mcp-config"), "C:/data/claude/mcp.json");
@@ -374,6 +376,13 @@ fn a_question_is_answered_spoken_and_posted() {
             .any(|entry| entry.kind == "tool" && entry.text == "Web search: London weather"),
         "{chat:?}"
     );
+    // The search ran: the fake, like Claude Code, denies it unless it is allowed in advance.
+    assert!(
+        !chat
+            .iter()
+            .any(|entry| entry.kind == "tool" && entry.text.contains("failed")),
+        "{chat:?}"
+    );
     assert!(
         answer.text.contains("Alex: what time is it in London?"),
         "{}",
@@ -395,6 +404,7 @@ fn a_question_is_answered_spoken_and_posted() {
         .unwrap();
     for flag in [
         "\"--tools\",\"WebSearch,WebFetch\"",
+        "\"--allowedTools\",\"WebSearch,WebFetch\"",
         "\"--setting-sources\",\"\"",
         "\"--strict-mcp-config\"",
         "\"--no-session-persistence\"",
@@ -638,6 +648,11 @@ fn claude_text_turn_when_enabled() {
         .user_text(question("Alex", "Please list the files on this computer."));
     let files = rig.answer();
     eprintln!("files: {}", files.text);
+    rig.session.user_text(question(
+        "Sam",
+        "What is the weather in London today? Search the web.",
+    ));
+    eprintln!("weather: {}", rig.answer().text);
     let tools: Vec<String> = rig
         .assistant
         .inner
@@ -647,9 +662,22 @@ fn claude_text_turn_when_enabled() {
         .filter(|entry| entry.kind == "tool")
         .map(|entry| entry.text)
         .collect();
+    eprintln!("tools: {tools:?}");
     assert!(
         tools.iter().all(|tool| tool.starts_with("Web ")),
         "only web tools: {tools:?}"
+    );
+    // The search ran, not only was asked for: Claude Code's don't-ask mode denies a tool
+    // that is not allowed in advance (2026-11-20).
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.len() > "Web search: ".len() && tool.starts_with("Web search: ")),
+        "a web search with its query: {tools:?}"
+    );
+    assert!(
+        !tools.iter().any(|tool| tool.contains(" failed: ")),
+        "no tool failed: {tools:?}"
     );
 
     // Leave and join again: a new process, the history carries the number over.

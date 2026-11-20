@@ -8,8 +8,10 @@
 // - `-p --input-format stream-json --output-format stream-json …` reads one JSON object per
 //   stdin line. A `user` line is a question: answered in order, one at a time, a line that
 //   comes meanwhile waits. Each answer is a `system/init`, an interim message ("Let me check
-//   that."), a web search tool use, and the final message ("You asked: <question>. In
-//   London it is 9 degrees."), each streamed as `stream_event` text deltas and then given
+//   that."), a web search tool use and its result (denied, as the real CLI denies it, in
+//   `--permission-mode dontAsk` without `--allowedTools` naming WebSearch), and the final
+//   message ("You asked: <question>. In London it is 9 degrees."), each streamed as
+//   `stream_event` text deltas and then given
 //   whole as an `assistant` message, and a `result`.
 // - Control requests: `initialize` answers with models and the account; `interrupt` ends the
 //   running answer with an `error_during_execution` result (`aborted_streaming`); the fake's
@@ -81,6 +83,11 @@ async function answer(question) {
   let done = await stream(turn, "Let me check that.");
   if (done) {
     write({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tool-1", name: "WebSearch", input: { query: "London weather" } }] }, session_id: session });
+    // As Claude Code 2.1.317: in the don't-ask mode a tool not allowed in advance is denied.
+    const allowed = (option("--allowedTools") || "").split(/[ ,]+/).includes("WebSearch");
+    const denied = option("--permission-mode") === "dontAsk" && !allowed;
+    write({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", is_error: denied,
+      content: denied ? "Permission to use WebSearch has been denied because Claude Code is running in don't ask mode." : "Web search results for query: \"London weather\": 9 degrees" }] }, session_id: session });
     if (delay) await sleep(delay);
     done = !turn.cancelled && (await stream(turn, `You asked: ${question}. In London it is 9 degrees.`));
   }
