@@ -279,10 +279,16 @@ fn rig_on(
     one_at_a_time: bool,
     model: &str,
 ) -> Option<Rig> {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
     let mut settings = whisper_settings(&executable);
     settings.claude.model = model.to_owned();
     settings.assistant.one_speaker_at_a_time = one_at_a_time;
+    rig_with(dir, &settings)
+}
+
+/// As [`rig_on`], with the whole settings given (the text answers mode).
+fn rig_with(dir: tempfile::TempDir, settings: &Settings) -> Option<Rig> {
+    let settings = settings.clone();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
     let (assistant, errors) = assistant_in(&runtime, dir.path(), &settings);
     assistant.configure(&settings);
     let read = Arc::new(Mutex::new(Vec::new()));
@@ -418,6 +424,42 @@ fn a_question_is_answered_spoken_and_posted() {
     )
     .unwrap();
     assert_eq!(instructions, "Answer briefly.");
+    rig.assistant.detach(1);
+    rig.assistant.stop();
+}
+
+/// Change `text-answers-mode`, D2 and D4: in the text answers mode the answer is posted and
+/// nothing is spoken, and the latency line has no voice times.
+#[test]
+fn the_text_answers_mode_posts_and_speaks_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(fake) = logging_fake(dir.path(), "") else {
+        return;
+    };
+    let mut settings = whisper_settings(&fake);
+    settings.assistant.mode = AssistantMode::Text;
+    let Some(mut rig) = rig_with(dir, &settings) else {
+        return;
+    };
+    let asked = question("Alex", "what time is it in London?");
+    let latency = Arc::clone(&asked.latency);
+    rig.session.user_text(asked);
+    let answer = rig.answer();
+    assert_eq!(answer.task.as_deref(), Some("what time is it in London?"));
+    wait(|| !latency.lock().unwrap().recent().is_empty());
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        rig.read.lock().unwrap().is_empty(),
+        "the voice read {:?}",
+        rig.read.lock().unwrap()
+    );
+    let report = latency.lock().unwrap().recent()[0].clone();
+    assert!(
+        report.line().ends_with("no voice (text answers)"),
+        "{}",
+        report.line()
+    );
+    assert!(!rig.session.working(), "nothing waits to be spoken");
     rig.assistant.detach(1);
     rig.assistant.stop();
 }

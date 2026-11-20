@@ -548,7 +548,7 @@ impl OpencodeAssistant {
     async fn prepare_guild(&self, guild: u64) -> Result<(), PrepareError> {
         self.inner.stop_epoch.fetch_add(1, Ordering::AcqRel);
         let config = self.config();
-        if config.mode != AssistantMode::Whisper {
+        if !config.mode.hears_with_whisper() {
             return Err(PrepareError::NotWhisper);
         }
         let server = self.ensure_server().await?;
@@ -707,6 +707,7 @@ impl Assistant for OpencodeAssistant {
                 TextOptions {
                     speaker_labels: config.speaker_labels,
                     one_speaker_at_a_time: config.one_speaker_at_a_time,
+                    text_answers: !config.mode.speaks_locally(),
                 }
             }),
             conversation: self.conversation(guild),

@@ -631,7 +631,7 @@ impl WakeManager {
             return;
         }
         // The Whisper mode spots the phrases in Whisper's text (change `whisper-mode`, D1).
-        if settings.assistant.mode == crate::settings::AssistantMode::Whisper {
+        if settings.assistant.mode.hears_with_whisper() {
             if self.inner.running.lock().expect("running lock").is_some() {
                 self.inner
                     .events

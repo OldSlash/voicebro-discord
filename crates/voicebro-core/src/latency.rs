@@ -62,6 +62,9 @@ pub struct WhisperTiming {
     pub text_to_first_words_ms: u64,
     pub first_words_to_voice_ms: u64,
     pub speech_to_voice_ms: u64,
+    /// The answer was read by the local voice; `false` in the text answers mode (change
+    /// `text-answers-mode`, D4), where the two voice times are 0 and the line says so.
+    pub voice: bool,
 }
 
 impl Eq for WhisperTiming {}
@@ -87,6 +90,33 @@ impl WhisperTiming {
             text_to_first_words_ms: millis(text_at, first_words_at),
             first_words_to_voice_ms: millis(first_words_at, voice_at),
             speech_to_voice_ms: millis(speech_end, voice_at),
+            voice: true,
+        }
+    }
+
+    /// The timings of an answer that no voice reads (the text answers mode): the time to the
+    /// text and to the engine's first words only.
+    pub fn without_voice(
+        speech_end: Instant,
+        text_at: Instant,
+        first_words_at: Instant,
+        audio_seconds: f64,
+        model: &str,
+        device: &str,
+    ) -> Self {
+        Self {
+            first_words_to_voice_ms: 0,
+            speech_to_voice_ms: 0,
+            voice: false,
+            ..Self::new(
+                speech_end,
+                text_at,
+                first_words_at,
+                first_words_at,
+                audio_seconds,
+                model,
+                device,
+            )
         }
     }
 
@@ -105,7 +135,8 @@ impl WhisperTiming {
             first_speech_to_answer_ms: None,
             last_speech_to_answer_ms: Some(self.speech_to_text_ms + self.text_to_first_words_ms),
             answer_to_playback_ms: self.first_words_to_voice_ms,
-            first_speech_to_playback_ms: Some(self.speech_to_voice_ms),
+            // No voice, no playback (the text answers mode).
+            first_speech_to_playback_ms: self.voice.then_some(self.speech_to_voice_ms),
             whisper: Some(Box::new(self)),
         }
     }
@@ -115,6 +146,17 @@ impl TurnReport {
     /// The log wording; "ChatGPT audio" is the answer.
     pub fn line(&self) -> String {
         if let (Some(turn), Some(whisper)) = (self.turn, self.whisper.as_ref()) {
+            if !whisper.voice {
+                return format!(
+                    "whisper turn {turn}: speech end -> text {} ms ({:.1} s of audio, {}, {}); text -> {} first words {} ms; no voice (text answers)",
+                    whisper.speech_to_text_ms,
+                    whisper.audio_seconds,
+                    whisper.model,
+                    whisper.device,
+                    whisper.engine,
+                    whisper.text_to_first_words_ms
+                );
+            }
             return format!(
                 "whisper turn {turn}: speech end -> text {} ms ({:.1} s of audio, {}, {}); text -> {} first words {} ms; first words -> voice {} ms; speech end -> voice {} ms",
                 whisper.speech_to_text_ms,
@@ -382,6 +424,33 @@ mod whisper_tests {
         );
         let json = serde_json::to_value(&tracker.recent()[0]).unwrap();
         assert_eq!(json["whisper"]["speech_to_voice_ms"], 2600);
+        assert_eq!(json["whisper"]["voice"], true);
+    }
+
+    /// Change `text-answers-mode`, D4: an answer without the voice keeps the time to the
+    /// text and to the first words, and says there is no voice.
+    #[test]
+    fn the_text_answers_line_has_no_voice_times() {
+        let speech_end = Instant::now();
+        let report = WhisperTiming::without_voice(
+            speech_end,
+            speech_end + Duration::from_millis(640),
+            speech_end + Duration::from_millis(2_140),
+            3.2,
+            "whisper-base-q8_0",
+            "cpu",
+        )
+        .with_engine("OpenCode")
+        .report(5, "12:00:02");
+        assert_eq!(
+            log_line(7, &LatencyEvent::Report(report.clone())),
+            "[latency:7] whisper turn 5: speech end -> text 640 ms (3.2 s of audio, whisper-base-q8_0, cpu); text -> OpenCode first words 1500 ms; no voice (text answers)"
+        );
+        assert_eq!(report.first_speech_to_playback_ms, None);
+        assert_eq!(report.answer_to_playback_ms, 0);
+        assert_eq!(report.last_speech_to_answer_ms, Some(2_140));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["whisper"]["voice"], false);
     }
 }
 

@@ -1432,21 +1432,29 @@
   // Settings → Whisper card's On/Off label. Like a field, it follows the stored settings,
   // never a status refresh.
   let lastStatus = null; // the last status, for redrawing the notices after a save
-  const whisperMode = () => readByPath(stored, "assistant.mode") === "whisper";
+  // Whisper hears in the Whisper mode and in the text answers mode (change
+  // `text-answers-mode`), which has no voice; the rows of both are the Whisper mode's.
+  const isWhisperMode = (mode) => mode === "whisper" || mode === "text";
+  const whisperMode = () => isWhisperMode(readByPath(stored, "assistant.mode"));
+  const textMode = () => readByPath(stored, "assistant.mode") === "text";
   function applyAssistantMode() {
     const mode = whisperMode() ? "whisper" : "realtime";
     document.querySelectorAll("#card-assistant-body [data-mode]").forEach((row) => {
       row.hidden = row.dataset.mode !== mode;
     });
     $("recognition-engine").value = mode === "whisper" ? "Whisper" : "Vosk";
-    $("local-voice-note").textContent = mode === "whisper"
-      ? "This voice reads the assistant's answers into the voice channel."
-      : "Not used in the realtime voice mode: the Codex call speaks with its own voice (Codex → Voice). You can download a voice now for the Whisper mode.";
+    $("local-voice-note").textContent = textMode()
+      ? "Not used in the text answers mode: the answers are posted as text in a Discord chat. You can download a voice now for the Whisper mode."
+      : mode === "whisper"
+        ? "This voice reads the assistant's answers into the voice channel."
+        : "Not used in the realtime voice mode: the Codex call speaks with its own voice (Codex → Voice). You can download a voice now for the Whisper mode.";
     $("whisper-onoff").classList.toggle("is-on", mode === "whisper");
     $("whisper-onoff-flag").textContent = mode === "whisper" ? "On" : "Off";
-    $("whisper-onoff-text").textContent = mode === "whisper"
-      ? ": the assistant runs in the Whisper mode."
-      : ": turn it on in Config → Assistant → Assistant mode.";
+    $("whisper-onoff-text").textContent = textMode()
+      ? ": the assistant runs in the Whisper mode with text answers."
+      : mode === "whisper"
+        ? ": the assistant runs in the Whisper mode."
+        : ": turn it on in Config → Assistant → Assistant mode.";
     if (lastStatus) renderWhisperNotices(lastStatus);
   }
 
@@ -1497,7 +1505,7 @@
       claudeNotice.kind = kind;
     }
     const patch = { assistant: { engine } };
-    const toWhisper = engine !== "codex" && readByPath(stored, "assistant.mode") !== "whisper";
+    const toWhisper = engine !== "codex" && !whisperMode();
     if (toWhisper) patch.assistant.mode = "whisper";
     try {
       stored = await invoke("save_settings", { patch });
@@ -1684,7 +1692,9 @@
     installDialog.dataset.reason = reason;
     installDialog.dataset.subject = "whisper";
     $("wake-install-title").textContent = "The Whisper mode is not installed";
-    $("wake-install-text").textContent = "A /join was refused: the Whisper mode recognizes speech and speaks the answers on this PC with these files of Whisper and the local voice, which are not here yet. Download them now?";
+    $("wake-install-text").textContent = textMode()
+      ? "A /join was refused: the text answers mode recognizes speech on this PC with these files of Whisper, which are not here yet. Download them now?"
+      : "A /join was refused: the Whisper mode recognizes speech and speaks the answers on this PC with these files of Whisper and the local voice, which are not here yet. Download them now?";
     installSetItems(items, sizeText, true);
     renderManual($("wake-install-manual"), items);
     $("wake-install-manual-note").textContent = WHISPER_MANUAL_NOTE;
@@ -1698,11 +1708,12 @@
     $("wake-install-secondary").focus();
   }
   // What the status says is missing: Whisper's files (runtime, model, VAD), then the voice's,
-  // each file once. Computed by the app in both modes.
+  // each file once. Computed by the app in both modes. The text answers mode needs no voice.
   function missingItems(status) {
     const seen = new Set();
     const items = [];
-    for (const item of (status.whisper?.missing || []).concat(status.tts?.missing || [])) {
+    const spoken = textMode() ? [] : status.tts?.missing || [];
+    for (const item of (status.whisper?.missing || []).concat(spoken)) {
       if (seen.has(item.file)) continue;
       seen.add(item.file);
       items.push(item);
@@ -1719,7 +1730,8 @@
     $("wake-install-progress").textContent = "Starting…";
     showManual($("wake-install-manual"), false);
     // Both parts; a part with nothing missing refuses, which is fine while the other starts.
-    const results = await Promise.allSettled([downloadWhisper(), downloadVoice()]);
+    // The text answers mode asks for Whisper's files only.
+    const results = await Promise.allSettled(textMode() ? [downloadWhisper()] : [downloadWhisper(), downloadVoice()]);
     const refusals = results.filter((result) => result.status === "rejected").map((result) => String(result.reason));
     if (refusals.length < results.length) {
       install.downloading = true;
@@ -1769,7 +1781,7 @@
     }
     const recent = (since, ms) => since > 0 && Date.now() - since < ms;
     // The Claude subscription dialog comes first; this one waits until it is answered.
-    if (install.armed && !installDialog.open && !claudeDialog.open && mode === "whisper" && items.length
+    if (install.armed && !installDialog.open && !claudeDialog.open && isWhisperMode(mode) && items.length
       && recent(whisperInstall.joinRefusedAt, 5000)) {
       whisperInstall.joinRefusedAt = 0;
       whisperOpen("join", items);
@@ -1855,7 +1867,8 @@
   function renderWhisperMissing(status) {
     const box = $("whisper-missing");
     const heard = status.whisper?.missing || [];
-    const spoken = status.tts?.missing || [];
+    // The text answers mode needs no voice (change `text-answers-mode`).
+    const spoken = textMode() ? [] : status.tts?.missing || [];
     if (!whisperMode() || (!heard.length && !spoken.length)) {
       box.hidden = true;
       return;
@@ -1960,9 +1973,11 @@
   }
   function whisperTimingText(timing) {
     const device = DEVICE_NAMES[timing.device] || timing.device;
-    return `speech end → text ${number(timing.speech_to_text_ms)} ms (${decimal(timing.audio_seconds)} s of audio, ${whisperModelName(timing.model)}, ${device}); `
-      + `text → Codex first words ${number(timing.text_to_first_words_ms)} ms; `
-      + `first words → voice ${number(timing.first_words_to_voice_ms)} ms; `
+    const start = `speech end → text ${number(timing.speech_to_text_ms)} ms (${decimal(timing.audio_seconds)} s of audio, ${whisperModelName(timing.model)}, ${device}); `
+      + `text → Codex first words ${number(timing.text_to_first_words_ms)} ms; `;
+    // The text answers mode has no voice (change `text-answers-mode`).
+    if (timing.voice === false) return `${start}no voice (text answers)`;
+    return `${start}first words → voice ${number(timing.first_words_to_voice_ms)} ms; `
       + `speech end → voice ${number(timing.speech_to_voice_ms)} ms`;
   }
   function renderWhisperNow(status) {
@@ -1980,7 +1995,9 @@
     if (state.kind === "ready" && whisper.load_ms != null) recognition += ` in ${whisper.load_ms} ms`;
     setText("whisper-now-recognition", recognition);
     setText("whisper-now-device", whisperDeviceText(whisper));
-    setText("whisper-now-voice", ttsText(status.tts || {}));
+    setText("whisper-now-voice", status.settings?.assistant?.mode === "text"
+      ? "Not used: the text answers mode posts the answers as text."
+      : ttsText(status.tts || {}));
     const turn = lastWhisperTurn(status);
     setText("whisper-now-last", turn ? whisperTimingText(turn.whisper) : "No answer measured yet.");
   }
@@ -1998,7 +2015,8 @@
     }
   }
   function renderWhisperTiles(status, whisperOn) {
-    setText("status-mode", whisperOn ? "Whisper" : "Realtime voice");
+    const textAnswers = status.settings?.assistant?.mode === "text";
+    setText("status-mode", textAnswers ? "Whisper, text answers" : whisperOn ? "Whisper" : "Realtime voice");
     document.querySelectorAll("[data-whisper-only]").forEach((tile) => {
       tile.hidden = !whisperOn;
     });
@@ -2011,7 +2029,9 @@
       : whisper.device_requested === "gpu" && used === "cpu"
         ? `CPU (GPU requested: ${whisper.fallback_reason || "not available"})`
         : DEVICE_NAMES[used] || used);
-    setText("status-tts", `${voiceName(status.tts?.voice)}, ${shortState(status.tts?.state || {})}`);
+    setText("status-tts", textAnswers
+      ? "not used: the answers are posted as text"
+      : `${voiceName(status.tts?.voice)}, ${shortState(status.tts?.state || {})}`);
   }
 
   // ---- Preview: the voice reads the app's sample sentence; it plays here only.
@@ -2153,7 +2173,7 @@
     const gates = Object.values(status.gates || {});
     setText("status-gates", gates.length ? gates.map(gateText).join("; ") : "not in a voice channel");
     // The Whisper mode (change `whisper-mode`): Vosk is off and Whisper spots the phrases.
-    const whisperOn = status.settings?.assistant?.mode === "whisper";
+    const whisperOn = isWhisperMode(status.settings?.assistant?.mode);
     setText("status-wake", whisperOn ? "off: the Whisper mode spots the phrases" : wakeText(status.wake || {}));
     renderWhisperTiles(status, whisperOn);
     setText("status-mute", status.muted ? "muted" : "not muted");

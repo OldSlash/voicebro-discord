@@ -43,9 +43,10 @@ pub enum ConnectionState {
     Error,
 }
 
-/// The two assistant modes as Discord shows them (change `whisper-mode`).
+/// The assistant modes as Discord shows them (changes `whisper-mode`, `text-answers-mode`).
 pub const MODE_REALTIME: &str = "Realtime voice";
 pub const MODE_WHISPER: &str = "Whisper mode";
+pub const MODE_TEXT: &str = "Whisper mode, text answers";
 
 /// What the assistant is doing in a guild, for the panel and `/status`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

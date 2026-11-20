@@ -19,7 +19,7 @@ use super::whisper::{self, DeviceChoice, WhisperModel, NO_SPEECH_THRESHOLD};
 use super::{local, DecodeOptions, SpeechToText, SttError};
 use crate::assets::{self, Asset};
 use crate::events::{AppEvent, EventBus};
-use crate::settings::{AssistantMode, Settings, WhisperDevice, WhisperSettings};
+use crate::settings::{Settings, WhisperDevice, WhisperSettings};
 use crate::wake::{megabytes, DownloadItem, Phrase, PhraseSet, WakeFeed};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,9 @@ use std::time::{Duration, Instant};
 /// since change `models-in-settings`). Its start, up to the colon, is what the window looks
 /// for in the log.
 pub const JOIN_NEEDS_DOWNLOADS: &str = "The Whisper mode needs downloads: open VoiceBro → Settings and press Download in the Whisper and Local voice cards, then run /join again";
+/// The same reply in the text answers mode, which needs no voice (change
+/// `text-answers-mode`); it starts as [`JOIN_NEEDS_DOWNLOADS`] does, for the window.
+pub const JOIN_NEEDS_WHISPER_FILES: &str = "The Whisper mode needs downloads: open VoiceBro → Settings and press Download in the Whisper card, then run /join again";
 /// Whisper unloads this long after the bot left its last voice channel.
 pub const UNLOAD_AFTER: Duration = Duration::from_millis(500);
 /// About 5 s of one speaker's frames toward the cutter.
@@ -492,7 +495,7 @@ impl WhisperManager {
             .map(|missing| missing.iter().map(DownloadItem::of).collect())
             .unwrap_or_default();
         self.update(|status| status.missing = items);
-        if settings.assistant.mode != AssistantMode::Whisper {
+        if !settings.assistant.mode.hears_with_whisper() {
             // The CUDA context goes only when nothing else loads or downloads now; a busy
             // manager leaves it for the next unload.
             if self.unload() {
@@ -576,7 +579,7 @@ impl WhisperManager {
             .lock()
             .expect("whisper settings lock")
             .as_ref()
-            .is_some_and(|settings| settings.assistant.mode == AssistantMode::Whisper);
+            .is_some_and(|settings| settings.assistant.mode.hears_with_whisper());
         if !whisper_mode {
             self.set_state(WhisperState::Off);
             return;
@@ -783,7 +786,7 @@ impl WhisperManager {
             .expect("whisper settings lock")
             .clone()
             .ok_or_else(|| "Whisper has not been configured yet".to_owned())?;
-        if settings.assistant.mode != AssistantMode::Whisper {
+        if !settings.assistant.mode.hears_with_whisper() {
             return Ok(());
         }
         // Wanted from here: a download agreed later loads the model for this join.
@@ -956,6 +959,7 @@ fn cut(receiver: Receiver<CutMessage>, queue: &transcriber::UtteranceQueue, coun
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::AssistantMode;
     use crate::stt::transcriber::Transcript;
     use crate::stt::{RawSegment, RawTranscript};
 

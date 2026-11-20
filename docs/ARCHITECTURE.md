@@ -1135,7 +1135,9 @@ assistant is given, so the app never panics on an unknown engine setting.
     and the first delta is "Codex first words" for the latency line. `item/completed` with
     an `agentMessage` sends the rest of that message to the voice and keeps its text; the
     item goes to the chat log. Every agent message is spoken, the interim line before a
-    web search too. `turn/completed` with the status `completed` adds the last agent message
+    web search too; in the text answers mode (`TextOptions::text_answers`, change
+    `text-answers-mode`) nothing is queued for the voice, and the latency line is written
+    at `turn/completed`. `turn/completed` with the status `completed` adds the last agent message
     to the conversation and sends `AgentAnswer { guild, task: question, text }` through
     `ports.answers`, so every completed answer can be posted (4.2, 4.7); another status
     adds a chat error and posts nothing.
@@ -1360,7 +1362,7 @@ pub struct Settings {
     pub session: SessionSettings,          // mode: always | wake_word; idle_timeout_seconds (0 = off, else 5..=3600); earcons, earcon_volume
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation?, deactivation? } } (an absent list: the model's defaults)
-    pub assistant: AssistantSettings,      // engine: codex (default) | claude | opencode (its own `engine` part; realtime is refused with claude or opencode), mode: realtime (default) | whisper (its own `mode` part in changed_sections), speaker_labels: start | changes | off, instructions (the user's, for every engine, no default; its own `instructions` part; moved from codex.instructions at load), save_chat_history (default false), post_answers: off (default) | voice_channel | command_channel | channel, answers_channel (a channel id, digits or empty; required by channel, kept while another value is chosen)
+    pub assistant: AssistantSettings,      // engine: codex (default) | claude | opencode (its own `engine` part; realtime is refused with claude or opencode), mode: realtime (default) | whisper | text (the text answers mode, change `text-answers-mode`: Whisper without the voice; `AssistantMode::hears_with_whisper()` is true for whisper and text, `speaks_locally()` for whisper only; its own `mode` part in changed_sections), speaker_labels: start | changes | off, instructions (the user's, for every engine, no default; its own `instructions` part; moved from codex.instructions at load), save_chat_history (default false), post_answers: off (default) | voice_channel | command_channel | channel, answers_channel (a channel id, digits or empty; required by channel, kept while another value is chosen)
     pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), handoff_mode: items (default) | commentary | bem_tags | thinking, refresh_lists_at_start (default false, read at start)
     pub claude: ClaudeSettings,            // executable (empty = found automatically), model (empty = Claude Code's default; no spaces, at most 200 characters), subscription_notice_shown (default false; the window's one-time dialog, 4.5), subscription_notice_hidden (default false; Hide in the Claude Code card's notice, which then never shows again; only true or false, change `claude-notice-hide`)
     pub opencode: OpencodeSettings,        // executable (empty = found automatically), model (empty = OpenCode's default, else provider/model; the model part may hold more /)
@@ -1481,6 +1483,19 @@ the wake worker, unload Whisper and the voice. `Runtime::toggle_mute` is the sin
 `WhisperManager`, whose transcripts go to the registry, and a `TtsManager`, which it also
 hands to the assistant (`use_tts`); both live in the gate host (4.12).
 
+**The text answers mode** (`assistant.mode = text`, change `text-answers-mode`) is the
+Whisper mode in everything but the voice. Every check that meant "the Whisper mode" asks
+`AssistantMode::hears_with_whisper()` (the gate's `GateSettings.whisper`, the Whisper and
+wake managers, the three engines, the gate rebuild and the join); the voice manager and the
+text session ask `speaks_locally()`. In the text answers mode the voice manager stays `Off`
+(its `missing` still listed), `TtsManager::prepare_join` passes without loading, the text
+session queues nothing for the voice (`TextOptions::text_answers`), and posting off sends
+the answers to the voice channel's chat (`answer_destination`). A join without Whisper's
+files is refused with `JOIN_NEEDS_WHISPER_FILES` ("The Whisper mode needs downloads: open
+VoiceBro → Settings and press Download in the Whisper card, then run /join again"), which
+starts as `JOIN_NEEDS_DOWNLOADS` does. A switch between `whisper` and `text` is a mode
+change like any other: the sessions end with the falling tone and the gates are rebuilt.
+
 - *At start* Whisper scans `whisper-models\`, and both are configured: in either mode they
   report missing files, download nothing and load nothing.
 - *The feed.* Every gate's feed is a `ModeFeed`, which hands each frame and tick to the wake
@@ -1516,7 +1531,9 @@ hands to the assistant (`use_tts`); both live in the gate host (4.12).
   participants, registered, and the assistant attached in the new mode. The bot stays in
   the channel. The log says "guild <g>: the assistant switched to the <realtime | whisper>
   mode", and the panels are refreshed.
-- `assistant_mode()` names the mode for `/status` and the panel (4.2).
+- `assistant_mode()` names the mode for `/status` and the panel (4.2): "Realtime voice",
+  "Whisper mode" or "Whisper mode, text answers" (`MODE_TEXT`, read from the settings,
+  since the gates hear the same way in both Whisper modes).
 - *Shutdown* configures both with the realtime mode, which unloads them.
 
 **The engine switch** (change `claude-and-opencode-engines`, design D1). The desktop shell
@@ -2740,6 +2757,14 @@ Values that are known to work. Change them only with a measurement or a corpus r
 
   ```text
   [latency:<guild>] whisper turn <n>: speech end -> text <ms> ms (<s> s of audio, <model>, <device>); text -> Codex first words <ms> ms; first words -> voice <ms> ms; speech end -> voice <ms> ms
+  ```
+
+  In the text answers mode (change `text-answers-mode`) no voice marks the answer: the text
+  session writes the line when the turn completes (`WhisperTiming::without_voice`,
+  `voice: false`, no playback time in the report), and a failed turn writes none:
+
+  ```text
+  [latency:<guild>] whisper turn <n>: speech end -> text <ms> ms (<s> s of audio, <model>, <device>); text -> Codex first words <ms> ms; no voice (text answers)
   ```
 
   "Speech end" is when the gate handed over the utterance's last frame, so "speech end ->

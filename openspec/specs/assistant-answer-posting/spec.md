@@ -7,13 +7,14 @@ channel can read what the voice only retells, open its links and see their previ
 ## Requirements
 
 ### Requirement: Only the final answer of a completed agent task is posted
-While `assistant.post_answers` is not `off`, the bot SHALL post one answer for each agent
-task that completes: the last agent message of that task, as written. It SHALL NOT post the
-agent's earlier messages of the task, its tool calls or reasoning, what the voice says, or
-what people say. A task that is interrupted or fails, or whose final agent message is empty,
-SHALL post nothing. A task still open when the bot leaves that server's voice channel SHALL
-post nothing, whatever the destination: the leave ends the agent's session and its open
-tasks with it.
+While `assistant.post_answers` is not `off`, or the assistant mode is `text`, the bot SHALL
+post one answer for each agent task that completes: the last agent message of that task, as
+written. In the text answers mode with `post_answers` `off` the answer SHALL go to the
+voice channel's chat. It SHALL NOT post the agent's earlier messages of the task, its tool
+calls or reasoning, what the voice says, or what people say. A task that is interrupted or
+fails, or whose final agent message is empty, SHALL post nothing. A task still open when the
+bot leaves that server's voice channel SHALL post nothing, whatever the destination: the
+leave ends the agent's session and its open tasks with it.
 
 #### Scenario: Interim line and final answer
 - **WHEN** the voice delegates a question, the agent writes "I'll look that up", searches the web, then writes its answer and the task completes
@@ -36,8 +37,12 @@ tasks with it.
 - **THEN** nothing is posted for that task, in any destination
 
 #### Scenario: Off
-- **WHEN** `assistant.post_answers` is `off` and an agent task completes
+- **WHEN** `assistant.post_answers` is `off` in the realtime or Whisper mode and an agent task completes
 - **THEN** nothing is posted and Discord receives no request for it
+
+#### Scenario: Off in the text answers mode
+- **WHEN** `assistant.post_answers` is `off`, the assistant mode is `text`, and a turn completes
+- **THEN** its answer is posted to the chat of the voice channel the bot is in
 
 ### Requirement: Posting to the voice channel's chat
 With `assistant.post_answers` set to `voice_channel`, an answer SHALL be posted in the

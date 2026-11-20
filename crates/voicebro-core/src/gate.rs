@@ -15,7 +15,7 @@ use crate::assistant::{AssistantSession, HeardSink, UserText};
 use crate::audio::{peak, AudioGains, Earcon, Frame, FrameSender, GainStage, OutputHandle};
 use crate::events::{AppEvent, EventBus};
 use crate::latency::{self, SharedLatency};
-use crate::settings::{AssistantMode, SessionMode, Settings, SpeakerLabels};
+use crate::settings::{SessionMode, Settings, SpeakerLabels};
 use crate::stt::phrases::{decide, Decision};
 use crate::stt::transcriber::{Transcript, TranscriptSink};
 use crate::wake::spotter::transcript_match_after;
@@ -87,7 +87,7 @@ impl GateSettings {
             earcon_volume: settings.session.earcon_volume,
             speaker_labels: settings.assistant.speaker_labels,
             deactivation_phrases: Phrase::list(&settings.wake.selected_phrases().deactivation),
-            whisper: settings.assistant.mode == AssistantMode::Whisper,
+            whisper: settings.assistant.mode.hears_with_whisper(),
             whisper_phrases: PhraseSet::new(
                 &whisper_phrases.activation,
                 &whisper_phrases.deactivation,

@@ -203,7 +203,7 @@ const scenarios = [
     expect(same(r.order, ["assistant.mode", "recognition-engine", "assistant.engine", "wake.model", "wake.phrases", "wake.phrases", "session.mode", "session.idle_timeout_seconds", "assistant.one_speaker_at_a_time"]), `order: ${r.order}`);
     expect(r.rec.value === "Vosk" && r.rec.readOnly && r.rec.grey, `Recognition: ${JSON.stringify(r.rec)}`);
     expect(!r.engine && !r.note, "the wake engine select or the old note is still there");
-    expect(r.mode === "realtime" && same(r.options, ["realtime", "whisper"]), `mode: ${r.mode}`);
+    expect(r.mode === "realtime" && same(r.options, ["realtime", "whisper", "text"]), `mode: ${r.mode}, options ${r.options}`);
     // Change `claude-and-opencode-engines`: the Whisper mode's text goes to the engine's
     // provider, OpenAI with Codex.
     for (const part of ["Realtime voice", "OpenAI", "only text goes to the engine's provider", "on this PC"]) {
@@ -633,6 +633,70 @@ const scenarios = [
       await setValue("tts-voice", "kokoro-en:af_bella");
       return { dialogs: openDialogs(), stored: [stored().whisper.device, stored().tts.voice], asked: calls("whisper_requirements").length, downloads: ${DOWNLOADS} };`);
     expect(r.dialogs === 0 && same(r.stored, ["gpu", "kokoro-en:af_bella"]) && r.asked === 0 && r.downloads === 0, JSON.stringify(r));
+  }],
+
+  // ---- The text answers mode (change `text-answers-mode`: settings-ui, app-window, status-view)
+  ["text answers: the third choice saves text, Recognition says Whisper, the Whisper phrases show, and Local voice says it is not used", async () => {
+    await load("?whisper");
+    const r = await page(`
+      tab("config");
+      const options = [...$("assistant-mode").options].map((o) => [o.value, o.textContent]);
+      await setValue("assistant-mode", "text");
+      const config = { stored: stored().assistant.mode, rec: $("recognition-engine").value, dialogs: openDialogs(),
+        shown: ["whisper-activation", "whisper-deactivation"].map(shown), hidden: ["wake-model", "activation-phrases"].map((id) => !shown(id)),
+        help: help("assistant-mode"), posting: help("post-answers"), note: missingNote().shown };
+      tab("settings"); await sleep(200);
+      return { options, config, voiceNote: $("local-voice-note").textContent, onoff: $("whisper-onoff").textContent };`);
+    expect(same(r.options.map((o) => o[0]), ["realtime", "whisper", "text"]) && r.options[2][1].startsWith("Whisper, text answers"), `options: ${JSON.stringify(r.options)}`);
+    expect(r.config.stored === "text" && r.config.rec === "Whisper" && r.config.dialogs === 0, JSON.stringify(r.config));
+    expect(r.config.shown.every(Boolean) && r.config.hidden.every(Boolean), `rows: ${JSON.stringify(r.config)}`);
+    expect(r.config.help.includes("Whisper, text answers") && r.config.help.includes("posted in a Discord chat"), `help: ${r.config.help}`);
+    expect(r.config.posting.includes("text answers mode"), `posting help: ${r.config.posting}`);
+    expect(!r.config.note, "the missing-files note shows although every file is on disk");
+    expect(r.voiceNote.startsWith("Not used in the text answers mode"), `voice note: ${r.voiceNote}`);
+    expect(r.onoff === "On: the assistant runs in the Whisper mode with text answers.", `label: ${r.onoff}`);
+  }],
+  ["text answers with Whisper's files and no voice: no note, and a join is not refused", async () => {
+    await load("?text_answers&whisper_missing");
+    const r = await page(`
+      tab("settings");
+      $("whisper-download-button").click();
+      await until(() => window.__mock.whisperState().kind === "idle", 10000); await sleep(600);
+      tab("config"); await sleep(200);
+      const before = { note: missingNote(), voiceMissing: window.__mock.whisperRequirements(stored().whisper.model, "cpu", stored().tts.voice).length };
+      const joined = window.__mock.join(); await sleep(1300);
+      return { before, joined, dialogs: openDialogs(), tts: window.__mock.ttsState().kind, voice: $("footer-voice").textContent, calls: calls("tts_download").length };`);
+    expect(!r.before.note.shown && r.before.voiceMissing > 0, `before: ${JSON.stringify(r.before)}`);
+    expect(r.joined === true && r.voice === "1" && r.dialogs === 0, JSON.stringify(r));
+    expect(r.tts === "off" && r.calls === 0, `voice: ${JSON.stringify(r)}`);
+  }],
+  ["text answers with Whisper missing: the note names Whisper only; a refused join lists Whisper's files only and Download asks for them only", async () => {
+    await load("?text_answers&whisper_missing");
+    const r = await page(`
+      tab("config"); await sleep(200);
+      const note = missingNote();
+      const joined = window.__mock.join();
+      const opened = await until(() => dialog.open, 3000);
+      const asked = { items: items(), total: $("wake-install-total").textContent, text: $("wake-install-text").textContent };
+      $("wake-install-primary").click();
+      const closed = await until(() => !dialog.open, 12000);
+      return { note, joined, opened, asked, closed, calls: [calls("whisper_download").length, calls("tts_download").length] };`);
+    expect(r.note.shown && r.note.text.includes("Whisper's files") && !r.note.text.includes("the voice") && r.note.card === "whisper", `note: ${JSON.stringify(r.note)}`);
+    expect(r.joined === false && r.opened, `join: ${JSON.stringify([r.joined, r.opened])}`);
+    expect(same(r.asked.items, MISSING.slice(0, 3)) && r.asked.total === "92 MB in total." && r.asked.text.includes("text answers mode"), `dialog: ${JSON.stringify(r.asked)}`);
+    expect(r.closed && same(r.calls, [1, 0]), `download: ${JSON.stringify(r)}`);
+  }],
+  ["the Status tab and the in-use line in the text answers mode: the mode, no voice, and the last answer without voice times", async () => {
+    await load("?text_answers&whisper&joined");
+    const r = await page(`
+      window.__mock.join(); await sleep(400); window.__mock.whisperTurn(); await sleep(1300);
+      tab("status"); await sleep(200);
+      const tiles = { mode: $("status-mode").textContent, tts: $("status-tts").textContent, wake: $("status-wake").textContent };
+      tab("settings"); await sleep(200);
+      return { tiles, voice: $("whisper-now-voice").textContent, last: $("whisper-now-last").textContent };`);
+    expect(r.tiles.mode === "Whisper, text answers" && r.tiles.tts.startsWith("not used") && r.tiles.wake.startsWith("off: the Whisper mode"), JSON.stringify(r.tiles));
+    expect(r.voice.startsWith("Not used"), `in use: ${r.voice}`);
+    expect(r.last.endsWith("no voice (text answers)") && !r.last.includes("first words → voice"), `last answer: ${r.last}`);
   }],
 
   // ---- Folding cards and tabs (settings-ui, app-window)
