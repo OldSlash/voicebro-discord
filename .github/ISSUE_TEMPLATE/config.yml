@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/OldSlash/voicebro-discord/security/advisories/new
+    about: Report it privately, not in a public issue.
+  - name: User guide and troubleshooting
+    url: https://github.com/OldSlash/voicebro-discord/blob/main/docs/user-guide.md#13-troubleshooting
+    about: Setup, settings, privacy and fixes for common problems.

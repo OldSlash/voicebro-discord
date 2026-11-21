@@ -1,0 +1,95 @@
+name: Bug report
+description: Something in VoiceBro does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. First look at [Troubleshooting](https://github.com/OldSlash/voicebro-discord/blob/main/docs/user-guide.md#13-troubleshooting) in the user guide.
+        A security problem goes through [SECURITY.md](https://github.com/OldSlash/voicebro-discord/blob/main/SECURITY.md), not a public issue.
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: The build stamp from the bottom right corner of the window.
+      placeholder: build 1.3.0+992f382 2026-11-21
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you run VoiceBro
+      options:
+        - Installer
+        - Portable zip
+        - Built from source
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Assistant mode
+      description: Config → Assistant → Assistant mode.
+      options:
+        - Realtime voice
+        - Whisper
+        - Whisper, text answers
+        - Not related to a mode
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      description: Config → Assistant → Engine.
+      options:
+        - Codex
+        - Claude Code
+        - OpenCode
+        - Not related to an engine
+    validations:
+      required: true
+  - type: input
+    id: engine-version
+    attributes:
+      label: Engine version
+      description: The output of `codex --version`, `claude --version` or `opencode --version`, if the engine matters.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you saw and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. /join in a voice channel
+        2. Say the wake phrase and ask a question
+        3. ...
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        Turn on Settings → Diagnostics → Verbose log, repeat the problem, press Chat → Open log folder and paste the relevant part of `logs\voicebro.log`, or attach the file.
+        The log names the people in the channel, and with Verbose log on it holds what they said. Read it and remove what you do not want public first.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send it
+      options:
+        - label: I searched the existing issues for this problem.
+          required: true
+        - label: Nothing I posted holds a token, a password or anything I do not want public.
+          required: true

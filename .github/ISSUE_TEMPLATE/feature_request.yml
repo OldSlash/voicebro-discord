@@ -1,0 +1,37 @@
+name: Feature request
+description: An idea for something VoiceBro could do or do better.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you want to do
+      description: The situation and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: How it could work
+      description: What you would like VoiceBro to do. Settings, commands or a sketch help.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Realtime voice mode
+        - Whisper modes
+        - Engines (Codex, Claude Code, OpenCode)
+        - Wake word
+        - Discord bot and commands
+        - Access and privacy
+        - Window and settings
+        - Other
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Workarounds or other tools you use for it now, if any.
