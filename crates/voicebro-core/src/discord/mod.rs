@@ -32,7 +32,9 @@ use tokio::task::JoinHandle;
 
 pub use answers::{AnswerDestination, PostOutcome, TextChannelGroup, TextChannelInfo};
 pub use delivery::{for_each_report_block, host_of, region_of, DeliveryCounters, ReportBlock};
-pub use panel::{mute_button_id, parse_mute_button_id};
+pub use panel::{
+    mode_button_label, mute_button_id, parse_mute_button_id, sample_panel, PanelAction, PanelButton,
+};
 pub use speakers::{clean_display_name, SpeakerDirectory};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -48,6 +50,15 @@ pub enum ConnectionState {
 pub const MODE_REALTIME: &str = "Realtime voice";
 pub const MODE_WHISPER: &str = "Whisper mode";
 pub const MODE_TEXT: &str = "Whisper mode, text answers";
+
+/// A mode as `/status` and the panel's Mode field name it.
+pub fn mode_label(mode: crate::settings::AssistantMode) -> &'static str {
+    match mode {
+        crate::settings::AssistantMode::Realtime => MODE_REALTIME,
+        crate::settings::AssistantMode::Whisper => MODE_WHISPER,
+        crate::settings::AssistantMode::Text => MODE_TEXT,
+    }
+}
 
 /// What the assistant is doing in a guild, for the panel and `/status`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -149,6 +160,19 @@ pub enum DiscordError {
 pub type JoinPreparation<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
 
+/// A mode change from the panel that was saved (change `discord-panel-controls`, D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeChange {
+    /// The realtime voice was chosen with Claude Code or OpenCode, so the engine is now
+    /// Codex.
+    pub engine_switched: bool,
+}
+
+/// What [`VoiceHost::change_mode`] returns: an error is the reason nothing changed, for the
+/// owner's eyes.
+pub type ModeChangeFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<ModeChange, String>> + Send + 'a>>;
+
 /// Everything the adapter needs from the rest of the app. The runtime implements it with
 /// the session gates and the assistant.
 pub trait VoiceHost: Send + Sync {
@@ -220,6 +244,20 @@ pub trait VoiceHost: Send + Sync {
     /// The assistant mode as `/status` and the panel name it (change `whisper-mode`).
     fn assistant_mode(&self) -> &'static str {
         MODE_REALTIME
+    }
+    /// The assistant mode as a value, for the panel's mode buttons (change
+    /// `discord-panel-controls`, design D7).
+    fn mode(&self) -> crate::settings::AssistantMode {
+        crate::settings::AssistantMode::Realtime
+    }
+    /// The Discord account linked as the owner, whatever the access mode; only it presses
+    /// the panel's buttons (design D2).
+    fn owner_id(&self) -> Option<u64> {
+        None
+    }
+    /// A mode button pressed by the owner: the same save as the window's (design D5).
+    fn change_mode(&self, _mode: crate::settings::AssistantMode) -> ModeChangeFuture<'_> {
+        Box::pin(async { Err("this bot cannot change its mode from Discord".to_owned()) })
     }
     fn toggle_mute(&self) -> bool;
     fn is_muted(&self) -> bool;
@@ -500,6 +538,13 @@ impl DiscordRuntime {
     /// Something the panel shows changed (mute, assistant state): refresh the panels soon.
     pub fn mark_panels_dirty(&self) {
         self.shared.panels_dirty.store(true, Ordering::Release);
+    }
+
+    /// Whether a panel refresh was asked for since the last call, as the refresher takes it
+    /// (for the runtime's tests).
+    #[cfg(test)]
+    pub(crate) fn take_panels_dirty(&self) -> bool {
+        self.shared.panels_dirty.swap(false, Ordering::AcqRel)
     }
 
     /// Leaves the voice channel of `guild`, if any.

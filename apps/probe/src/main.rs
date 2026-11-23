@@ -16,6 +16,7 @@ mod discord;
 mod hotkey;
 mod opencode;
 mod opus;
+mod panel;
 mod rtc;
 mod seed;
 mod tts;
@@ -217,6 +218,12 @@ const PROBES: &[Probe] = &[
         summary: "posts a sample agent answer (a table, a long code block, a link, @everyone and a mention) to the test channel's text chat as the app does, then checks the stored messages: at most 2000 characters each, closed code blocks, no mentions, a preview under the link; args: [--file <answer.md>]",
         needs: "VOICEBRO_DISCORD_TOKEN, VOICEBRO_TEST_GUILD, VOICEBRO_TEST_CHANNEL (or probe.local.json); Send Messages, Embed Links and Read Message History there",
         run: answers::post,
+    },
+    Probe {
+        name: "discord-panel",
+        summary: "posts the panel as /join builds it for each assistant mode, unmuted and muted, to the test channel's text chat, reads each message back and checks the two rows of buttons (labels, ids, the current mode marked and disabled), then deletes them; shows that Discord accepts the buttons, not that presses work",
+        needs: "VOICEBRO_DISCORD_TOKEN, VOICEBRO_TEST_GUILD, VOICEBRO_TEST_CHANNEL (or probe.local.json); Send Messages, Embed Links and Read Message History there",
+        run: panel::run,
     },
 ];
 

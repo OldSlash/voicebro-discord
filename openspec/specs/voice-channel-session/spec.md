@@ -87,12 +87,14 @@ it is in (if any), the assistant state (waiting, listening, muted) and the mute 
 
 ### Requirement: Member panel
 On a successful `/join` the bot SHALL post a panel message in the command's channel showing
-the engine name, the assistant state and the participant count, with a "Mute assistant"
-button that toggles the app-wide mute. The panel SHALL be updated when the state changes, at
-most once per second, and removed on `/leave`.
+the engine name, the assistant state, the assistant mode and the participants, with the
+buttons the `discord-panel-controls` capability describes: Mute assistant, Leave channel
+and the three assistant modes, pressed by the linked owner only. Mute assistant toggles the
+app-wide mute. The panel SHALL be updated when the state changes, at most once per second,
+and removed on `/leave` and on Leave channel.
 
 #### Scenario: Mute from the panel
-- **WHEN** a member presses the panel's Mute assistant button
+- **WHEN** the linked owner presses the panel's Mute assistant button
 - **THEN** the app-wide mute toggles, the panel button label changes, and the app window shows the same state
 
 #### Scenario: Panel message deleted by someone

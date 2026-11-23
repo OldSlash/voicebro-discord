@@ -613,7 +613,7 @@ Whisper mode, text answers.", and the panel that `/join` posts shows the same un
 
 | In Discord | What happens |
 |---|---|
-| `/join` | The bot joins your voice channel and replies with a panel that shows the engine, its state and a **Mute assistant** button. |
+| `/join` | The bot joins your voice channel and replies with a panel that shows the engine, its state and the mode, with buttons for the linked owner: **Mute assistant**, **Leave channel** and the three modes ([The panel's buttons](#the-panels-buttons)). |
 | Say the activation phrase and a question | A session starts and the assistant answers in the channel. |
 | Say the deactivation phrase, or stay quiet | The session ends, at once or after the auto-stop time. |
 | `/status` | Shows what VoiceBro is doing, and the mode: realtime voice, Whisper, or Whisper with text answers. |
@@ -627,8 +627,40 @@ Only you see the replies to `/link`, `/optin`, `/optout` and `/privacy`. A paste
 code is a message, so the bot's answer to it is posted in the chat it came from.
 
 **Mute** ends the current session at once and sends nothing until you unmute. Use the
-**Mute assistant** button in Discord, the button on the **Status** tab, or the hotkey
-**Ctrl+Alt+M**, which works system-wide (change it in **Config → Hotkey**).
+**Mute assistant** button on the panel in Discord (the linked owner only), the button on
+the **Status** tab, or the hotkey **Ctrl+Alt+M**, which works system-wide (change it in
+**Config → Hotkey**).
+
+### The panel's buttons
+
+The panel that `/join` posts has two rows of buttons: **Mute assistant** (**Unmute
+assistant** while muted) and **Leave channel**, then the three modes: **Realtime voice**,
+**Whisper mode** and **Text answers**. The current mode's button is marked and cannot be
+pressed. With them you run the bot from Discord without the VoiceBro window.
+
+- **Only the linked owner presses them**, in every access mode
+  ([Who the assistant hears](#who-the-assistant-hears)): link your Discord account in
+  **Config → Access** first. Anyone else who presses a button gets a reply only they see,
+  and nothing changes. While no owner is linked, the buttons work for nobody, and the reply
+  says how the operator links one. The window's **Mute assistant** button and the hotkey
+  still mute without a link. `/join`, `/leave` and `/status` stay open to everyone.
+- **Leave channel** does what `/leave` does: the bot leaves, the panel is deleted, and
+  only you see "Left <channel>.".
+- **A mode button** switches the assistant mode for the whole app, in every server the bot
+  is in, and saves it as **Config → Assistant** would: a running session ends with the
+  falling tone, the bot stays in its channels, and the assistant goes on in the new mode.
+  Every panel and the window show the new mode within a second.
+- **Realtime voice** with Claude Code or OpenCode as the engine also switches the engine to
+  Codex, since the voice call works only with Codex; only you see a reply that says so. The
+  Claude Code and OpenCode settings stay as they were. The other two modes keep the engine.
+- **A mode whose files are not on this PC is refused**, and nothing is downloaded from
+  Discord: the Whisper files and the voice for **Whisper mode**, the Whisper files for
+  **Text answers**, and for **Realtime voice** with the wake word the Vosk recognizer and
+  the wake model. Only you see what is missing and where to download it in VoiceBro
+  ([section 7](#downloads)); the window opens no download dialog for it.
+- A panel left from an earlier session (after a leave, a rejoin or a restart of VoiceBro)
+  changes nothing: at your press it loses its buttons and says that `/join` posts a new
+  panel.
 
 In the window, **Chat** shows what the assistant heard, said and looked up, each line
 labelled with the engine that wrote it, and **Console** shows what the app is doing.
@@ -735,9 +767,11 @@ which one you use is up to you.
   subscription VoiceBro asks you to choose this
   ([A Claude subscription is yours alone](#a-claude-subscription-is-yours-alone)).
 
-Everything else stays open in every mode: anyone can use `/join`, `/leave`, `/status` and
-the **Mute assistant** button, everyone in the channel hears the answers, and posted answers are
-posted as before. A change applies at once, also while the bot is in a channel.
+Everything else stays open in every mode: anyone can use `/join`, `/leave` and `/status`,
+everyone in the channel hears the answers, and posted answers are posted as before. The
+panel's buttons, **Mute assistant** included, are pressed by the linked owner only, in every
+mode ([The panel's buttons](#the-panels-buttons)). A change applies at once, also while the
+bot is in a channel.
 
 The bot is yours, so Discord's rules for bots are yours to keep: Discord's developer terms
 ask every bot for a privacy policy that people can reach, and for a person's own consent

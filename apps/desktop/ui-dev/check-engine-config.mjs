@@ -266,6 +266,33 @@ const scenarios = [
     expect(r.engine === "claude" && r.title === "Claude Code", `${r.engine} ${r.title}`);
     expect(r.message.includes("the disk is full"), `message: ${r.message}`);
   }],
+  // ---- discord-panel-controls "A mode button switches the assistant mode", scenario
+  // "Unsaved edits in the window": a mode saved by the Discord panel, not by the window
+  ["a mode changed from the Discord panel shows at once and keeps an unsaved edit of the Discord and Codex card", async () => {
+    await load("?engine=claude&whisper&notice_shown");
+    const r = await page(`
+      tab("config");
+      const field = $("config-guild-id");
+      field.value = "123456789012345678"; field.dispatchEvent(new Event("input", { bubbles: true }));
+      const before = calls("save_settings").length;
+      window.__mock.saveFromOutside({ assistant: { mode: "text" } });
+      await until(() => $("assistant-mode").value === "text", 4000);
+      const text = { mode: $("assistant-mode").value, recognition: $("recognition-engine").value, engine: $("assistant-engine").value,
+        title: $("engine-card-title").textContent };
+      window.__mock.saveFromOutside({ assistant: { mode: "realtime", engine: "codex" } });
+      await until(() => $("assistant-mode").value === "realtime", 4000);
+      await sleep(300);
+      return { text, realtime: { mode: $("assistant-mode").value, recognition: $("recognition-engine").value, engine: $("assistant-engine").value,
+          title: $("engine-card-title").textContent, voice: shownRows().includes("codex-voice"), wake: visible($("wake-model")) },
+        guild: field.value, feedback: $("config-feedback").textContent, saves: calls("save_settings").length - before,
+        stored: stored().assistant, storedGuild: stored().discord.guild_id };`);
+    expect(r.text.mode === "text" && r.text.recognition === "Whisper" && r.text.engine === "claude" && r.text.title === "Claude Code", `text: ${JSON.stringify(r.text)}`);
+    expect(r.realtime.mode === "realtime" && r.realtime.recognition === "Vosk" && r.realtime.engine === "codex", `realtime: ${JSON.stringify(r.realtime)}`);
+    expect(r.realtime.title === "Codex" && r.realtime.voice && r.realtime.wake, `the Codex card after the switch: ${JSON.stringify(r.realtime)}`);
+    expect(r.guild === "123456789012345678" && r.feedback === "Unsaved changes.", `the unsaved edit: ${r.guild}, "${r.feedback}"`);
+    expect(r.saves === 0, `the window saved ${r.saves} times`);
+    expect(r.stored.mode === "realtime" && r.stored.engine === "codex" && r.storedGuild !== "123456789012345678", JSON.stringify(r.stored));
+  }],
   // ---- settings-ui "The engine card follows the engine"
   ["an unsaved instruction edit survives a change of the engine", async () => {
     await load("?notice_shown&whisper");
