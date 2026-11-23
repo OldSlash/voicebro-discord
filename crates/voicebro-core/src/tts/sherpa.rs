@@ -180,26 +180,11 @@ pub enum Model {
     Kokoro { folder: PathBuf },
 }
 
-/// Loads `path` by full path, so its own imports resolve from its folder.
+/// Loads `path` explicitly, resolving bundled imports from its folder on Windows.
 pub(crate) fn load_library(path: &Path) -> Result<Library, TtsError> {
-    #[cfg(windows)]
-    {
-        // SAFETY: loading a library pinned by hash; its initializers are the vendor's.
-        unsafe {
-            libloading::os::windows::Library::load_with_flags(
-                path,
-                libloading::os::windows::LOAD_WITH_ALTERED_SEARCH_PATH,
-            )
-        }
-        .map(Library::from)
+    // SAFETY: loading a library pinned by hash; its initializers are the vendor's.
+    unsafe { crate::native_library::load(path) }
         .map_err(|error| TtsError::Load(format!("{}: {error}", path.display())))
-    }
-    #[cfg(not(windows))]
-    {
-        // SAFETY: as above.
-        unsafe { Library::new(path) }
-            .map_err(|error| TtsError::Load(format!("{}: {error}", path.display())))
-    }
 }
 
 fn c_path(path: &Path) -> Result<CString, TtsError> {
@@ -230,9 +215,9 @@ static RUNTIME: std::sync::OnceLock<Result<Runtime, TtsError>> = std::sync::Once
 fn runtime(folder: &Path) -> Result<&'static Runtime, TtsError> {
     RUNTIME
         .get_or_init(|| {
-            let onnxruntime_path = folder.join("onnxruntime.dll");
+            let onnxruntime_path = folder.join(super::catalog::files::ONNXRUNTIME);
             let onnxruntime = load_library(&onnxruntime_path)?;
-            let api = load_library(&folder.join("sherpa-onnx-c-api.dll"))?;
+            let api = load_library(&folder.join(super::catalog::files::SHERPA))?;
             // SAFETY: symbols of the pinned sherpa-onnx v2.0.1 C API with the header's
             // signatures; the libraries live in the static.
             unsafe {

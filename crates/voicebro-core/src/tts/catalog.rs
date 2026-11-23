@@ -4,7 +4,62 @@
 
 use crate::assets::{Asset, AssetKind};
 
+/// The voice engine's and the phonemizer's library files on this platform, dependencies
+/// first (change `cross-platform-headless`, design D1; Linux not tested).
+pub mod files {
+    #[cfg(windows)]
+    pub const ONNXRUNTIME: &str = "onnxruntime.dll";
+    #[cfg(windows)]
+    pub const SHERPA: &str = "sherpa-onnx-c-api.dll";
+    #[cfg(windows)]
+    pub const PHONEMIZER_CORE: &str = "piper_phonemize_core.dll";
+    #[cfg(windows)]
+    pub const PHONEMIZER_API: &str = "piper_phonemize_cxx_api.dll";
+
+    #[cfg(not(windows))]
+    pub const ONNXRUNTIME: &str = "libonnxruntime.so";
+    #[cfg(not(windows))]
+    pub const SHERPA: &str = "libsherpa-onnx-c-api.so";
+    #[cfg(not(windows))]
+    pub const PHONEMIZER_CORE: &str = "libpiper_phonemize_core.so";
+    #[cfg(not(windows))]
+    pub const PHONEMIZER_API: &str = "libpiper_phonemize_cxx_api.so";
+}
+
+/// sherpa-onnx v2.0.1's official Linux x64 shared build (change `cross-platform-headless`,
+/// design D2; not tested): its C API library and its onnxruntime.
+#[cfg(not(windows))]
+pub const ENGINE: Asset = Asset {
+    label: "Voice engine (sherpa-onnx 2.0.1)",
+    page: "https://github.com/k2-fsa/sherpa-onnx/releases/tag/v2.0.1",
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/sherpa-onnx-v2.0.1-linux-x64-shared-lib.tar.bz2",
+    sha256: "532c45bbd41036d83cd70606797529aa8086c2053395a58967736c727625b120",
+    directory: "sherpa-onnx-2.0.1",
+    marker: "libsherpa-onnx-c-api.so",
+    size: 9_710_131,
+    kind: AssetKind::Archive,
+    root: "sherpa-onnx-v2.0.1-linux-x64-shared-lib/lib",
+    keep: &["libonnxruntime.so", "libsherpa-onnx-c-api.so"],
+};
+
+/// piper-phonemize v1.5.9's official Linux x64 shared build (espeak-ng inside, GPL-3.0;
+/// change `cross-platform-headless`, design D2; not tested).
+#[cfg(not(windows))]
+pub const PHONEMIZER: Asset = Asset {
+    label: "Phonemizer for Piper and Kokoro (piper-phonemize 1.5.9, GPL-3.0)",
+    page: "https://github.com/csukuangfj/piper-phonemize/releases/tag/v1.5.9",
+    url: "https://github.com/csukuangfj/piper-phonemize/releases/download/v1.5.9/piper-phonemize-v1.5.9-linux-x64-shared-lib.tar.bz2",
+    sha256: "609569420d356f561e13ee6d52ed0edf7dcae225ea498f4cc68587c11d6d295c",
+    directory: "piper-phonemize-1.5.9",
+    marker: "libpiper_phonemize_core.so",
+    size: 305_777,
+    kind: AssetKind::Archive,
+    root: "lib",
+    keep: &["libpiper_phonemize_core.so", "libpiper_phonemize_cxx_api.so"],
+};
+
 /// sherpa-onnx v2.0.1, the CPU build: only its C API library and its onnxruntime are kept.
+#[cfg(windows)]
 pub const ENGINE: Asset = Asset {
     label: "Voice engine (sherpa-onnx 2.0.1)",
     page: "https://github.com/k2-fsa/sherpa-onnx/releases/tag/v2.0.1",
@@ -19,6 +74,7 @@ pub const ENGINE: Asset = Asset {
 };
 
 /// piper-phonemize v1.5.9 (espeak-ng inside, GPL-3.0): the phonemes for Piper and Kokoro.
+#[cfg(windows)]
 pub const PHONEMIZER: Asset = Asset {
     label: "Phonemizer for Piper and Kokoro (piper-phonemize 1.5.9, GPL-3.0)",
     page: "https://github.com/csukuangfj/piper-phonemize/releases/tag/v1.5.9",

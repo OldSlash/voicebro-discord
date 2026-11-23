@@ -39,6 +39,8 @@ pub struct Settings {
     pub whisper: WhisperSettings,
     /// The local voice of the Whisper mode.
     pub tts: TtsSettings,
+    /// The Linux headless app only (change `cross-platform-headless`).
+    pub linux: LinuxSettings,
     /// Fields this build does not know (from a newer version). Kept through load and save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -61,6 +63,7 @@ impl Default for Settings {
             diagnostics: DiagnosticsSettings::default(),
             whisper: WhisperSettings::default(),
             tts: TtsSettings::default(),
+            linux: LinuxSettings::default(),
             extra: Map::new(),
         }
     }
@@ -303,6 +306,36 @@ impl Default for TtsSettings {
 
 /// The speed range of `tts.speed`.
 pub const TTS_SPEEDS: std::ops::RangeInclusive<f32> = 0.5..=2.0;
+
+/// What only the Linux headless app reads (change `cross-platform-headless`, design D8).
+/// Windows ignores it, and the window does not show it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinuxSettings {
+    /// Whether the stored Discord token, the owner link and the consent records are
+    /// encrypted on Linux; `false` keeps them as plain files only their user can read.
+    #[serde(deserialize_with = "encrypt_files_flag")]
+    pub encrypt_files: bool,
+}
+
+impl Default for LinuxSettings {
+    fn default() -> Self {
+        Self {
+            encrypt_files: true,
+        }
+    }
+}
+
+/// `linux.encrypt_files` takes only `true` or `false`; anything else is refused with the
+/// field's path.
+fn encrypt_files_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    match Value::deserialize(deserializer)? {
+        Value::Bool(on) => Ok(on),
+        other => Err(serde::de::Error::custom(format!(
+            "linux.encrypt_files must be true or false, not {other}"
+        ))),
+    }
+}
 
 /// The measurements built for the tuning work, off by default so that a user who never
 /// opens the Performance tab pays nothing for them, and the Opus codec experiment. The
@@ -1391,6 +1424,10 @@ impl Settings {
         }
         if self.tts != other.tts {
             changed.push("tts");
+        }
+        // Read only at the Linux headless app's start; nothing restarts for it.
+        if self.linux != other.linux {
+            changed.push("linux");
         }
         changed
     }

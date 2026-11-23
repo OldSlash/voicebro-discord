@@ -85,6 +85,9 @@ pub fn choose_device(
     if requested == WhisperDevice::Cpu {
         return cpu(None);
     }
+    if !super::catalog::HAS_GPU_RUNTIME {
+        return cpu(Some("Linux has no CUDA runtime".to_owned()));
+    }
     match runtime.enable_cuda() {
         Ok(true) => match runtime.gpu() {
             Some(gpu) => DeviceChoice {

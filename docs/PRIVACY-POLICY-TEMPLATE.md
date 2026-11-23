@@ -185,6 +185,13 @@ How it is protected: the consent records and my linked account are encrypted for
 Windows account, the bot's Discord token is kept in the Windows Credential Manager, and
 VoiceBro sends nothing about you to its developers.
 
+*[Optional: replace the paragraph above if you run the headless app on Linux]* How it is
+protected: the consent records, my linked account and the bot's Discord token are
+encrypted with a key that only my Linux account on this computer can read, and VoiceBro
+sends nothing about you to its developers. *[Or, if you set `linux.encrypt_files` to
+false:]* the consent records, my linked account and the bot's Discord token are stored
+unencrypted in files that only my Linux account can read.
+
 ## Who else gets your data
 
 {{AI_PROVIDER}}, as described above, Discord, which carries the bot's voice and messages

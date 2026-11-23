@@ -113,6 +113,7 @@ impl ClaudeProcess {
             .kill_on_drop(true);
         clean_environment(&mut command);
         hide_window(&mut command);
+        crate::process_group::own_group(&mut command);
         let mut child = command
             .spawn()
             .map_err(|error| format!("could not start {}: {error}", executable.display()))?;
@@ -318,6 +319,7 @@ impl ClaudeProcess {
     pub fn kill(&self) {
         self.alive.store(false, Ordering::Release);
         if let Some(mut child) = self.child.lock().expect("claude child lock").take() {
+            crate::process_group::stop_group(child.id());
             let _ = child.start_kill();
         }
     }

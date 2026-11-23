@@ -299,17 +299,33 @@ impl DownloadItem {
 /// install dialog when a log line holds it.
 pub const JOIN_NEEDS_WAKE_FILES: &str = "The wake word needs downloads";
 
+/// The headless command that installs every file the current settings need (change
+/// `cross-platform-headless`, design D3).
+pub const INSTALL_ASSETS_ARG: &str = "--install-assets";
+
 /// The whole reply to that refused join: [`JOIN_NEEDS_WAKE_FILES`], the missing files and
 /// what to do.
 pub fn join_refusal(missing: &[DownloadItem]) -> String {
+    join_refusal_with(
+        missing,
+        "open VoiceBro → Config and press Download under Wake model",
+    )
+}
+
+pub(crate) fn terminal_join_refusal(missing: &[DownloadItem]) -> String {
+    join_refusal_with(
+        missing,
+        &format!("stop the bot and run voicebro-server {INSTALL_ASSETS_ARG}"),
+    )
+}
+
+fn join_refusal_with(missing: &[DownloadItem], action: &str) -> String {
     let labels = missing
         .iter()
         .map(|item| item.label.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "{JOIN_NEEDS_WAKE_FILES} ({labels}): open VoiceBro → Config and press Download under Wake model, then run /join again"
-    )
+    format!("{JOIN_NEEDS_WAKE_FILES} ({labels}): {action}, then run /join again")
 }
 
 /// A model as the window lists it.
@@ -650,7 +666,7 @@ impl WakeManager {
             self.stop();
             let items: Vec<DownloadItem> = to_fetch.iter().map(DownloadItem::of).collect();
             self.inner.events.log(format!(
-                "wake word: {} needs a download first ({}); waiting for the OK in the window",
+                "wake word: {} needs a download first ({}); {}",
                 wanted.1,
                 items
                     .iter()
@@ -661,7 +677,8 @@ impl WakeManager {
                         item.host
                     ))
                     .collect::<Vec<_>>()
-                    .join("; ")
+                    .join("; "),
+                crate::assets::waiting_for_download(&self.inner.events)
             ));
             self.set_state(WakeState::NeedsDownload { items });
             return;

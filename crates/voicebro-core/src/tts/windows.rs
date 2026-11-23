@@ -2,7 +2,7 @@
 //! `whisper-mode`, design D9b): `Windows.Media.SpeechSynthesis.SpeechSynthesizer` writes a
 //! 16 kHz mono 16-bit WAV, read by walking its RIFF chunks.
 
-use super::{Synth, TtsError};
+use super::TtsError;
 
 /// A voice Windows lists.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -51,7 +51,8 @@ pub fn parse_wav(bytes: &[u8]) -> Result<(Vec<f32>, u32), TtsError> {
 
 #[cfg(windows)]
 mod imp {
-    use super::{parse_wav, Synth, TtsError, WindowsVoice};
+    use super::{parse_wav, TtsError, WindowsVoice};
+    use crate::tts::Synth;
     use ::windows::core::HSTRING;
     use ::windows::Media::SpeechSynthesis::{SpeechSynthesizer, VoiceInformation};
     use ::windows::Storage::Streams::DataReader;
@@ -205,6 +206,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_windows_voices_list_and_speak() {
+        use crate::tts::Synth;
+
         let found = voices().unwrap();
         eprintln!("{found:#?}");
         let names: Vec<&str> = found

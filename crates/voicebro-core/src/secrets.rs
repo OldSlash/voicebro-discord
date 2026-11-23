@@ -79,6 +79,59 @@ impl SecretStore for MemoryStore {
     }
 }
 
+/// `discord-token.bin` in the data folder: the Linux headless app's stored Discord token
+/// (change `cross-platform-headless`, design D5; not tested).
+pub fn token_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("discord-token.bin")
+}
+
+/// The constant per file that [`crate::protect`] binds the token file to.
+pub const TOKEN_ENTROPY: &[u8] = b"VoiceBro discord token v1";
+
+/// The Discord token in `discord-token.bin`, through [`crate::protect`]: encrypted on
+/// Linux unless `linux.encrypt_files` is off. The Linux headless app's store; Windows keeps
+/// the token in the Credential Manager.
+pub struct FileSecretStore {
+    path: std::path::PathBuf,
+}
+
+impl FileSecretStore {
+    pub fn new(data_dir: &std::path::Path) -> Self {
+        Self {
+            path: token_path(data_dir),
+        }
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl SecretStore for FileSecretStore {
+    fn get(&self, key: SecretKey) -> Result<Option<String>, SecretError> {
+        let SecretKey::DiscordToken = key;
+        let Some(plain) = crate::protect::read_sealed(&self.path, TOKEN_ENTROPY)
+            .map_err(|error| SecretError::Backend(format!("{}: {error}", self.path.display())))?
+        else {
+            return Ok(None);
+        };
+        String::from_utf8(plain).map(Some).map_err(|_| {
+            SecretError::Backend(format!("{}: not a stored token", self.path.display()))
+        })
+    }
+
+    fn set(&self, key: SecretKey, value: &str) -> Result<(), SecretError> {
+        let SecretKey::DiscordToken = key;
+        crate::protect::write_sealed(&self.path, value.as_bytes(), TOKEN_ENTROPY)
+            .map_err(|error| SecretError::Backend(format!("{}: {error}", self.path.display())))
+    }
+
+    fn delete(&self, key: SecretKey) -> Result<(), SecretError> {
+        let SecretKey::DiscordToken = key;
+        crate::protect::delete_sealed(&self.path).map_err(SecretError::Backend)
+    }
+}
+
 /// The store this build uses: the Windows Credential Manager, or memory elsewhere.
 pub fn platform_store() -> Box<dyn SecretStore> {
     #[cfg(windows)]

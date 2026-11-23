@@ -19,59 +19,18 @@ use voicebro_core::assistant::chat_log::ChatEntry;
 use voicebro_core::assistant::claude::ClaudeAssistant;
 use voicebro_core::assistant::codex::CodexAssistant;
 use voicebro_core::assistant::opencode::OpencodeAssistant;
-use voicebro_core::assistant::switch::EngineSwitch;
-use voicebro_core::assistant::{Assistant, Capabilities};
+use voicebro_core::assistant::switch::Engines;
+use voicebro_core::assistant::Capabilities;
 use voicebro_core::settings::store::SettingsStore;
 use voicebro_core::settings::AssistantEngine;
 use voicebro_core::status::{ConnectionErrors, HotkeyStatus};
 use voicebro_core::{paths, secrets, AppEvent, EventBus, Runtime, Settings, Status};
 
 const BUILD_STAMP: &str = env!("VOICEBRO_BUILD_STAMP");
-/// The file log rotates at 1 MB and keeps one archived file: at most about 2 MB.
-const LOG_FILE_LIMIT: u128 = 1_000_000;
-const LOG_FILES_KEPT: usize = 1;
-/// This app's own log targets; every other crate logs at Warn and above.
-const APP_TARGETS: &[&str] = &["voicebro", "voicebro_core", "voicebro_desktop", "detail"];
-/// songbird's receive task logs an error for every packet it cannot decode; the window
-/// keeps them, the release file does not.
-const RECEIVE_TASK: &str = "songbird::driver::tasks::udp_rx";
 /// `diagnostics.verbose_log`: detail lines and third-party warnings go to the file too.
 static VERBOSE_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-fn is_app_target(target: &str) -> bool {
-    APP_TARGETS.iter().any(|name| {
-        target == *name
-            || target
-                .strip_prefix(name)
-                .is_some_and(|rest| rest.starts_with("::"))
-    })
-}
-
-/// Whether a record that passed the levels also goes to the file. A debug build and the
-/// verbose log write everything; otherwise the file keeps this app's event lines and
-/// third-party errors, without detail lines and the receive task's per-packet errors.
-fn keep_in_file(target: &str, level: log::Level, debug: bool, verbose: bool) -> bool {
-    if debug || verbose {
-        return true;
-    }
-    if target.starts_with(voicebro_core::DETAIL_TARGET_PREFIX) {
-        return false;
-    }
-    if is_app_target(target) {
-        return true;
-    }
-    level <= log::Level::Error && !target.starts_with(RECEIVE_TASK)
-}
-/// The levels on top of the global Warn: this app at Info, songbird's receive task at
-/// Error (it warns about every RTCP packet it cannot decrypt, about 700 lines in 2.5
-/// minutes of a DAVE call, which carries no action).
-fn log_levels() -> Vec<(&'static str, log::LevelFilter)> {
-    APP_TARGETS
-        .iter()
-        .map(|name| (*name, log::LevelFilter::Info))
-        .chain(std::iter::once((RECEIVE_TASK, log::LevelFilter::Error)))
-        .collect()
-}
+// The filters are shared with the headless app (change `cross-platform-headless`, D7).
+use voicebro_core::logging::{keep_in_file, log_levels, LOG_FILES_KEPT, LOG_FILE_LIMIT};
 
 struct AppState {
     runtime: Arc<Runtime>,
@@ -693,7 +652,7 @@ fn log_plugin(
     let mut builder = tauri_plugin_log::Builder::new()
         .targets(targets)
         .level(log::LevelFilter::Warn)
-        .max_file_size(LOG_FILE_LIMIT)
+        .max_file_size(u128::from(LOG_FILE_LIMIT))
         .rotation_strategy(RotationStrategy::KeepSome(LOG_FILES_KEPT))
         .timezone_strategy(TimezoneStrategy::UseLocal);
     for (name, level) in log_levels() {
@@ -810,45 +769,20 @@ fn main() {
     // The engine is chosen from the settings file before the runtime loads it, so the
     // runtime can own it as a trait object from the start.
     let initial_settings = store.load().ok().flatten().unwrap_or_default();
-    let codex = Some(CodexAssistant::new(
+    // Change `claude-and-opencode-engines`, D1: every engine is built here and starts
+    // nothing until used; the switch forwards to the one `assistant.engine` names. The
+    // headless app builds the same set (change `cross-platform-headless`, D4).
+    let engines = Engines::build(
         handle.clone(),
         events.clone(),
         Arc::clone(&errors),
         &data_dir,
         &initial_settings,
-    ));
-    // Change `claude-and-opencode-engines`, D1: every engine is built here and starts
-    // nothing until used; the switch forwards to the one `assistant.engine` names.
-    let mut engines: Vec<(AssistantEngine, Arc<dyn Assistant>)> = Vec::new();
-    let mut claude = None;
-    let mut opencode = None;
-    if let Some(codex) = codex.clone() {
-        let assistant = ClaudeAssistant::new(
-            handle.clone(),
-            events.clone(),
-            Arc::clone(&errors),
-            codex.chat(),
-            &data_dir,
-            &initial_settings,
-        );
-        engines.push((AssistantEngine::Claude, Arc::new(assistant.clone())));
-        claude = Some(assistant);
-        let assistant = OpencodeAssistant::new(
-            handle.clone(),
-            events.clone(),
-            Arc::clone(&errors),
-            codex.chat(),
-            &data_dir,
-            &initial_settings,
-        );
-        engines.push((AssistantEngine::Opencode, Arc::new(assistant.clone())));
-        opencode = Some(assistant);
-        engines.push((AssistantEngine::Codex, Arc::new(codex)));
-    }
-    let assistant: Arc<dyn Assistant> = Arc::new(EngineSwitch::new(
-        engines,
-        initial_settings.assistant.engine,
-    ));
+    );
+    let codex = Some(engines.codex);
+    let claude = Some(engines.claude);
+    let opencode = Some(engines.opencode);
+    let assistant = engines.switch;
     let runtime = Arc::new(Runtime::with_assistant(
         BUILD_STAMP,
         data_dir.clone(),

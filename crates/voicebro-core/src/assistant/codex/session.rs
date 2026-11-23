@@ -543,9 +543,13 @@ impl CodexSession {
             .is_some_and(|account| account.signed_in);
         if !signed_in {
             self.lock().realtime = Realtime::Idle;
-            let message = "Codex is not signed in: use Sign in on the Status tab, finish the sign-in in the browser, then try again".to_owned();
-            self.chat("error", None, &message);
-            self.set_error(message);
+            let message = if self.events.terminal_guidance() {
+                super::TERMINAL_SIGN_IN
+            } else {
+                "Codex is not signed in: use Sign in on the Status tab, finish the sign-in in the browser, then try again"
+            };
+            self.chat("error", None, message);
+            self.set_error(message.to_owned());
             return;
         }
         if let Err(error) = self.ensure_thread().await {

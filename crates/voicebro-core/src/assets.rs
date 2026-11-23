@@ -1,8 +1,8 @@
 //! The one store for every file the app downloads after the user's OK: the wake word's
 //! library and models, Whisper's runtimes and models, and the voice engine and voices
-//! (change `whisper-mode`, design D10). Pinned hashes, temp-and-rename, extraction with the
-//! system `tar.exe`, a marker file, cleanup of partial files. Downloads use the system
-//! `curl.exe`; no HTTP crate. A file the user downloaded by hand and put into the assets
+//! (change `whisper-mode`, design D10). Pinned hashes, temp-and-rename, extraction with
+//! bsdtar, a marker file, cleanup of partial files. Downloads use curl; no HTTP crate.
+//! A file the user downloaded by hand and put into the assets
 //! folder under its own name is checked and installed instead of downloaded.
 
 use sha2::{Digest, Sha256};
@@ -14,7 +14,7 @@ use std::time::Duration;
 /// How a downloaded file is installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetKind {
-    /// An archive (zip, tar.bz2), extracted with the system `tar.exe`.
+    /// An archive (zip, wheel, tar.bz2), extracted with bsdtar.
     Archive,
     /// A single file (a Whisper model), hash-checked and moved into `assets\<directory>\`;
     /// it is its own marker.
@@ -73,9 +73,33 @@ impl Asset {
     }
 }
 
+/// The end of a "needs a download first" log line: the window's OK on the desktop, the
+/// terminal command on the headless app (change `cross-platform-headless`).
+pub(crate) fn waiting_for_download(events: &crate::EventBus) -> String {
+    if events.terminal_guidance() {
+        format!(
+            "run voicebro-server {} to install it",
+            crate::wake::INSTALL_ASSETS_ARG
+        )
+    } else {
+        "waiting for the OK in the window".to_owned()
+    }
+}
+
 fn system_tool(name: &str) -> PathBuf {
-    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-    PathBuf::from(root).join("System32").join(name)
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        PathBuf::from(root).join("System32").join(name)
+    }
+    #[cfg(not(windows))]
+    {
+        // GNU tar does not handle ZIP archives, including the Linux Vosk wheel.
+        PathBuf::from(match name {
+            "tar.exe" => "bsdtar",
+            name => name.trim_end_matches(".exe"),
+        })
+    }
 }
 
 fn hide_window(command: &mut Command) {
@@ -153,7 +177,7 @@ pub fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
         .collect())
 }
 
-/// Downloads `url` to `target` through `curl.exe`, calling `progress` with a percentage
+/// Downloads `url` to `target` through curl, calling `progress` with a percentage
 /// (0..=100, in steps of at least 20) while the file grows.
 fn download(
     url: &str,
@@ -162,7 +186,8 @@ fn download(
     progress: &dyn Fn(u8),
 ) -> Result<(), String> {
     let _ = std::fs::remove_file(target);
-    let mut command = Command::new(system_tool("curl.exe"));
+    let tool = system_tool("curl.exe");
+    let mut command = Command::new(&tool);
     command
         .args(["-L", "--fail", "--silent", "--show-error", "-o"])
         .arg(target)
@@ -173,7 +198,7 @@ fn download(
     hide_window(&mut command);
     let mut child = command
         .spawn()
-        .map_err(|error| format!("running curl.exe: {error}"))?;
+        .map_err(|error| format!("running {}: {error}", tool.display()))?;
     progress(0);
     let mut last_reported = 0u8;
     loop {
@@ -205,7 +230,7 @@ fn download(
             }
             Err(error) => {
                 let _ = std::fs::remove_file(target);
-                return Err(format!("waiting for curl.exe: {error}"));
+                return Err(format!("waiting for {}: {error}", tool.display()));
             }
         }
     }
@@ -214,12 +239,13 @@ fn download(
 }
 
 fn extract(archive: &Path, destination: &Path) -> Result<(), String> {
-    let mut command = Command::new(system_tool("tar.exe"));
+    let tool = system_tool("tar.exe");
+    let mut command = Command::new(&tool);
     command.arg("-xf").arg(archive).arg("-C").arg(destination);
     hide_window(&mut command);
     let output = command
         .output()
-        .map_err(|error| format!("running tar.exe: {error}"))?;
+        .map_err(|error| format!("running {}: {error}", tool.display()))?;
     if !output.status.success() {
         return Err(format!(
             "extracting {}: {}",

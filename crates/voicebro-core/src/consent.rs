@@ -18,7 +18,7 @@ pub const CONSENT_TEXT_VERSION: u32 = 1;
 
 const FILE_VERSION: u32 = 1;
 /// The DPAPI entropy of `consents.bin`.
-const ENTROPY: &[u8] = b"VoiceBro consents v1";
+pub(crate) const ENTROPY: &[u8] = b"VoiceBro consents v1";
 
 /// Every consent text ever published, by version, so that what a record agreed to can
 /// always be shown. `{provider}` and `{url}` are filled in when it is shown.
@@ -235,13 +235,10 @@ impl ConsentStore for FileConsentStore {
     }
 }
 
-/// The store this build uses: the DPAPI file on Windows, memory elsewhere.
+/// The store this build uses: the file through [`crate::protect`], DPAPI on Windows and
+/// the Linux encryption elsewhere (change `cross-platform-headless`; Linux not tested).
 pub fn platform_store(data_dir: &Path) -> Arc<dyn ConsentStore> {
-    if cfg!(windows) {
-        Arc::new(FileConsentStore::new(consents_path(data_dir)))
-    } else {
-        Arc::new(MemoryConsentStore::default())
-    }
+    Arc::new(FileConsentStore::new(consents_path(data_dir)))
 }
 
 type Listener = Box<dyn Fn() + Send + Sync>;
@@ -454,7 +451,9 @@ impl ConsentState {
             self.save(&inner.records);
             record.discord_name
         };
-        if by_window {
+        if by_window && self.events.terminal_guidance() {
+            log::info!("consent: {name} removed with voicebro-server --remove-consent");
+        } else if by_window {
             log::info!("consent: {name} removed in the window");
         } else {
             log::info!("consent: {name} withdrew");

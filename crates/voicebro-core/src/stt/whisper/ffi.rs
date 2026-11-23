@@ -5,7 +5,7 @@
 //! never leave this module; every handle frees itself on drop.
 
 use super::super::SttError;
-use libloading::os::windows::{Library, LOAD_WITH_ALTERED_SEARCH_PATH};
+use libloading::Library;
 use std::ffi::{c_char, c_float, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -164,6 +164,27 @@ pub struct BackendDevice {
     pub description: String,
 }
 
+/// The runtime's library files on this platform, dependencies first (change
+/// `cross-platform-headless`, design D1). Linux (not tested) names the real files of the
+/// official Ubuntu build, whose sonames then match the libraries already loaded.
+#[cfg(windows)]
+mod files {
+    pub const GGML_BASE: &str = "ggml-base.dll";
+    pub const GGML: &str = "ggml.dll";
+    pub const WHISPER: &str = "whisper.dll";
+    pub const CPU_PREFIX: &str = "ggml-cpu-";
+    pub const CPU_SUFFIX: &str = ".dll";
+}
+
+#[cfg(not(windows))]
+mod files {
+    pub const GGML_BASE: &str = "libggml-base.so.0.26.0";
+    pub const GGML: &str = "libggml.so.0.26.0";
+    pub const WHISPER: &str = "libwhisper.so.1.9.5";
+    pub const CPU_PREFIX: &str = "libggml-cpu-";
+    pub const CPU_SUFFIX: &str = ".so";
+}
+
 /// The CUDA libraries the GPU runtime's `ggml-cuda.dll` imports, loaded first by full path
 /// so that ggml's plain `LoadLibraryW` binds them to the runtime folder.
 const CUDA_LIBRARIES: &[&str] = &["cudart64_12.dll", "cublasLt64_12.dll", "cublas64_12.dll"];
@@ -228,8 +249,8 @@ unsafe impl Sync for WhisperRuntime {}
 
 fn load_library(path: &Path) -> Result<Library, SttError> {
     // SAFETY: loading a library of the pinned, hash-verified runtime by its full path. The
-    // altered search path resolves its own imports from the same folder.
-    unsafe { Library::load_with_flags(path, LOAD_WITH_ALTERED_SEARCH_PATH) }
+    // loader resolves the bundled imports from the same folder on Windows.
+    unsafe { crate::native_library::load(path) }
         .map_err(|error| SttError::Load(format!("could not load {}: {error}", path.display())))
 }
 
@@ -264,7 +285,7 @@ fn best_cpu_variant(folder: &Path) -> Option<PathBuf> {
     let mut best: Option<(c_int, PathBuf)> = None;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !(name.starts_with("ggml-cpu-") && name.ends_with(".dll")) {
+        if !(name.starts_with(files::CPU_PREFIX) && name.ends_with(files::CPU_SUFFIX)) {
             continue;
         }
         let path = entry.path();
@@ -291,9 +312,9 @@ impl WhisperRuntime {
     /// the folder. CUDA is added only by [`Self::enable_cuda`], so the CPU device never
     /// creates a CUDA device, even from the GPU runtime's folder (design D11).
     pub fn load(folder: &Path) -> Result<Self, SttError> {
-        let preloaded = vec![load_library(&folder.join("ggml-base.dll"))?];
-        let ggml = load_library(&folder.join("ggml.dll"))?;
-        let whisper = load_library(&folder.join("whisper.dll"))?;
+        let preloaded = vec![load_library(&folder.join(files::GGML_BASE))?];
+        let ggml = load_library(&folder.join(files::GGML))?;
+        let whisper = load_library(&folder.join(files::WHISPER))?;
         // SAFETY: symbols of the pinned whisper.cpp v1.9.5 build, with the signatures of its
         // header; the libraries stay loaded in `Self`.
         unsafe {
@@ -323,7 +344,7 @@ impl WhisperRuntime {
             if version != super::super::catalog::WHISPER_VERSION {
                 return Err(SttError::Load(format!(
                     "{} is whisper.cpp {version}, but this build of VoiceBro needs {}; download the runtime again",
-                    folder.join("whisper.dll").display(),
+                    folder.join(files::WHISPER).display(),
                     super::super::catalog::WHISPER_VERSION
                 )));
             }

@@ -21,19 +21,26 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Distinguishes app-server processes, since thread ids only live as long as theirs.
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// Finds the native `codex.exe` with this process's environment; see [`find_codex_in`].
+/// Finds the configured Codex executable or looks it up for the current platform.
 pub fn find_codex(configured: &str) -> Option<PathBuf> {
-    let path_dirs = std::env::var_os("PATH")
-        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
-        .unwrap_or_default();
-    find_codex_in(
-        configured,
-        &path_dirs,
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .as_deref(),
-        std::env::var_os("APPDATA").map(PathBuf::from).as_deref(),
-    )
+    #[cfg(windows)]
+    {
+        let path_dirs = std::env::var_os("PATH")
+            .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+            .unwrap_or_default();
+        find_codex_in(
+            configured,
+            &path_dirs,
+            std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .as_deref(),
+            std::env::var_os("APPDATA").map(PathBuf::from).as_deref(),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        crate::paths::find_executable(configured, "codex")
+    }
 }
 
 /// The configured path (only that one when set), then `codex.exe` on the PATH, then
@@ -171,6 +178,7 @@ impl AppServer {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         hide_window(&mut command);
+        crate::process_group::own_group(&mut command);
         let mut child = command.spawn().map_err(|error| {
             format!(
                 "could not start {} app-server: {error}",
@@ -422,6 +430,7 @@ impl AppServer {
     pub fn kill(&self) {
         self.alive.store(false, Ordering::Release);
         if let Some(mut child) = self.child.lock().expect("child lock").take() {
+            crate::process_group::stop_group(child.id());
             let _ = child.start_kill();
         }
     }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/voicebro-core", "apps/desktop", "apps/probe", "apps/probe-hotkey"]
+members = ["crates/voicebro-core", "apps/desktop", "apps/probe", "apps/probe-hotkey", "apps/server"]
 
 [workspace.package]
 edition = "2021"

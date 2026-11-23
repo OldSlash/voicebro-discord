@@ -15,6 +15,67 @@ use crate::settings::{AssistantEngine, Settings};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+/// Every engine of this build behind one switch, as both shells run them (change
+/// `cross-platform-headless`, design D4): the desktop and the headless app build them here
+/// so the two cannot drift. Each engine's handle is kept for the shell's own commands.
+pub struct Engines {
+    pub codex: super::codex::CodexAssistant,
+    pub claude: super::claude::ClaudeAssistant,
+    pub opencode: super::opencode::OpencodeAssistant,
+    /// The switch the runtime owns, forwarding to the engine `assistant.engine` names.
+    pub switch: Arc<dyn Assistant>,
+}
+
+impl Engines {
+    /// Builds Codex, Claude Code and OpenCode (sharing Codex's chat log) and the switch,
+    /// with `settings` as the file holds them before the runtime loads it. Nothing starts.
+    pub fn build(
+        handle: tokio::runtime::Handle,
+        events: crate::EventBus,
+        errors: Arc<crate::status::ConnectionErrors>,
+        data_dir: &std::path::Path,
+        settings: &Settings,
+    ) -> Self {
+        let codex = super::codex::CodexAssistant::new(
+            handle.clone(),
+            events.clone(),
+            Arc::clone(&errors),
+            data_dir,
+            settings,
+        );
+        let claude = super::claude::ClaudeAssistant::new(
+            handle.clone(),
+            events.clone(),
+            Arc::clone(&errors),
+            codex.chat(),
+            data_dir,
+            settings,
+        );
+        let opencode = super::opencode::OpencodeAssistant::new(
+            handle,
+            events,
+            errors,
+            codex.chat(),
+            data_dir,
+            settings,
+        );
+        let switch: Arc<dyn Assistant> = Arc::new(EngineSwitch::new(
+            vec![
+                (AssistantEngine::Claude, Arc::new(claude.clone())),
+                (AssistantEngine::Opencode, Arc::new(opencode.clone())),
+                (AssistantEngine::Codex, Arc::new(codex.clone())),
+            ],
+            settings.assistant.engine,
+        ));
+        Self {
+            codex,
+            claude,
+            opencode,
+            switch,
+        }
+    }
+}
+
 pub struct EngineSwitch {
     engines: HashMap<AssistantEngine, Arc<dyn Assistant>>,
     selected: RwLock<AssistantEngine>,

@@ -895,6 +895,17 @@ the bot leaves the channel; when you close VoiceBro or switch the engine while t
 in a channel, or after a crash, that conversation stays there, so leave with `/leave`
 first).
 
+The headless app (`voicebro-server`, see the README) keeps the same files in its own data
+folder and the token in the same Credential Manager entry on Windows. On Linux (not
+tested) it keeps the token in `discord-token.bin` in its data folder and, like
+`owner-link.bin` and `consents.bin`, encrypts it under a key in
+`~/.config/voicebro/protect.key`, which only your Linux user can read and which works only
+on that machine; with `"linux": {"encrypt_files": false}` in `settings.json` the three
+files are not encrypted and only their file permissions protect them. With the headless app
+stopped, `voicebro-server --unlink-owner`, `--remove-consent <Discord user id>` (the ids
+come from `--list-consents`) and `--clear-token` delete the link, a person's record and the
+stored token, as Unlink, Remove and clearing the token do in the window.
+
 How it is protected: the token is only in the Credential Manager, never in a file or the
 log; the linked account and the consents are encrypted for your Windows user; OpenCode's
 server listens only on this PC (127.0.0.1), with a new password at each start that is

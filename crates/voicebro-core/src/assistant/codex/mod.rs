@@ -50,6 +50,9 @@ const SIGN_IN_WAIT_LIMIT: Duration = Duration::from_secs(600);
 /// The status and start error when no Codex executable is found.
 pub const NOT_FOUND_STATUS: &str =
     "codex not found: press Install Codex on the Status tab, or set the path of codex.exe in Config";
+const TERMINAL_NOT_FOUND: &str =
+    "codex not found: install Codex CLI on PATH, or set codex.executable in settings.json";
+const TERMINAL_SIGN_IN: &str = "Codex is not signed in: run `codex login` in a terminal";
 
 /// Why a join was refused. The message is the reply the caller sees in Discord.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -459,14 +462,22 @@ impl CodexAssistant {
         self.inner.errors.report("codex", error);
     }
 
+    fn not_found_status(&self) -> &'static str {
+        if self.inner.events.terminal_guidance() {
+            TERMINAL_NOT_FOUND
+        } else {
+            NOT_FOUND_STATUS
+        }
+    }
+
     /// The running app-server, started if needed.
     async fn server(&self) -> Result<Arc<AppServer>, String> {
         let mut slot = self.inner.server.lock().await;
         if let Some(server) = slot.as_ref().filter(|server| server.is_alive()) {
             return Ok(Arc::clone(server));
         }
-        let executable =
-            find_codex(&self.config().executable).ok_or_else(|| NOT_FOUND_STATUS.to_owned())?;
+        let executable = find_codex(&self.config().executable)
+            .ok_or_else(|| self.not_found_status().to_owned())?;
         let server = AppServer::spawn(
             self.inner.handle.clone(),
             self.inner.events.clone(),
@@ -602,6 +613,9 @@ impl CodexAssistant {
                     .map(|plan| format!(", {plan}"))
                     .unwrap_or_default()
             )),
+            Ok(_) if self.inner.events.terminal_guidance() => {
+                self.inner.events.log(TERMINAL_SIGN_IN)
+            }
             Ok(_) => self
                 .inner
                 .events
@@ -748,9 +762,22 @@ impl Assistant for CodexAssistant {
 
     fn prepare(&self, guild: u64) -> PrepareFuture<'_> {
         Box::pin(async move {
-            self.prepare_guild(guild)
-                .await
-                .map_err(|error| AssistantError::Unavailable(error.to_string()))
+            self.prepare_guild(guild).await.map_err(|error| {
+                let message = if self.inner.events.terminal_guidance() {
+                    match error {
+                        PrepareError::NotFound => {
+                            format!("{TERMINAL_NOT_FOUND}, then run /join again")
+                        }
+                        PrepareError::SignedOut => {
+                            format!("{TERMINAL_SIGN_IN}, then run /join again")
+                        }
+                        error => error.to_string(),
+                    }
+                } else {
+                    error.to_string()
+                };
+                AssistantError::Unavailable(message)
+            })
         })
     }
 
@@ -894,7 +921,7 @@ impl Assistant for CodexAssistant {
             .clone();
         let signed_in = account.as_ref().is_some_and(|account| account.signed_in);
         let summary = match (&executable, &server, &account, &error) {
-            (None, _, _, _) => NOT_FOUND_STATUS.to_owned(),
+            (None, _, _, _) => self.not_found_status().to_owned(),
             (_, _, _, Some(error)) => error.clone(),
             (_, None, _, _) => "codex found; it starts at /join".to_owned(),
             (_, Some(_), Some(account), _) if account.signed_in => format!(

@@ -107,6 +107,7 @@ impl OpencodeServer {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         hide_window(&mut command);
+        crate::process_group::own_group(&mut command);
         let mut child = command
             .spawn()
             .map_err(|error| format!("could not start {}: {error}", executable.display()))?;
@@ -144,6 +145,7 @@ impl OpencodeServer {
                 tokio::select! {
                     _ = child.wait() => {}
                     _ = kill_rx => {
+                        crate::process_group::stop_group(child.id());
                         let _ = child.start_kill();
                         let _ = child.wait().await;
                     }

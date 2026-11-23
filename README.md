@@ -10,6 +10,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/user-guide.md">User guide</a> ·
   <a href="#limitations">Limitations</a> ·
+  <a href="#native-headless-mode">Headless</a> ·
   <a href="#building-from-source">Building from source</a> ·
   <a href="#license">License</a>
 </p>
@@ -49,6 +50,8 @@
   in and hear the answers.
 
 ## Requirements
+
+For the desktop app; see [Native headless mode](#native-headless-mode) for the console binary.
 
 - Windows 10 or 11, 64-bit
 - A Discord server where you can add a bot
@@ -152,9 +155,94 @@ This is not legal advice; read the terms that apply to your account.
   If you hear it, set the channel's **Region Override** (**Edit Channel → Overview**) to a
   region close to the PC that runs VoiceBro.
 
+## Native headless mode
+
+`voicebro-server` runs the same bot without a window on Windows and on glibc-based Linux
+x86-64. **Linux support is added but not tested**: nothing of it has been built or run on
+Linux yet. Headless offers every assistant mode (realtime voice, Whisper, text answers),
+every engine (Codex, Claude Code, OpenCode), both session modes and every access mode,
+from the same `settings.json` as the desktop app. On Linux, Whisper runs on the CPU only
+(whisper.cpp publishes no Linux CUDA build, so `whisper.device: "gpu"` falls back to the
+CPU), and the Windows voices do not exist. What only the window offers stays there: the
+mute hotkey, the Memory and Performance views, the Install and Sign in buttons, voice
+preview, and Cancel in the Access card.
+
+1. Create and invite a Discord bot as in [Quick start](#quick-start), then store its token
+   once. `voicebro-server --set-token` reads it from standard input without showing it
+   and keeps it in Windows Credential Manager (`VoiceBro/discord_token`, the desktop's
+   entry) or, on Linux, in `discord-token.bin` in the data folder, encrypted. Instead you
+   can point `DISCORD_TOKEN_FILE` at a private file that holds only the token; when set,
+   it wins over the stored token. Keep the token out of the repository, `settings.json`
+   and the command line.
+2. Install the engine you chose and sign it in from a terminal as the account that will
+   run VoiceBro: `codex login` (`codex login --device-auth` without a browser; the same
+   `CODEX_HOME` for login and VoiceBro if you use it), `claude` then `/login`, or
+   `opencode auth login`. Put `codex`, `claude` or `opencode` (`.exe` on Windows) on
+   `PATH`, or set `codex.executable`, `claude.executable` or `opencode.executable` in
+   `settings.json`.
+3. Build from the repository root and run the binary. On Windows use stable Rust and the
+   MSVC, Windows SDK and CMake prerequisites below; the Tauri CLI is not needed.
+
+   ```powershell
+   cargo build --locked --release -p voicebro-server
+   $env:VOICEBRO_DATA_DIR = "$HOME\VoiceBro-server"
+   .\target\release\voicebro-server.exe --set-token
+   .\target\release\voicebro-server.exe --install-assets
+   .\target\release\voicebro-server.exe
+   ```
+
+   On Linux (not tested) use stable Rust, a C/C++ toolchain and CMake. The downloads need
+   `curl` and `bsdtar` (on Debian/Ubuntu, `libarchive-tools`). The libraries need the
+   system C++ runtime (`libstdc++6`); the Whisper modes also need glibc 2.34 or newer
+   (Ubuntu 22.04, Debian 12), libstdc++ from GCC 11 or newer and OpenMP (`libgomp1`).
+
+   ```sh
+   cargo build --locked --release -p voicebro-server
+   export VOICEBRO_DATA_DIR="$HOME/.local/share/voicebro"
+   ./target/release/voicebro-server --set-token
+   ./target/release/voicebro-server --install-assets
+   ./target/release/voicebro-server
+   ```
+
+The first normal start writes the usual `settings.json` into the writable data directory.
+Without `VOICEBRO_DATA_DIR`, the files go beside the executable. Edit settings while the
+bot is stopped; a file the settings check rejects stops the start with the field named and
+is never rewritten. `--install-assets` installs everything the current mode needs (the
+wake word's Vosk files; the Whisper runtime, model and voice activity model; the voice
+engine, the voice and, for Piper and Kokoro voices, the GPL-3.0 phonemizer) and verifies
+each pinned download, without starting Discord or an engine. Run it again after changing
+the mode, model or voice. A normal start lists what is missing and downloads nothing.
+
+Use `/join` in Discord. The log goes to the terminal (stderr) and to `logs/voicebro.log`
+in the data folder, the build stamp first; what people say is in it only with
+`diagnostics.verbose_log` on. With Claude Code signed in with a Claude subscription, the
+start prints the same notice as the desktop's Claude Code card.
+
+**Access.** `discord.access` works as on the desktop. To link yourself as the owner, run
+`voicebro-server --link-owner` from an interactive terminal: it starts the bot, reads the
+engine's account and prints a one-time code on standard output (never in the log), which
+you send with `/link` within 10 minutes. A service manager may record standard output, so
+do not run `--link-owner` as a service. Linking again replaces the owner; people withdraw
+with `/optout`. With the bot stopped, `--unlink-owner` removes the owner link,
+`--list-consents` prints the people who agreed with their Discord user ids, and
+`--remove-consent <Discord user id>` removes one of them without messaging them, as Unlink
+and Remove do in the window. `--clear-token` removes the stored token (on Windows the
+desktop app's too); a file `DISCORD_TOKEN_FILE` names is never touched. On Windows the
+owner link and the consents are the desktop's files,
+encrypted for your Windows user. On Linux (not tested) the owner link, the consents and
+the stored token are encrypted under a key in `~/.config/voicebro/protect.key` (readable
+only by you) bound to the machine's `/etc/machine-id`; losing that key loses them (store
+the token and link again, people run `/optin` again). Setting `"linux": {"encrypt_files":
+false}` keeps those three files unencrypted, protected only by their file permissions;
+the start then warns every time. Windows ignores the setting.
+
+Stop the process with Ctrl+C on either platform or SIGTERM on Linux. Closing a Windows
+console allows only best-effort cleanup; prefer Ctrl+C. Do not run desktop and headless at
+the same time with the same bot token or data directory.
+
 ## Building from source
 
-VoiceBro is written in Rust with [Tauri 2](https://v2.tauri.app). It builds on Windows.
+The desktop app uses Rust and [Tauri 2](https://v2.tauri.app) and builds on Windows.
 
 ### Prerequisites
 
@@ -205,6 +293,7 @@ This writes a test installer, the portable zip and their checksums to
 |---|---|
 | `crates/voicebro-core` | The app's core: Discord voice, the wake word, the ChatGPT call through Codex, the Claude Code and OpenCode engines, the Whisper mode's speech to text and local voice, settings. No UI. |
 | `apps/desktop` | The Tauri app: the window, its commands and the installer configuration. |
+| `apps/server` | The native headless app: every mode and engine without a window, on Windows and Linux (Linux not tested). |
 | `apps/probe` | Developer probes that check the external APIs live. |
 | `scripts/` | The release build, the third-party notices and test helpers. |
 | `docs/` | The architecture description and the user guide. |

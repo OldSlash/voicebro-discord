@@ -17,6 +17,34 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+/// An engine's program on Linux (change `cross-platform-headless`, design D5; not tested):
+/// the configured file, only that one when set, or else `name` on `PATH`, with no Windows
+/// fallback. A launcher script is fine there: its process group is stopped as a whole.
+pub fn find_executable(configured: &str, name: &str) -> Option<PathBuf> {
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        let path = std::path::absolute(configured).ok()?;
+        return path.is_file().then_some(path);
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .filter_map(|dir| std::path::absolute(dir.join(name)).ok())
+        .find(|candidate| is_executable(candidate))
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
 pub fn settings_path(data_dir: &Path) -> PathBuf {
     data_dir.join("settings.json")
 }

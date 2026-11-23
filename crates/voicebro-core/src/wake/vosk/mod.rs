@@ -14,6 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 /// The Vosk 0.3.45 Windows build (libvosk.dll and its MinGW runtime DLLs).
+#[cfg(not(target_os = "linux"))]
 pub const LIBRARY: Asset = Asset {
     label: "Vosk library",
     page: "https://github.com/alphacep/vosk-api/releases/tag/v0.3.45",
@@ -22,6 +23,21 @@ pub const LIBRARY: Asset = Asset {
     directory: "vosk-win64-0.3.45",
     marker: "libvosk.dll",
     size: 14_900_000,
+    ..Asset::ARCHIVE
+};
+
+/// The native library from the official Vosk 0.3.45 Linux x86-64 wheel.
+#[cfg(target_os = "linux")]
+pub const LIBRARY: Asset = Asset {
+    label: "Vosk library",
+    page: "https://pypi.org/project/vosk/0.3.45/#files",
+    url: "https://files.pythonhosted.org/packages/fc/ca/83398cfcd557360a3d7b2d732aee1c5f6999f68618d1645f38d53e14c9ff/vosk-0.3.45-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.whl",
+    sha256: "25e025093c4399d7278f543568ed8cc5460ac3a4bf48c23673ace1e25d26619f",
+    directory: "vosk-linux64-0.3.45",
+    root: "vosk",
+    marker: "libvosk.so",
+    keep: &["libvosk.so"],
+    size: 7_173_758,
     ..Asset::ARCHIVE
 };
 
