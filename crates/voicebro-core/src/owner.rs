@@ -150,6 +150,29 @@ impl CompleteOutcome {
             ),
         }
     }
+
+    /// The reply on the headless app, whose code comes from `voicebro-server --link-owner`
+    /// in a terminal instead of the window (change `cross-platform-headless`).
+    pub fn terminal_reply(&self) -> String {
+        const AGAIN: &str = "voicebro-server --link-owner";
+        match self {
+            CompleteOutcome::Linked { name } => format!(
+                "Linked: {name} is now the owner of this VoiceBro. While discord.access is \"owner\", only your voice reaches the assistant."
+            ),
+            CompleteOutcome::Wrong { tries_left } => format!(
+                "That is not the code {AGAIN} printed. {tries_left} {} left.",
+                if *tries_left == 1 { "try" } else { "tries" }
+            ),
+            CompleteOutcome::EndedAfterTries => format!(
+                "That is not the code, and it was the {MAX_WRONG_TRIES}th wrong one: the code has ended. Run {AGAIN} for a new one."
+            ),
+            CompleteOutcome::Expired => format!("The code expired. Run {AGAIN} for a new one."),
+            CompleteOutcome::NoCode => format!(
+                "No code is waiting. Run {AGAIN} first, then send the code it prints."
+            ),
+            CompleteOutcome::NotStored { .. } => self.reply(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -193,7 +216,7 @@ impl LinkStore for MemoryLinkStore {
 
 /// The DPAPI entropy of `owner-link.bin` ([`crate::protect`]); unchanged since build 1.0.2,
 /// so older links read as before.
-const LINK_ENTROPY: &[u8] = b"VoiceBro owner link v1";
+pub(crate) const LINK_ENTROPY: &[u8] = b"VoiceBro owner link v1";
 
 /// `owner-link.bin`: the link's JSON encrypted with DPAPI for the current Windows user,
 /// written through `owner-link.bin.tmp` and a rename.
@@ -234,13 +257,10 @@ impl LinkStore for FileLinkStore {
     }
 }
 
-/// The store this build uses: the DPAPI file on Windows, memory elsewhere.
+/// The store this build uses: the file through [`crate::protect`], DPAPI on Windows and
+/// the Linux encryption elsewhere (change `cross-platform-headless`; Linux not tested).
 pub fn platform_store(data_dir: &Path) -> Arc<dyn LinkStore> {
-    if cfg!(windows) {
-        Arc::new(FileLinkStore::new(link_path(data_dir)))
-    } else {
-        Arc::new(MemoryLinkStore::default())
-    }
+    Arc::new(FileLinkStore::new(link_path(data_dir)))
 }
 
 /// A fresh code from the OS random source.
@@ -570,7 +590,11 @@ impl OwnerState {
         self.store.delete()?;
         inner.link = None;
         inner.link_ended = None;
-        self.events.log("owner link: removed with Unlink");
+        self.events.log(if self.events.terminal_guidance() {
+            "owner link: removed with voicebro-server --unlink-owner"
+        } else {
+            "owner link: removed with Unlink"
+        });
         self.changed(&inner);
         Ok(true)
     }
@@ -613,8 +637,13 @@ impl OwnerState {
         let label = engine_label(engine);
         inner.link = None;
         inner.link_ended = Some(format!("the {label} account changed"));
+        let again = if self.events.terminal_guidance() {
+            "run voicebro-server --link-owner to link again"
+        } else {
+            "link again in the window"
+        };
         self.events.log(format!(
-            "owner link: removed because the {label} account changed; link again in the window"
+            "owner link: removed because the {label} account changed; {again}"
         ));
         self.changed(&inner);
         true

@@ -15,7 +15,48 @@ const MODELS_COMMIT: &str = "5359861c739e955e79d9a303bcbc70fb988958b1";
 const MODELS_PAGE: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1";
 
+/// Whether this platform has the NVIDIA runtime: Windows only. whisper.cpp's release has
+/// no Linux CUDA build, so Linux runs Whisper on the CPU (change `cross-platform-headless`;
+/// Linux not tested).
+pub const HAS_GPU_RUNTIME: bool = cfg!(windows);
+
+/// The runtime `device` needs: the GPU set (which holds the CPU set too) for the GPU, or
+/// for the CPU when it is already on disk; else the CPU set. Linux always has the CPU set.
+pub fn runtime_for(device: crate::settings::WhisperDevice, assets_dir: &std::path::Path) -> Asset {
+    use crate::settings::WhisperDevice;
+    match device {
+        _ if !HAS_GPU_RUNTIME => CPU_RUNTIME,
+        WhisperDevice::Gpu => GPU_RUNTIME,
+        WhisperDevice::Cpu if crate::assets::is_installed(assets_dir, &GPU_RUNTIME) => GPU_RUNTIME,
+        WhisperDevice::Cpu => CPU_RUNTIME,
+    }
+}
+
+/// The Linux CPU runtime (change `cross-platform-headless`, design D2; not tested): the
+/// official Ubuntu x64 build of the same tag. Only the real library files are kept, never
+/// their version symlinks; the loader opens each dependency first by its full path, so the
+/// sonames (`libggml-base.so.0`, `libggml.so.0`) resolve to the libraries already loaded.
+#[cfg(not(windows))]
+pub const CPU_RUNTIME: Asset = Asset {
+    label: "Whisper runtime (CPU)",
+    page: RELEASE_PAGE,
+    url: "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-ubuntu-x64.tar.gz",
+    sha256: "a72becf15d7917f990f6313867a52638b82b7f9ef237fb0c980dac56a135781c",
+    directory: "whisper-cpu-1.9.5",
+    marker: "libwhisper.so.1.9.5",
+    size: 10_364_195,
+    kind: AssetKind::Archive,
+    root: "whisper-bin-ubuntu-x64",
+    keep: &[
+        "libwhisper.so.1.9.5",
+        "libggml.so.0.26.0",
+        "libggml-base.so.0.26.0",
+        "libggml-cpu-*.so",
+    ],
+};
+
 /// The CPU runtime: whisper.cpp v1.9.5 from the nightly tag `b5454` (same commit).
+#[cfg(windows)]
 pub const CPU_RUNTIME: Asset = Asset {
     label: "Whisper runtime (CPU)",
     page: RELEASE_PAGE,

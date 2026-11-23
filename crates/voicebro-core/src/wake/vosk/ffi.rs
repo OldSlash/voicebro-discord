@@ -17,7 +17,7 @@ type RecognizerText = unsafe extern "C" fn(*mut c_void) -> *const c_char;
 type RecognizerVoid = unsafe extern "C" fn(*mut c_void);
 
 pub struct VoskApi {
-    _library: libloading::os::windows::Library,
+    _library: libloading::Library,
     set_log_level: SetLogLevel,
     model_new: ModelNew,
     model_free: ModelFree,
@@ -40,11 +40,7 @@ impl VoskApi {
         // SAFETY: loading the pinned, hash-verified Vosk release. The altered search path
         // lets Windows resolve its MinGW runtime DLLs from the same directory.
         unsafe {
-            let library = libloading::os::windows::Library::load_with_flags(
-                path,
-                libloading::os::windows::LOAD_WITH_ALTERED_SEARCH_PATH,
-            )
-            .map_err(|error| {
+            let library = crate::native_library::load(path).map_err(|error| {
                 WakeError::Load(format!("could not load {}: {error}", path.display()))
             })?;
             macro_rules! symbol {

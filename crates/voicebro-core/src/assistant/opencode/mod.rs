@@ -62,6 +62,18 @@ pub enum PrepareError {
     NoModel(String),
 }
 
+impl PrepareError {
+    /// The reply on the headless app, which has no window (change `cross-platform-headless`).
+    pub fn terminal_reply(&self) -> String {
+        match self {
+            Self::NotFound => "OpenCode is not installed: install OpenCode on PATH, or set opencode.executable in settings.json, then run /join again".to_owned(),
+            Self::NotWhisper => "OpenCode answers in the Whisper mode only: set assistant.mode to whisper or text in settings.json and restart the bot, then run /join again".to_owned(),
+            Self::NoModel(named) => format!("OpenCode offers no model to answer with{named}: set up a provider in OpenCode (opencode auth login in a terminal, as the user that runs VoiceBro) or set opencode.model in settings.json to a model it offers and restart the bot, then run /join again"),
+            Self::Start(_) => self.to_string(),
+        }
+    }
+}
+
 /// What Check read from OpenCode.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct OpencodeCheck {
@@ -73,19 +85,28 @@ pub struct OpencodeCheck {
     pub default_model: Option<String>,
 }
 
-/// Finds `opencode.exe` with this process's environment; see [`find_opencode_in`].
+/// Finds `opencode.exe` with this process's environment; see [`find_opencode_in`]. On
+/// Linux (change `cross-platform-headless`; not tested) the configured file or `opencode`
+/// on `PATH`, which may be npm's launcher: its process group is stopped as a whole.
 pub fn find_opencode(configured: &str) -> Option<PathBuf> {
-    let path_dirs = std::env::var_os("PATH")
-        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
-        .unwrap_or_default();
-    find_opencode_in(
-        configured,
-        &path_dirs,
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .as_deref(),
-        std::env::var_os("APPDATA").map(PathBuf::from).as_deref(),
-    )
+    #[cfg(windows)]
+    {
+        let path_dirs = std::env::var_os("PATH")
+            .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+            .unwrap_or_default();
+        find_opencode_in(
+            configured,
+            &path_dirs,
+            std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .as_deref(),
+            std::env::var_os("APPDATA").map(PathBuf::from).as_deref(),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        crate::paths::find_executable(configured, "opencode")
+    }
 }
 
 /// The configured path (only that one when set), then `opencode.exe` on the PATH, then
@@ -650,7 +671,11 @@ impl Assistant for OpencodeAssistant {
     fn prepare(&self, guild: u64) -> PrepareFuture<'_> {
         Box::pin(async move {
             self.prepare_guild(guild).await.map_err(|error| {
-                let message = error.to_string();
+                let message = if self.inner.events.terminal_guidance() {
+                    error.terminal_reply()
+                } else {
+                    error.to_string()
+                };
                 *self.inner.last_error.lock().expect("opencode error lock") = Some(message.clone());
                 AssistantError::Unavailable(message)
             })

@@ -24,6 +24,12 @@ or API key, or OpenCode with the providers the user set up in it. Only Codex has
 realtime voice mode; Claude Code and OpenCode answer in the Whisper mode. The app never
 reads or stores an engine's credentials.
 
+The native `voicebro-server` console binary (change `cross-platform-headless`) runs the same
+bot with no GUI on Windows and on glibc-based Linux x86-64, with every assistant mode,
+engine, session mode and access mode of the desktop app. Linux support is added but not
+tested: nothing of it has been built or run on Linux yet. On Linux Whisper runs on the CPU
+only and the Windows voices do not exist.
+
 Two assistant modes (`assistant.mode`, change `whisper-mode`):
 
 - **Realtime voice** (the default): Vosk spots the phrases on the PC, and during a session the
@@ -38,13 +44,13 @@ Fixed constraints that shape the architecture:
 
 | Constraint | Consequence |
 |---|---|
-| Rust, Tauri 2, Windows first | One native process plus WebView2 for the settings UI. The core never depends on the UI. |
+| Rust, Tauri 2 for desktop | One native process plus WebView2 for the desktop settings UI; the headless process needs neither Tauri nor WebView2. |
 | Low CPU and memory while idle | Heavy things (speech model, Whisper model, voice, assistant process, call transport) are loaded only while their feature is on, and unloaded when it is off. |
 | Steady 20 ms audio | Pacing loops run on dedicated OS threads with `std::thread::sleep`. Tokio timers are never used for pacing. |
-| Users install nothing but the app | No Node, Python or build tools at runtime. Native libraries and models are downloaded on first use with pinned SHA-256, and only after the user agrees in the window to what, from where and how much. |
+| Speech assets are separate | The asset store checks pinned SHA-256 values. Desktop downloads after approval in the window; headless installs what the current mode needs only through an explicit command (`--install-assets`). |
 | Replaceable engines | Wake-word recognition, speech to text, the local voice and the assistant sit behind traits (`WakeEngine`, `SpeechToText`, `Synth`, `Assistant`). Vosk and whisper.cpp are the one implementation of each of the first two; the assistant has Codex, Claude Code and OpenCode behind one `EngineSwitch` (4.7); the voice has sherpa-onnx and the Windows voices. |
-| Diagnosable in the field | A file log in every build, including release: small (about 2 MB) and without what people said unless the user turns on the verbose log; the window shows everything, the recognizer's own results included. The status shows measured values only. |
-| Secrets stay out of files | The Discord token lives in the Windows Credential Manager, never in the settings file or the UI snapshot. |
+| Diagnosable in the field | Both shells keep a small file log (about 2 MB) with the same filters (`logging.rs`), excluding speech unless verbose logging is on; headless writes the same lines to stderr. |
+| No secrets in settings or logs | Windows keeps the token in Credential Manager. Headless can read an operator-provided token file, which it never writes, and on Linux stores the token encrypted in its data folder. |
 
 ## 2. Repository layout
 
@@ -61,6 +67,11 @@ voicebro-discord/
       src/
         lib.rs
         assets.rs              the shared asset store: pinned downloads, archives and single files (4.4)
+        native_library.rs      explicit-path DLL and shared-object loading
+        logging.rs             the file log's levels and filters, shared by both shells
+        setup.rs               the files the current settings need (headless `--install-assets`)
+        process_group.rs       Linux: engine child processes in their own process group
+        protect.rs             files only the current user reads: DPAPI on Windows, XChaCha20-Poly1305 on Linux
         audio/                 frame types, queues, resamplers, earcons, output source, Opus output
         discord/               serenity + songbird adapter, slash commands, member panel, the leg toward Discord
         gate.rs                session gate: mute, wake session state machine, pre-roll, Whisper's transcripts
@@ -78,6 +89,7 @@ voicebro-discord/
       icons/                   app-icon.png, the 1024 px source, and icon.ico generated from it (section 4.10)
       src/                     commands, event bridge to the webview, global hotkey, lifecycle
       ui/                      static HTML/CSS/JS, no bundler, `withGlobalTauri: true`
+    server/                    native console shell for the existing bot and Codex realtime assistant
     probe/                     headless dev binary: live probes and self-tests, not shipped
   scripts/                     build-release.ps1, third-party-notices.ps1, make-wake-corpus.ps1, measure.ps1
   README.md                    the landing page: features, quick start, building from source, license
@@ -86,8 +98,8 @@ voicebro-discord/
 ```
 
 Crate dependency direction is one way: `apps/*` depend on `voicebro-core`; the core depends
-on nothing in `apps/`. The core exposes types and traits; the desktop app wires them to
-Tauri commands and events.
+on nothing in `apps/`. The desktop app wires the core to Tauri commands and events; the
+server wires it to terminal output and process signals.
 
 ## 3. Runtime topology
 
@@ -96,6 +108,7 @@ Tauri commands and events.
 | Process | Lifetime |
 |---|---|
 | `voicebro.exe` (Rust + Tauri) | Always, while the app runs. Closing the main window exits the app. |
+| `voicebro-server` (`.exe` on Windows) | While the headless bot runs. Ctrl+C on both platforms or SIGTERM on Linux invokes runtime shutdown. A Windows console close attempts the same cleanup within the OS time limit. On Linux (not tested) each engine's child process below runs in its own process group, stopped with SIGTERM and after 2 s SIGKILL, so a terminal Ctrl+C reaches only VoiceBro and an npm launcher never leaves its native program behind. |
 | WebView2 process group (settings UI) | While the main window exists. The core never assumes a window exists, so a tray mode can be added later without touching it. |
 | `codex app-server` (child process, JSON-RPC over stdio) | Started when the bot connects; stopped with the app. Exiting the app always stops it. |
 | `claude.exe -p` (child process per guild, stream-json over stdio; change `claude-and-opencode-engines`) | Only with Claude Code as the engine: started at a join's preparation, stopped 0.5 s after the last leave, at an engine switch and with the app. |
@@ -110,7 +123,7 @@ WinRT calls. None of them is a child process.
 
 | Work | Runs on | Rule |
 |---|---|---|
-| Discord gateway, songbird driver, HTTP, downloads | Tauri's tokio runtime | Ordinary async code. |
+| Discord gateway, songbird driver, HTTP, downloads | The shell's Tokio runtime | Ordinary async code. |
 | Receive path: `VoiceTick` → mix → gate → assistant input, wake feed | Songbird's event task (tokio) | Must return within a fraction of 20 ms: no blocking calls, no locks held across awaits, only necessary allocation after warm-up. With opus-rs selected at the join it also decodes each speaker's packet (one decoder per SSRC, created the first time the SSRC speaks). |
 | Discord output: songbird's mixer pulls one packet from `OpusOutput` (one `PcmSource` frame, then our Opus encode) | Songbird's mixer thread | A read never blocks for more than a few ms; on underrun it returns silence and counts it. Our encode replaces songbird's (passthrough), so the thread still encodes once per 20 ms; it costs about 0.64 ms on average (worst 1.4 ms) against songbird's 0.30 ms (`output_pull_cost`, release). |
 | Discord RTCP: report blocks about our stream → expected loss | Songbird's event task (tokio) | Only atomics are written; the mixer thread reads them per packet. |
@@ -130,7 +143,9 @@ WinRT calls. None of them is a child process.
 
 The core publishes `AppEvent` values on a `tokio::sync::broadcast` channel. The desktop app
 subscribes and forwards them to the webview as one Tauri event; the UI also pulls a full
-`Status` snapshot on demand. The core never calls into Tauri.
+`Status` snapshot on demand. The server subscribes for terminal status and errors.
+`EventBus::for_terminal` uses terminal instructions in the relevant setup and `/join`
+messages without changing the join rules. The core never calls into Tauri.
 
 ```rust
 pub enum AppEvent {
@@ -770,7 +785,8 @@ pub struct Phrase { pub text: String, pub words: Vec<String> }
   `vosk-model-small-ru-0.22`, then by language name `-cs-0.4-rhasspy` (MIT), `-nl-0.22`,
   `-fr-0.22`, `-de-0.15`, `-it-0.22`, `-pl-0.22`, `-pt-0.3` (Brazilian; Vosk's older flat
   layout, so its marker is `final.mdl`) and `-es-0.42`, all Apache 2.0 but Czech; plus the
-  Vosk 0.3.45 Windows library. None ships with the app. Sizes and hashes were measured
+  Vosk 0.3.45 runtime for Windows (`libvosk.dll`) or glibc Linux x86-64 (`libvosk.so`
+  from the pinned PyPI wheel). None ships with the app. Model sizes and hashes were measured
   from a download (alphacephei publishes neither), and `catalog_models_load_when_enabled`
   loads every entry through the real library. Swedish (289 MB), Greek (1.1 GB only) and the
   EU languages without a Vosk model are left out; the models folder takes any other.
@@ -797,16 +813,16 @@ pub struct Phrase { pub text: String, pub words: Vec<String> }
     still differ. It is the name a download is saved under and the name a file downloaded
     by hand must have in `assets\`.
   - *`ensure`* has two routes to `assets\<file name>`. If that file is already there (one
-    the user downloaded by hand), it is used. Otherwise `ensure` downloads with the system
-    `curl.exe` to a `.part` name and renames. Either way it then reports
+     the user downloaded by hand), it is used. Otherwise `ensure` downloads with Windows
+     system `curl.exe` or Linux `curl` to a `.part` name and renames. Either way it then reports
     `Progress::Unpacking` and verifies the SHA-256. A single file is moved to
     `assets\<directory>\<marker>` and is its own marker. A plain archive is extracted with
-    the system `tar.exe` into `assets\`. An archive with a `root` or a `keep` list is
+     Windows system `tar.exe` or Linux `bsdtar` into `assets\`. An archive with a `root` or a `keep` list is
     extracted into a staging folder `assets\.unpack-<directory>`, its kept files are moved
     into `assets\<directory>`, and the rest is deleted, which is how the whisper.cpp zips
-    shrink to the DLLs the app loads. The system `tar.exe` (bsdtar) also unpacks the
-    `.tar.bz2` archives of sherpa-onnx, piper-phonemize and the voices, so no new crate is
-    needed. The archive is then removed and the marker checked.
+     shrink to the DLLs the app loads and the Vosk wheel installs only `vosk/libvosk.so`.
+     The archive tool also unpacks the `.tar.bz2` voice archives. The archive is then removed
+     and the marker checked.
   - *A mismatch* deletes the file, installs nothing, and fails with "<file> (downloaded |
     found in the assets folder) does not match the pinned SHA-256 (<digest>); it was
     deleted". An installed folder with the marker counts as installed without the
@@ -814,8 +830,18 @@ pub struct Phrase { pub text: String, pub words: Vec<String> }
   - *Cleanup.* `.part` files and `.unpack-*` folders are removed at start. Download progress
     (`Progress::Downloaded`) goes to the event bus as `AppEvent::Assets {label, percent,
     error}` in steps of at least 20 %. No HTTP crate.
-- Vosk is loaded at runtime through `libloading` (`LOAD_WITH_ALTERED_SEARCH_PATH`), so the
-  app starts without the DLL. Partial word timestamps are not requested (they delay
+- `native_library.rs` loads Vosk, Whisper and Sherpa/Piper by absolute path through
+  `libloading`. Windows keeps `LOAD_WITH_ALTERED_SEARCH_PATH` for bundled DLL dependencies.
+  Linux (not tested) loads the official Linux builds: the Vosk 0.3.45 wheel's
+  `libvosk.so`, whisper.cpp `b5454`'s Ubuntu x64 CPU build (`libggml-base.so.0.26.0`,
+  `libggml.so.0.26.0`, `libwhisper.so.1.9.5`, `libggml-cpu-*.so`), sherpa-onnx 2.0.1's
+  `libonnxruntime.so` and `libsherpa-onnx-c-api.so`, and piper-phonemize 1.5.9's
+  `libpiper_phonemize_core.so`. Only the real files are kept, never the version symlinks;
+  each dependency is loaded first by full path, so the needed sonames match the objects
+  already loaded. Each runtime's file names come from a per-platform table. The Whisper
+  build needs glibc 2.34, libstdc++ from GCC 11 and `libgomp`; Linux has no GPU runtime
+  (`HAS_GPU_RUNTIME`), so a GPU request takes the CPU fallback. The app starts
+  without the Vosk library. Partial word timestamps are not requested (they delay
   partials by seconds). Grammar-restricted recognition is not used (it maps ordinary speech
   onto the wake words).
 - The worker logs every final result (a detail line), every phrase decision, and dropped
@@ -956,8 +982,9 @@ assistant is given, so the app never panics on an unknown engine setting.
 
 **Codex implementation** (`assistant/codex/`), ChatGPT sign-in only:
 
-- Finding Codex (`find_codex_in`, every status read and every start): the configured
-  executable (only that one when set); else `codex.exe` on the PATH; else winget's
+- Finding Codex (`find_codex`, every status read and every start): the configured
+  executable (only that one when set); on Linux otherwise `codex` on `PATH`. On Windows,
+  otherwise `codex.exe` on `PATH`, then winget's
   command links folder `%LOCALAPPDATA%\Microsoft\WinGet\Links\codex.exe` (winget adds it to
   the PATH of new processes only, so a Codex installed while the app runs is found there);
   else npm's native exe under `%APPDATA%\npm`; else the `codex.cmd` shim.
@@ -1250,7 +1277,8 @@ the user's unmodified `claude.exe` and never reads, stores or passes a Claude cr
 
 - *Finding it* (`find_claude_in`): `claude.executable` when set, and only that file; else
   `claude.exe` on the PATH, winget's `%LOCALAPPDATA%\Microsoft\WinGet\Links`, then
-  `%USERPROFILE%\.local\bin` (Claude Code's own installer). `claude --version` is cached per
+  `%USERPROFILE%\.local\bin` (Claude Code's own installer). On Linux (not tested) `claude`
+  on `PATH` (`paths::find_executable`). `claude --version` is cached per
   file by size and time.
 - *The sign-in* (`read_sign_in`, `parse_auth_status`): `claude auth status` prints JSON
   without a model call (`loggedIn`, `authMethod`, `apiProvider`, `subscriptionType`, and for
@@ -1306,7 +1334,8 @@ from its source at tag v2.3.2; `probe opencode-smoke` checks it live. The app ru
 user's `opencode.exe`; OpenCode keeps its own providers and keys, which the app never reads.
 
 - *Finding it* (`find_opencode_in`): `opencode.executable` when set, and only that file;
-  else `opencode.exe` on the PATH, winget's `%LOCALAPPDATA%\Microsoft\WinGet\Links`,
+  on Linux (not tested) else `opencode` on `PATH`, which may be npm's launcher, since its
+  process group is stopped as a whole; on Windows else `opencode.exe` on the PATH, winget's `%LOCALAPPDATA%\Microsoft\WinGet\Links`,
   winget's own folder of the package (`WinGet\Packages\Anomaly.OpenCode_*`: the 2.3.2
   package adds that folder to the user's PATH and makes no link, so an app started before
   the install would not find it on its PATH), then npm's native program under `%APPDATA%\npm\node_modules\opencode-ai\node_modules\
@@ -1388,6 +1417,7 @@ pub struct Settings {
     pub diagnostics: DiagnosticsSettings,  // performance, memory, verbose_log: all default false, read by the window and the desktop shell; opus_codec: libopus (default) | opus-rs, read by the core at each join and each call
     pub whisper: WhisperSettings,          // the Whisper mode's recognition: model (catalog id or local:<file>, default whisper-base-q8_0), device: cpu (default) | gpu, threads: 0 (automatic) ..= 64, language: auto (default) | an ISO 639-1 code Whisper knows, phrases: { activation?, deactivation? } (an absent list: "bro" or "peace out", whatever the language, 4.12)
     pub tts: TtsSettings,                  // the Whisper mode's voice: voice (catalog id or windows:<token>, default supertonic3:F1), speed: 0.5..=2.0, default 1.0
+    pub linux: LinuxSettings,              // encrypt_files: true (default) | false, a boolean; read only by the Linux headless app at start (change `cross-platform-headless`), ignored on Windows, not shown in the window
     pub extra: Map<String, Value>,         // flattened: unknown fields from a newer version, kept as they are
 }
 ```
@@ -1464,16 +1494,35 @@ and "peace out" whatever the language (4.12). The code ships no assistant instru
 - **Secrets** go through `SecretStore` (Windows Credential Manager via `windows-sys`, entry
   `VoiceBro/discord_token`). The UI writes a secret with one command and only ever reads back
   `is_set: bool`. Secrets never appear in `Settings`, in the status snapshot, in events or in
-  the log. Codex's own ChatGPT sign-in is stored by Codex itself (`~/.codex`), not by the app.
+  the log. Headless reads the token from `DISCORD_TOKEN_FILE` when it is set, otherwise
+  the stored token (Credential Manager on Windows; on Linux `discord-token.bin` in the data
+  folder through `protect.rs`, `FileSecretStore`), and keeps it in memory.
+  `voicebro-server --set-token` stores it, read from standard input with echo off.
+  Codex's ChatGPT sign-in is stored by the CLI (`~/.codex` by default; `CODEX_HOME` can
+  override it).
+- **Files only the user reads** (`protect.rs`): `owner-link.bin`, `consents.bin` and, on
+  Linux, `discord-token.bin`, each with a constant per file as DPAPI's entropy or the
+  associated data. Windows: DPAPI for the current user. Linux (not tested):
+  XChaCha20-Poly1305 with a random 24-byte nonce under HKDF-SHA256 of the 32 random bytes in
+  `${XDG_CONFIG_HOME:-~/.config}/voicebro/protect.key` (folder 0700, file 0600, created
+  exclusively) salted with `/etc/machine-id`; a key file others can read or a missing
+  machine id refuses encryption, never falling back to plain text. `linux.encrypt_files:
+  false` writes the plain bytes instead; every Linux file starts with a tag (`VBE1`
+  encrypted, `VBP1` plain), files are written 0600 through `<file>.tmp` and a rename, and
+  at start `Runtime::start_checked` rewrites each readable file whose form differs from
+  the setting and warns while it is off. The crates (`chacha20poly1305`, `hkdf`) are
+  dependencies on every target so the Windows build compiles this code.
 - The app is portable: its data directory is the folder the executable runs from
-  (`VOICEBRO_DATA_DIR` overrides it for tests). It holds `settings.json`,
+  (`VOICEBRO_DATA_DIR` overrides it on both shells). It holds `settings.json`,
   `codex-lists.json` (the Codex models and voices of the last read, 4.5), `logs\`, `assets\`
   (what the app downloaded: the Vosk library and models, the Whisper runtimes, models and
   VAD model, the voice engine, the phonemizer and the voices), `models\` (Vosk models the
   user added, only read), `whisper-models\` (Whisper models the user added, only read),
   `codex-workspace\` (the empty, read-only cwd for Codex threads) and `webview-data\` (the window's WebView2 data, cache and component downloads,
-  tens of MB). The app creates files only there. Outside it are only the Discord token in
-  the Windows Credential Manager (written by the app), the user's own Codex data in
+  tens of MB). The app creates its data files only there. Outside it can be the headless
+  operator's token file (read-only to VoiceBro), the Discord token in Windows Credential
+  Manager (written by the desktop app or `--set-token`), the Linux key
+  `~/.config/voicebro/protect.key`, the user's own Codex data in
   `~\.codex` (written by Codex) and, when Codex was installed through the app, Codex itself
   where winget puts it. Builds before change `ui-layout-port` left a
   `%LOCALAPPDATA%\com.voicebro.desktop` folder (WebView2 data) that the user may delete.
@@ -1491,10 +1540,30 @@ the settings store and the event bus. It is the only place that knows every subs
 Start-up: load settings, read secrets, start Discord whenever a token is set, load the wake
 engine if the mode is wake-word and the assistant mode is realtime. The assistant's process is not started: it starts at the
 first `/join` (`GateHost::prepare_join` calls `Assistant::prepare`). The one exception is
-the read of the Codex lists at start (4.5), which the desktop shell starts right after
-`Runtime::start` when `codex.refresh_lists_at_start` is on or no lists were saved, and only
+the read of the Codex lists at start (4.5), which either shell starts after the runtime
+starts when `codex.refresh_lists_at_start` is on or no lists were saved, and only
 when Codex is installed. Shutdown: stop the assistant (and its child process), leave every call, stop
 the wake worker, unload Whisper and the voice. `Runtime::toggle_mute` is the single entry for all three mute sources.
+
+Both shells build the engines with `assistant::switch::Engines::build` (Codex, Claude Code
+and OpenCode behind `EngineSwitch`), so they cannot drift. The console shell
+(`apps/server`, change `cross-platform-headless`) uses `Runtime::start_checked` with
+`Settings::validate` (and on Linux no Windows voice in the Whisper mode) before connecting
+to Discord, and never rewrites a rejected file. Its `EventBus::for_terminal` turns every
+window-only hint (Install, Sign in, Download, Link) into a terminal command or a
+`settings.json` field. Its commands, which construct no runtime unless they run the bot:
+`--install-assets` installs `setup::missing_assets` through the asset store;
+`--set-token` stores the token; `--link-owner` runs the bot, has the engine read its
+account as Check does, then prints `Runtime::start_link`'s code on standard output only;
+`--unlink-owner`, `--list-consents`, `--remove-consent <id>` and `--clear-token`
+(`apps/server/src/records.rs`) open `OwnerState`, `ConsentState` or the token store
+directly, as Unlink, the Access card's list and Remove, and clearing the token do, for a
+stopped bot.
+At start it prints the access mode, the owner and the number of consents, and with Claude
+Code on a subscription the subscription notice. Its logger writes the core's filtered lines
+to stderr and `logs/voicebro.log`; its build script makes the desktop's build stamp. The
+console invokes `Runtime::shutdown` outside the async context so the blocking teardown can
+use its still-running executor.
 
 **The Whisper mode** (change `whisper-mode`, designs D1 and D12). The runtime owns a
 `WhisperManager`, whose transcripts go to the registry, and a `TtsManager`, which it also

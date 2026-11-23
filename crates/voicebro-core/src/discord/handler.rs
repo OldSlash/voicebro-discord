@@ -344,9 +344,12 @@ impl Handler {
         let user = &command.user;
         let name = display_name(user);
         let outcome = self.shared.host.complete_link(user.id.get(), &name, code);
-        let _ = command
-            .create_response(&ctx.http, ephemeral(&outcome.reply()))
-            .await;
+        let reply = if self.shared.events.terminal_guidance() {
+            outcome.terminal_reply()
+        } else {
+            outcome.reply()
+        };
+        let _ = command.create_response(&ctx.http, ephemeral(&reply)).await;
     }
 
     /// `/optin` (change `voice-consent`): the consent text with two buttons, only for the

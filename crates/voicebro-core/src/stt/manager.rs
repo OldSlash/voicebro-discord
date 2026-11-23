@@ -12,7 +12,9 @@
 //! - The gate's frames reach the cutter thread (`voicebro-whisper-cut`), whose utterances
 //!   reach the transcriber thread (`voicebro-whisper`).
 
-use super::catalog::{self, CPU_RUNTIME, GPU_RUNTIME, VAD_MODEL};
+use super::catalog::{self, VAD_MODEL};
+#[cfg(test)]
+use super::catalog::{CPU_RUNTIME, GPU_RUNTIME};
 use super::cutter::{Cut, Cutter};
 use super::transcriber::{self, Counters, CountersSnapshot, ModelSlot, TranscriptSink};
 use super::whisper::{self, DeviceChoice, WhisperModel, NO_SPEECH_THRESHOLD};
@@ -429,11 +431,8 @@ impl WhisperManager {
     fn missing(&self, model: &str, device: WhisperDevice) -> Result<Vec<Asset>, String> {
         self.model_path(model)?;
         let dir = &self.inner.assets_dir;
-        let runtime = match device {
-            WhisperDevice::Gpu => GPU_RUNTIME,
-            WhisperDevice::Cpu if assets::is_installed(dir, &GPU_RUNTIME) => GPU_RUNTIME,
-            WhisperDevice::Cpu => CPU_RUNTIME,
-        };
+        // Linux has no GPU runtime: a GPU request installs and uses the CPU runtime.
+        let runtime = catalog::runtime_for(device, dir);
         let model_asset = catalog::find(model).map(|entry| entry.asset);
         Ok([Some(runtime), model_asset, Some(VAD_MODEL)]
             .into_iter()
@@ -527,7 +526,7 @@ impl WhisperManager {
         if !missing.is_empty() && !self.agreed(&key) {
             let items: Vec<DownloadItem> = missing.iter().map(DownloadItem::of).collect();
             self.inner.events.log(format!(
-                "Whisper: {} needs a download first ({}); waiting for the OK in the window",
+                "Whisper: {} needs a download first ({}); {}",
                 key.0,
                 items
                     .iter()
@@ -538,7 +537,8 @@ impl WhisperManager {
                         item.host
                     ))
                     .collect::<Vec<_>>()
-                    .join("; ")
+                    .join("; "),
+                crate::assets::waiting_for_download(&self.inner.events)
             ));
             self.set_state(WhisperState::NeedsDownload { items });
             return;

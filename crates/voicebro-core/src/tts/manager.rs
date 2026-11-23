@@ -400,7 +400,7 @@ impl TtsManager {
         if !missing.is_empty() && !agreed {
             let items: Vec<DownloadItem> = missing.iter().map(DownloadItem::of).collect();
             self.inner.events.log(format!(
-                "voice: {voice} needs a download first ({}); waiting for the OK in the window",
+                "voice: {voice} needs a download first ({}); {}",
                 items
                     .iter()
                     .map(|item| format!(
@@ -410,7 +410,8 @@ impl TtsManager {
                         item.host
                     ))
                     .collect::<Vec<_>>()
-                    .join("; ")
+                    .join("; "),
+                crate::assets::waiting_for_download(&self.inner.events)
             ));
             self.set_state(TtsState::NeedsDownload { items });
             return;

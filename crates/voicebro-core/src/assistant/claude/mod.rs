@@ -58,6 +58,18 @@ pub enum PrepareError {
     Start(String),
 }
 
+impl PrepareError {
+    /// The reply on the headless app, which has no window (change `cross-platform-headless`).
+    pub fn terminal_reply(&self) -> String {
+        match self {
+            Self::NotFound => "Claude Code is not installed: install Claude Code on PATH, or set claude.executable in settings.json, then run /join again".to_owned(),
+            Self::SignedOut => "Claude Code is not signed in: run `claude` in a terminal as the user that runs VoiceBro and sign in with /login, then run /join again".to_owned(),
+            Self::NotWhisper => "Claude Code answers in the Whisper mode only: set assistant.mode to whisper or text in settings.json and restart the bot, then run /join again".to_owned(),
+            Self::Start(_) => self.to_string(),
+        }
+    }
+}
+
 /// What kind of sign-in Claude Code uses (design D5).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -174,21 +186,29 @@ pub fn parse_auth_status(status: &Value) -> ClaudeSignIn {
     }
 }
 
-/// Finds `claude.exe` with this process's environment; see [`find_claude_in`].
+/// Finds `claude.exe` with this process's environment; see [`find_claude_in`]. On Linux
+/// (change `cross-platform-headless`; not tested) the configured file or `claude` on `PATH`.
 pub fn find_claude(configured: &str) -> Option<PathBuf> {
-    let path_dirs = std::env::var_os("PATH")
-        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
-        .unwrap_or_default();
-    find_claude_in(
-        configured,
-        &path_dirs,
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .as_deref(),
-        std::env::var_os("USERPROFILE")
-            .map(PathBuf::from)
-            .as_deref(),
-    )
+    #[cfg(windows)]
+    {
+        let path_dirs = std::env::var_os("PATH")
+            .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+            .unwrap_or_default();
+        find_claude_in(
+            configured,
+            &path_dirs,
+            std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .as_deref(),
+            std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .as_deref(),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        crate::paths::find_executable(configured, "claude")
+    }
 }
 
 /// The configured path (only that one when set), then `claude.exe` on the PATH, then
@@ -663,7 +683,11 @@ impl Assistant for ClaudeAssistant {
     fn prepare(&self, guild: u64) -> PrepareFuture<'_> {
         Box::pin(async move {
             self.prepare_guild(guild).await.map_err(|error| {
-                let message = error.to_string();
+                let message = if self.inner.events.terminal_guidance() {
+                    error.terminal_reply()
+                } else {
+                    error.to_string()
+                };
                 *self.inner.last_error.lock().expect("claude error lock") = Some(message.clone());
                 AssistantError::Unavailable(message)
             })

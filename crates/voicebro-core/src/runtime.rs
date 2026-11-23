@@ -385,6 +385,9 @@ impl GateHost {
             return None;
         }
         match self.wake.requirements(&model) {
+            Ok(missing) if !missing.is_empty() && self.events.terminal_guidance() => {
+                Some(crate::wake::terminal_join_refusal(&missing))
+            }
             Ok(missing) if !missing.is_empty() => Some(crate::wake::join_refusal(&missing)),
             Ok(_) => None,
             // An unknown model is the wake state's own error, shown on the Status tab; it
@@ -410,7 +413,10 @@ impl GateHost {
         .map_err(|error| format!("the Whisper mode did not load: {error}"))
         .and_then(|result| result)
         .map_err(|error| {
-            if text_answers && error == crate::stt::manager::JOIN_NEEDS_DOWNLOADS {
+            let missing_files = error == crate::stt::manager::JOIN_NEEDS_DOWNLOADS;
+            if missing_files && self.events.terminal_guidance() {
+                self.terminal_whisper_refusal(text_answers)
+            } else if text_answers && missing_files {
                 crate::stt::manager::JOIN_NEEDS_WHISPER_FILES.to_owned()
             } else {
                 error
@@ -422,6 +428,32 @@ impl GateHost {
             self.tts.release();
         }
         result
+    }
+
+    /// The headless app's reply to a Whisper join refused for missing files (change
+    /// `cross-platform-headless`): the files, and the terminal command that installs them.
+    fn terminal_whisper_refusal(&self, text_answers: bool) -> String {
+        let settings = self.settings.read().expect("settings lock").clone();
+        let mut missing = self
+            .whisper
+            .requirements(&settings.whisper.model, settings.whisper.device)
+            .unwrap_or_default();
+        if !text_answers {
+            missing.extend(
+                self.tts
+                    .requirements(&settings.tts.voice)
+                    .unwrap_or_default(),
+            );
+        }
+        let labels = missing
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "The Whisper mode needs downloads ({labels}): stop the bot and run voicebro-server {}, then run /join again",
+            crate::wake::INSTALL_ASSETS_ARG
+        )
     }
 
     /// The mode changed while the bot is in voice channels (design D1): every session ends
@@ -855,27 +887,44 @@ impl Runtime {
     /// configures the wake engine, and connects to Discord whenever a token is stored.
     /// Nothing of the assistant runs until the first `/join`.
     pub fn start(&self) -> Result<(), RuntimeError> {
-        self.store.cleanup_partial();
-        let settings = match self.store.load()? {
-            Some(settings) => {
-                if let Err(error) = settings.validate() {
-                    self.events.log(format!(
-                        "settings file has a problem ({error}); fix it in Settings"
-                    ));
-                }
-                settings
-            }
-            None => {
-                let defaults = Settings::default();
-                self.store.save(&defaults)?;
+        self.start_checked(|settings| {
+            if let Err(error) = settings.validate() {
                 self.events.log(format!(
-                    "no settings file yet; wrote the defaults to {}",
-                    self.store.path().display()
+                    "settings file has a problem ({error}); fix it in Settings"
                 ));
-                defaults
             }
-        };
+            Ok(())
+        })
+    }
+
+    /// Starts with the shared settings lifecycle, but rejects settings before applying
+    /// them if the supplied validator reports an error.
+    ///
+    /// # Errors
+    /// Returns a settings I/O, parsing, or validation error before starting Discord.
+    pub fn start_checked(
+        &self,
+        validate: impl FnOnce(&Settings) -> Result<(), ValidationError>,
+    ) -> Result<(), RuntimeError> {
+        self.store.cleanup_partial();
+        let stored = self.store.load()?;
+        let first_start = stored.is_none();
+        let settings = stored.unwrap_or_default();
+        validate(&settings)?;
+        if first_start {
+            self.store.save(&settings)?;
+            self.events.log(format!(
+                "no settings file yet; wrote the defaults to {}",
+                self.store.path().display()
+            ));
+        }
         *self.settings.write().expect("settings lock") = settings;
+        // Change `cross-platform-headless` (design D8): how Linux writes the token, the
+        // owner link and the records, and each readable file rewritten in that form now.
+        crate::protect::set_encryption(self.settings().linux.encrypt_files);
+        if !cfg!(windows) {
+            self.reseal_private_files();
+        }
         let gate_settings = GateSettings::from_settings(&self.settings());
         log::info!(
             "settings: {}",
@@ -964,6 +1013,47 @@ impl Runtime {
             }
         }
         Ok(())
+    }
+
+    /// Linux only (change `cross-platform-headless`, design D8; not tested): rewrites the
+    /// stored token, the owner link and the records in the form `linux.encrypt_files` asks
+    /// for, and warns while they are stored unencrypted.
+    fn reseal_private_files(&self) {
+        let encrypt = crate::protect::encryption();
+        let files = [
+            (
+                crate::secrets::token_path(&self.data_dir),
+                crate::secrets::TOKEN_ENTROPY,
+            ),
+            (
+                crate::owner::link_path(&self.data_dir),
+                crate::owner::LINK_ENTROPY,
+            ),
+            (
+                crate::consent::consents_path(&self.data_dir),
+                crate::consent::ENTROPY,
+            ),
+        ];
+        for (path, entropy) in files {
+            match crate::protect::reseal(&path, entropy) {
+                Ok(true) => self.events.log(format!(
+                    "{} rewritten {}",
+                    path.display(),
+                    if encrypt {
+                        "encrypted"
+                    } else {
+                        "unencrypted (linux.encrypt_files is off)"
+                    }
+                )),
+                Ok(false) => {}
+                Err(error) => log::warn!("{} left as it is: {error}", path.display()),
+            }
+        }
+        if !encrypt {
+            self.events.log(
+                "warning: linux.encrypt_files is off, so the Discord token, the owner link and the consent records are stored unencrypted, protected only by file permissions",
+            );
+        }
     }
 
     /// Stops the wake engine and Discord; waits for Discord so the process can exit cleanly.
@@ -1341,9 +1431,15 @@ impl Runtime {
             let product = crate::settings::AssistantEngine::parse(&status.engine)
                 .map(crate::settings::AssistantEngine::product_name)
                 .unwrap_or("The assistant");
-            return Err(format!(
-                "{product} is not signed in: use Sign in on the Status tab first, then press Link again"
-            ));
+            return Err(if self.events.terminal_guidance() {
+                format!(
+                    "{product} is not signed in: sign in to {product} from a terminal as the user that runs VoiceBro first, then run voicebro-server --link-owner again"
+                )
+            } else {
+                format!(
+                    "{product} is not signed in: use Sign in on the Status tab first, then press Link again"
+                )
+            });
         };
         self.owner.check_account_of(&engine, &account);
         self.owner
@@ -1363,6 +1459,12 @@ impl Runtime {
 
     pub fn owner(&self) -> &Arc<OwnerState> {
         &self.owner
+    }
+
+    /// The people who agreed, for the headless app's terminal (change
+    /// `cross-platform-headless`); the window reads them through its own command.
+    pub fn consent_status(&self) -> crate::consent::ConsentStatus {
+        self.consent.status()
     }
 }
 

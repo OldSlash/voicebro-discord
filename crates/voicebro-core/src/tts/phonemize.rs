@@ -49,8 +49,8 @@ impl Phonemizer {
     pub fn load(folder: &Path, data: &Path) -> Result<Self, TtsError> {
         let library = LIBRARY
             .get_or_init(|| {
-                let core = load_library(&folder.join("piper_phonemize_core.dll"))?;
-                let api = load_library(&folder.join("piper_phonemize_cxx_api.dll")).ok();
+                let core = load_library(&folder.join(super::catalog::files::PHONEMIZER_CORE))?;
+                let api = load_library(&folder.join(super::catalog::files::PHONEMIZER_API)).ok();
                 // SAFETY: symbols of the pinned piper-phonemize v1.5.9 C API with its
                 // header's signatures; the libraries live in the static.
                 unsafe {

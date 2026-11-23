@@ -72,6 +72,7 @@ pub enum AppEvent {
 #[derive(Clone)]
 pub struct EventBus {
     sender: broadcast::Sender<AppEvent>,
+    terminal_guidance: bool,
 }
 
 impl Default for EventBus {
@@ -83,7 +84,22 @@ impl Default for EventBus {
 impl EventBus {
     pub fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);
-        Self { sender }
+        Self {
+            sender,
+            terminal_guidance: false,
+        }
+    }
+
+    /// Uses terminal instructions for bot and setup messages instead of desktop controls.
+    pub fn for_terminal() -> Self {
+        Self {
+            terminal_guidance: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn terminal_guidance(&self) -> bool {
+        self.terminal_guidance
     }
 
     /// Publishes to every current subscriber. With no subscribers the event is dropped,
