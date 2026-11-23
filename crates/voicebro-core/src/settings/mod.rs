@@ -2617,6 +2617,39 @@ mod tests {
         assert!(error.message.contains("Claude Code"), "{}", error.message);
     }
 
+    /// Change `realtime-switches-to-codex`, design D1: the window's way back to the voice
+    /// call is one save with the engine Codex and the realtime mode, which validates; the
+    /// realtime mode alone with another engine is still refused.
+    #[test]
+    fn the_way_back_to_the_realtime_voice_saves_codex_with_the_mode() {
+        for (engine, mode) in [("claude", "whisper"), ("opencode", "text")] {
+            let from = Settings::default()
+                .with_patch(&json!({ "assistant": { "engine": engine, "mode": mode } }))
+                .unwrap();
+            from.validate().unwrap();
+            let back = from
+                .with_patch(&json!({ "assistant": { "engine": "codex", "mode": "realtime" } }))
+                .unwrap();
+            back.validate().unwrap();
+            assert_eq!(
+                from.changed_sections(&back),
+                vec!["engine", "mode"],
+                "{engine}"
+            );
+
+            let alone = from
+                .with_patch(&json!({ "assistant": { "mode": "realtime" } }))
+                .unwrap();
+            let error = alone.validate().unwrap_err();
+            assert_eq!(error.field, "assistant.mode");
+            assert!(
+                error.message.contains("voice mode works only with Codex"),
+                "{engine}: {}",
+                error.message
+            );
+        }
+    }
+
     /// Requirement "Assistant instruction setting": its own part, which rebuilds no gate.
     #[test]
     fn an_instruction_change_is_its_own_part() {

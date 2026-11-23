@@ -7,7 +7,9 @@
 // `window.__mock` exposes what a check needs: `calls` (every command with its arguments),
 // `settings()` (the stored document), `changeCapabilities()` (the engine offers a new
 // model list, as after a sign-in), `capabilities()`, `failNextCheck(message)` (the next
-// Check Codex or Refresh lists fails) and `emit(name, payload)`. `?nolists` starts with no
+// Check Codex or Refresh lists fails), `failNextSave(message)` (the next `save_settings` is
+// refused with it and stores nothing; change `realtime-switches-to-codex`) and
+// `emit(name, payload)`. `?nolists` starts with no
 // Codex lists ever read. `?disconnected` starts with the bot not connected
 // (`setConnected(on)` changes it); `?post_answers=<value>&answers_channel=<id>` starts with
 // that answer posting stored. The owner link (change `owner-only-access`): `?owner=linked`
@@ -94,6 +96,8 @@
   }
   // `__mock.failNextCheck(message)`: the next Check Codex (or Refresh lists) fails with it.
   let failNextCheck = null;
+  // `__mock.failNextSave(message)`: the next `save_settings` is refused with it.
+  let failNextSave = null;
   // `__mock.nextCheckAddsModel()`: Codex offers a new model at the next Check.
   let checkAddsModel = false;
   // As `wake_models` answers: the catalog with its download state, then the models folder.
@@ -1006,6 +1010,11 @@
     status: () => status(),
     get_settings: () => ({ settings: clone(settings), secrets: { discord_token: { is_set: tokenSet } } }),
     save_settings: ({ patch }) => {
+      if (failNextSave) {
+        const message = failNextSave;
+        failNextSave = null;
+        throw message;
+      }
       const next = merge(clone(settings), patch);
       validate(next);
       const wakeChanged = JSON.stringify(next.wake) !== JSON.stringify(settings.wake)
@@ -1459,6 +1468,9 @@
     },
     failNextCheck(message = "codex not found: press Install Codex on the Status tab, or set the path of codex.exe in Config") {
       failNextCheck = message;
+    },
+    failNextSave(message = "could not save the settings: the disk is full") {
+      failNextSave = message;
     },
     nextCheckAddsModel() {
       checkAddsModel = true;
