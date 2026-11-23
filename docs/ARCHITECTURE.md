@@ -375,15 +375,18 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   join below run.
 - **Member panel** (`panel.rs`): an embed in the channel the command came from, with the
   engine, the assistant's state (waiting for the wake word / listening / muted) and the mode
-  ("Realtime voice", "Whisper mode" or "Whisper mode, text answers"), and two rows of
-  buttons (change `discord-panel-controls`): "Mute assistant" ("Unmute assistant" while
-  muted) and "Leave channel" (danger style); then "Realtime voice", "Whisper mode" and
-  "Text answers", the current mode (`VoiceHost::mode`, an `AssistantMode`) primary and
-  disabled, the others secondary. Custom ids carry the guild: `voicebro:mute:<guild>` (as
+  ("Realtime voice", "Whisper mode" or "Whisper mode, text answers"), and one row of
+  buttons (change `discord-panel-controls`; one row since change `console-and-panel-fixes`):
+  "Mute assistant" ("Unmute assistant" while muted), "Text answers" (primary and disabled
+  while `VoiceHost::mode`, an `AssistantMode`, is text answers, secondary otherwise) and
+  "Leave channel" (danger style). Custom ids carry the guild: `voicebro:mute:<guild>` (as
   before, so an older panel's Mute still parses), `voicebro:leave:<guild>` and
   `voicebro:mode:<realtime|whisper|text>:<guild>`, parsed into one `PanelButton { guild,
-  action: Mute | Leave | Mode(AssistantMode) }`. A mode or engine switch and a mute mark
-  the panels for a refresh, at most one edit per second.
+  action: Mute | Leave | Mode(AssistantMode) }`. The panel posts only `text`, but all three
+  mode names still parse: a press on the Realtime voice or Whisper mode button of a panel
+  posted before `console-and-panel-fixes` reaches the current-panel check below and only
+  loses its buttons. A mode or engine switch and a mute mark the panels for a refresh, at
+  most one edit per second.
   - `handle_component` parses the consent buttons first, then a `PanelButton` whose guild
     is the interaction's. Every press goes through one order. **The owner check:**
     `VoiceHost::owner_id()` (`OwnerState::linked_id()`, whatever `discord.access` is) must
@@ -400,14 +403,16 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   - *Leave channel* defers an ephemeral reply, calls `session::leave_voice` as `/leave`
     does (which deletes the panel) and answers "Left <channel>." or "I was not in a voice
     channel here.".
-  - *A mode* defers a message update, awaits `VoiceHost::change_mode(mode)` (4.6, "A mode
-    from the panel") and edits the panel with the new state; an engine switched to Codex
-    ("Switched to the realtime voice. The engine is now Codex: the voice call works only
-    with Codex.") or a refusal is an ephemeral follow-up, and the refusal is logged.
+  - *A mode* (on a current panel only Text answers) defers a message update, awaits
+    `VoiceHost::change_mode(mode)` (4.6, "A mode from the panel") and edits the panel with
+    the new state; a refusal is an ephemeral follow-up and is logged. The press handling and
+    `change_mode` stay mode-generic: the engine-switch follow-up ("Switched to the realtime
+    voice. The engine is now Codex: the voice call works only with Codex.") is kept, though
+    no current panel can send a realtime press any more.
   - `probe discord-panel` posts `panel::sample_panel` for each mode, unmuted and muted, to
-    the test channel, reads each message back, checks the rows, labels, ids and the marked
-    mode as Discord stored them, and deletes them: Discord accepts the buttons. Presses need
-    a person.
+    the test channel, reads each message back, checks the one row, the labels, the ids and
+    Text answers' state as Discord stored them, and deletes them: Discord accepts the
+    buttons. Presses need a person.
 - **Join order is fixed:** get or create the `Call`, set its decode mode, register the
   `SpeakingStateUpdate` and `VoiceTick` handlers, then `join`. Discord announces a user's
   SSRC only the first time they speak.
@@ -1729,10 +1734,11 @@ change like any other: the sessions end with the falling tone and the gates are 
 - `assistant_mode()` names the mode for `/status` and the panel (4.2): "Realtime voice",
   "Whisper mode" or "Whisper mode, text answers" (`MODE_TEXT`, read from the settings,
   since the gates hear the same way in both Whisper modes). `mode()` gives the stored
-  `assistant.mode` as a value for the panel's mode buttons (change
+  `assistant.mode` as a value for the panel's Text answers button (change
   `discord-panel-controls`).
 - *A mode from the panel* (change `discord-panel-controls`, designs D5 and D6). The owner's
-  press of a mode button calls `VoiceHost::change_mode(mode)`. `GateHost` sends a
+  press of a mode button calls `VoiceHost::change_mode(mode)`. The panel has offered only
+  Text answers since change `console-and-panel-fixes`; `change_mode` still takes every mode. `GateHost` sends a
   `ModeRequest` with a oneshot reply into an unbounded channel and awaits the answer, so
   the host needs no reference to the runtime. `Runtime::start` (which takes
   `self: &Arc<Self>`, so every shell holds the runtime in an `Arc`) spawns the one task
@@ -1839,7 +1845,28 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
   `app-log`; the
   `log_history` command returns the ring, so the window's log pane shows the whole app log
   (what the recognizer heard, every phrase decision) including what was logged before the
-  window loaded. The pane no longer lists `AppEvent::Log` separately.
+  window loaded. The pane no longer lists `AppEvent::Log` separately. A debug build adds a
+  third target, stdout, which reaches the terminal the app was started from (next item).
+- **No console of its own** (change `console-and-panel-fixes`). The binary is a window
+  program in every build (`windows_subsystem = "windows"`, left out only for the test
+  harness), so Windows gives it no console, and a double-click or a shortcut opens none. A debug build calls
+  `console::attach_to_parent_terminal()` first thing in `main`:
+  - `AttachConsole(ATTACH_PARENT_PROCESS)` joins the console of whatever started it (a
+    PowerShell or cmd prompt, `cargo run`, `cargo tauri dev`). The stdout target writes
+    there, because Rust's stdout looks up the standard handle at each write.
+  - From Explorer the attach fails, and stdout writes into no handle, which Rust treats as
+    success.
+  - Output redirected to a file or a pipe stays the standard output and gets the log.
+  - Once attached, a console signal handler answers Ctrl+C and Ctrl+Break as handled.
+  - On the close signal (the terminal window or tab closed), the handler calls `FreeConsole`
+    and `ExitThread` on the signal's own thread. Windows ends the process once a handler
+    returns from that signal, whatever it answers. Measured on 2026-11-23 with a classic
+    console window and with Windows Terminal: a handler that returned was ended with the
+    window, one that detached and ended its thread ran on.
+  - Detaching without the close signal does not work: the lines written after
+    `FreeConsole` went nowhere, so the app stays attached until the terminal closes.
+
+  A release build neither attaches nor has a stdout target.
 - `build.rs` embeds the Common-Controls v6 manifest into every linked target and stamps the
   build (version plus short git hash plus date) for the UI.
 - **The main window is built in `setup`** (`build_main_window`, label `main`) with
@@ -2797,7 +2824,7 @@ the people's transcript (realtime/transcript/delta, role user; done) while the c
 mute (app button | hotkey | Discord panel, the owner's) ─► Runtime::toggle_mute ─► RelayRegistry
    ─► every gate: session ends (session_wanted(false)), nothing sent, output flushed,
       mute tone ─► AppEvent::MuteChanged ─► UI, panel
-panel mode button (the owner's) ─► VoiceHost::change_mode ─► the runtime's task
+panel Text answers (the owner's) ─► VoiceHost::change_mode ─► the runtime's task
    ─► Runtime::change_mode: save lock, files on disk, the window's save ─► switch_mode or
       switch_engine ─► every channel and panel; AppEvent::SettingsChanged ─► UI
 last /leave ─► Codex: app-server stops 0.5 s later; conversations kept

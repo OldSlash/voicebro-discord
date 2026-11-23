@@ -221,7 +221,7 @@ const PROBES: &[Probe] = &[
     },
     Probe {
         name: "discord-panel",
-        summary: "posts the panel as /join builds it for each assistant mode, unmuted and muted, to the test channel's text chat, reads each message back and checks the two rows of buttons (labels, ids, the current mode marked and disabled), then deletes them; shows that Discord accepts the buttons, not that presses work",
+        summary: "posts the panel as /join builds it for each assistant mode, unmuted and muted, to the test channel's text chat, reads each message back and checks the one row of buttons (Mute assistant, Text answers, Leave channel: labels, ids, Text answers marked and disabled only in the text answers mode), then deletes them; shows that Discord accepts the buttons, not that presses work",
         needs: "VOICEBRO_DISCORD_TOKEN, VOICEBRO_TEST_GUILD, VOICEBRO_TEST_CHANNEL (or probe.local.json); Send Messages, Embed Links and Read Message History there",
         run: panel::run,
     },

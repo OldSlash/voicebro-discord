@@ -1,9 +1,13 @@
 //! VoiceBro desktop shell: wires `voicebro-core` to Tauri commands and events, installs the
 //! file log, and hosts the static UI. The core never calls into Tauri.
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// A window program in every build: starting it never opens a console. A debug build
+// started from a terminal writes its log there (`console.rs`). The test harness stays a
+// console program, so the tests' own child processes open no console windows.
+#![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod codex_install;
+mod console;
 mod log_ring;
 mod memory;
 mod system;
@@ -620,7 +624,8 @@ fn hand_link_to_browser(url: &str) {
     }
 }
 
-/// The file, the window's ring and, in debug builds, stdout: one level table for all three,
+/// The file, the window's ring and, in debug builds, stdout (the terminal the app was
+/// started from, if any; `console.rs`): one level table for all three,
 /// and on the file a filter that leaves out detail lines and third-party warnings in a
 /// release build unless the verbose log is on.
 fn log_plugin(
@@ -748,6 +753,9 @@ fn install_panic_hook(log_dir: std::path::PathBuf) {
 }
 
 fn main() {
+    if cfg!(debug_assertions) {
+        console::attach_to_parent_terminal();
+    }
     let data_dir = paths::data_dir();
     install_panic_hook(paths::logs_dir(&data_dir));
     // Everything the app creates lives in its own folder: without write access there,

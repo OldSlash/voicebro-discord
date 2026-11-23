@@ -613,7 +613,7 @@ Whisper mode, text answers.", and the panel that `/join` posts shows the same un
 
 | In Discord | What happens |
 |---|---|
-| `/join` | The bot joins your voice channel and replies with a panel that shows the engine, its state and the mode, with buttons for the linked owner: **Mute assistant**, **Leave channel** and the three modes ([The panel's buttons](#the-panels-buttons)). |
+| `/join` | The bot joins your voice channel and replies with a panel that shows the engine, its state and the mode, with buttons for the linked owner: **Mute assistant**, **Text answers** and **Leave channel** ([The panel's buttons](#the-panels-buttons)). |
 | Say the activation phrase and a question | A session starts and the assistant answers in the channel. |
 | Say the deactivation phrase, or stay quiet | The session ends, at once or after the auto-stop time. |
 | `/status` | Shows what VoiceBro is doing, and the mode: realtime voice, Whisper, or Whisper with text answers. |
@@ -633,10 +633,10 @@ the **Status** tab, or the hotkey **Ctrl+Alt+M**, which works system-wide (chang
 
 ### The panel's buttons
 
-The panel that `/join` posts has two rows of buttons: **Mute assistant** (**Unmute
-assistant** while muted) and **Leave channel**, then the three modes: **Realtime voice**,
-**Whisper mode** and **Text answers**. The current mode's button is marked and cannot be
-pressed. With them you run the bot from Discord without the VoiceBro window.
+The panel that `/join` posts has one row of buttons: **Mute assistant** (**Unmute
+assistant** while muted), **Text answers** and **Leave channel**. In the text answers mode
+**Text answers** is marked and cannot be pressed. With them you run the bot from Discord
+without the VoiceBro window.
 
 - **Only the linked owner presses them**, in every access mode
   ([Who the assistant hears](#who-the-assistant-hears)): link your Discord account in
@@ -646,18 +646,16 @@ pressed. With them you run the bot from Discord without the VoiceBro window.
   still mute without a link. `/join`, `/leave` and `/status` stay open to everyone.
 - **Leave channel** does what `/leave` does: the bot leaves, the panel is deleted, and
   only you see "Left <channel>.".
-- **A mode button** switches the assistant mode for the whole app, in every server the bot
-  is in, and saves it as **Config → Assistant** would: a running session ends with the
-  falling tone, the bot stays in its channels, and the assistant goes on in the new mode.
-  Every panel and the window show the new mode within a second.
-- **Realtime voice** with Claude Code or OpenCode as the engine also switches the engine to
-  Codex, since the voice call works only with Codex; only you see a reply that says so. The
-  Claude Code and OpenCode settings stay as they were. The other two modes keep the engine.
-- **A mode whose files are not on this PC is refused**, and nothing is downloaded from
-  Discord: the Whisper files and the voice for **Whisper mode**, the Whisper files for
-  **Text answers**, and for **Realtime voice** with the wake word the Vosk recognizer and
-  the wake model. Only you see what is missing and where to download it in VoiceBro
-  ([section 7](#downloads)); the window opens no download dialog for it.
+- **Text answers** switches the assistant to the text answers mode for the whole app, in
+  every server the bot is in, and saves it as **Config → Assistant** would: a running
+  session ends with the falling tone, the bot stays in its channels, and the assistant goes
+  on with its answers posted in a chat. The engine stays as it is. Every panel and the
+  window show the new mode within a second. To go back to the realtime voice or the Whisper
+  mode, pick it in **Config → Assistant**.
+- **Text answers is refused while the Whisper files are not on this PC** (the Whisper
+  runtime, model and voice activity model), and nothing is downloaded from Discord. Only you
+  see what is missing and where to download it in VoiceBro ([section 7](#downloads)); the
+  window opens no download dialog for it.
 - A panel left from an earlier session (after a leave, a rejoin or a restart of VoiceBro)
   changes nothing: at your press it loses its buttons and says that `/join` posts a new
   panel.

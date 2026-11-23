@@ -27,6 +27,8 @@ tokio.workspace = true
 [target.'cfg(windows)'.dependencies]
 # The memory reading: the process tree and each process's private working set.
 windows-sys = { workspace = true, features = [
+    # A debug build's log on the terminal it was started from (src/console.rs).
+    "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",

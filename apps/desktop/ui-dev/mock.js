@@ -1010,8 +1010,8 @@
 
   // A save as the app stores it: checked, kept, and announced with `settings_changed`. The
   // window's Save goes through `save_settings`; `__mock.saveFromOutside(patch)` calls this
-  // directly, as a save the window did not make (the Discord panel's mode buttons, change
-  // `discord-panel-controls`).
+  // directly, as a save the window did not make (the Discord panel's Text answers button,
+  // change `discord-panel-controls`).
   function storePatch(patch) {
     const next = merge(clone(settings), patch);
     validate(next);
@@ -1482,8 +1482,8 @@
     failNextSave(message = "could not save the settings: the disk is full") {
       failNextSave = message;
     },
-    // A save the window did not make, as the Discord panel's mode buttons make it (change
-    // `discord-panel-controls`): stored and announced, not in `calls`.
+    // A save the window did not make, as the Discord panel's Text answers button makes it
+    // (change `discord-panel-controls`): stored and announced, not in `calls`.
     saveFromOutside(patch) {
       return storePatch(patch);
     },
