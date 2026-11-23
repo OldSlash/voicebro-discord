@@ -72,13 +72,16 @@ is merged (the Linux Vosk and Whisper libraries come from it).
 
 - [x] 5.1 Run `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test` (CMake on PATH) and `openspec validate voice-corpus-tests --strict` through `.tools\openspec`. Say in the report what each returned
   (2026-11-23: fmt clean after `cargo fmt`; clippy no errors, six warnings of Rust 1.99's lints in files this change does not touch; `cargo test` 549 + 17 + 2 passed, 0 failed; validate: valid)
-- [ ] 5.2 The user's check on glibc Linux x86-64, since this PC has no Linux:
+- [x] 5.2 The user's check on glibc Linux x86-64, since this PC has no Linux:
   - `cargo test -p voicebro-core` lists the two old Vosk corpus tests as ignored with the reason;
   - `voice_corpus_when_enabled` runs the English set with the Linux Vosk assets, and with the Linux Whisper CPU runtime when given;
   - the old corpus scripts in PowerShell 7 print that they are Windows-only and exit with 0
 
   Open when the change was archived on 2026-11-23: the user asked to merge and archive the
   changes and release 1.3.1, and checks Linux later.
+
+  Closed by the user later on 2026-11-23 without being run, as not tested: for now the Linux
+  support only prepares for Linux. The corpus has not run on Linux.
 - [x] 5.3 Report what was built, the corpus results per engine and run, and what was not tested: Linux, real people's voices until the user adds their WAVs, and Discord's own voice activity detection
 
 ## Workflow follow-up

@@ -79,7 +79,11 @@ Open when the change was archived on 2026-11-23: the user asked to merge and arc
 changes and release 1.3.1. Linux stays marked as not tested in the specs and docs until
 these two pass.
 
-- [ ] 11.1 Build with `cargo check --locked -p voicebro-server` and `cargo build --locked --release -p voicebro-server` on glibc Linux x86-64.
-- [ ] 11.2 Run `--install-assets` for each mode and start the bot in each assistant mode; link an owner with `--link-owner`, record a consent with `/optin`, restart and check both are kept, that both files are encrypted (no readable id or name), that the key file has mode 0600, and that an edited byte or a missing key makes them count as missing; store the token with `--set-token` and start without `DISCORD_TOKEN_FILE`, then `--clear-token`; `--unlink-owner`, `--list-consents` and `--remove-consent` on the linked owner and the recorded consent; switch `linux.encrypt_files` to `false` and back and check the files are rewritten each way, kept, and warned about while plain; stop the bot with Ctrl+C and SIGTERM and check that no engine process is left. Then remove "(not tested)" from the specs and docs for what passed.
+Closed by the user later on 2026-11-23 without being run, as not tested: for now the Linux
+support only prepares for Linux. The specs, the README and the docs keep "(not tested)",
+and nothing of the Linux code was built or run.
+
+- [x] 11.1 Build with `cargo check --locked -p voicebro-server` and `cargo build --locked --release -p voicebro-server` on glibc Linux x86-64.
+- [x] 11.2 Run `--install-assets` for each mode and start the bot in each assistant mode; link an owner with `--link-owner`, record a consent with `/optin`, restart and check both are kept, that both files are encrypted (no readable id or name), that the key file has mode 0600, and that an edited byte or a missing key makes them count as missing; store the token with `--set-token` and start without `DISCORD_TOKEN_FILE`, then `--clear-token`; `--unlink-owner`, `--list-consents` and `--remove-consent` on the linked owner and the recorded consent; switch `linux.encrypt_files` to `false` and back and check the files are rewritten each way, kept, and warned about while plain; stop the bot with Ctrl+C and SIGTERM and check that no engine process is left. Then remove "(not tested)" from the specs and docs for what passed.
 
 Add no new tests. Change a test only to make it compile (9.1). Run the existing suite on Windows before the commit (10.2). No WAV fixtures or deployment files. Leave the implementation uncommitted for manual review; do not tag or push.
