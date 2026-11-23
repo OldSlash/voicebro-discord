@@ -302,6 +302,10 @@ mod tests {
     /// deactivation. `VOICEBRO_WAKE_NOISE=<amplitude>` adds steady noise with no trailing
     /// silence.
     #[test]
+    #[cfg_attr(
+        not(windows),
+        ignore = "the old wake corpus is made with the Windows voices"
+    )]
     fn vosk_corpus_when_assets_are_provided() {
         let Ok(base) = std::env::var("VOICEBRO_VOSK_DIR") else {
             return;
@@ -571,6 +575,10 @@ mod tests {
     /// WAV's end to the deactivation. The D1 run must equal the back-to-back run, and the
     /// default file must confirm the deactivation.
     #[test]
+    #[cfg_attr(
+        not(windows),
+        ignore = "the old wake corpus is made with the Windows voices"
+    )]
     fn vosk_gaps_when_assets_are_provided() {
         let Ok(base) = std::env::var("VOICEBRO_VOSK_DIR") else {
             return;

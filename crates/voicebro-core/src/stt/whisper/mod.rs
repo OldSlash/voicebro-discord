@@ -349,6 +349,12 @@ mod tests {
         let mut model =
             WhisperModel::load(Arc::clone(&runtime), &model_path, &vad, false).expect("model");
         eprintln!("model loaded in {:?}", started.elapsed());
+        // The old wake corpus is made with the Windows voices (change `voice-corpus-tests`,
+        // D10): elsewhere the runtime check above stands alone.
+        if !cfg!(windows) {
+            eprintln!("the two old wake corpus transcriptions run only on Windows; skipped");
+            return;
+        }
         let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")

@@ -40,6 +40,8 @@ pub mod setup;
 pub mod status;
 pub mod stt;
 pub mod tts;
+#[cfg(test)]
+mod voice_corpus;
 pub mod wake;
 
 pub use events::{AppEvent, EventBus};

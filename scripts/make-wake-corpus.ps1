@@ -31,6 +31,11 @@ param(
     [string]$Probe = "target\debug\probe.exe"
 )
 $ErrorActionPreference = "Stop"
+# The old wake corpus is made with the Windows voices (change voice-corpus-tests, D10).
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+    Write-Output "make-wake-corpus.ps1 runs only on Windows: the old wake corpus is made with the Windows voices."
+    exit 0
+}
 Add-Type -AssemblyName System.Speech
 # Through -File, "de,fr" arrives as one string.
 $Languages = @($Languages | ForEach-Object { $_ -split "," } | Where-Object { $_ })

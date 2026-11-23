@@ -1,0 +1,74 @@
+# The English set of the voice corpus (change voice-corpus-tests), recorded by
+# `probe voice-corpus-make` with the voices SOURCES.md names: machine generated speech whose
+# voices allow publishing it. The probe rewrites this folder whole: put your own files in
+# another folder, such as en/mine/.
+#
+# The format, for this folder and your own:
+#   phrases = <activation, ...> | <deactivation, ...>
+#     optional; applies to this folder and the folders below it that set none
+#     (without it: bro | peace out)
+#   <file>.wav = activate | deactivate | activate, deactivate | none [; the words spoken]
+#     the state changes the file must make, in order; a list that begins with deactivate
+#     starts with a session active
+# A WAV without a line is run and reported, not judged. Files under a folder named local
+# are never committed: the repository is public.
+ljspeech-bro-alone.wav = activate ; Bro.
+ljspeech-bro-start.wav = activate ; Bro, what time is it in London?
+ljspeech-hey-bro.wav = activate ; Hey bro, what is the weather in Bangkok?
+ljspeech-bro-end.wav = activate ; That was a good game, bro.
+ljspeech-plain.wav = none ; Let's go to the castle and wait for the others.
+ljspeech-brother.wav = none ; Brother, tell me a joke.
+ljspeech-lookalike.wav = none ; I broke my bow, he brought the brown boat, nice bros.
+ljspeech-peace-alone.wav = deactivate ; Peace out.
+ljspeech-goodbye.wav = deactivate ; Thanks for the help. Peace out.
+ljspeech-bro-then-peace.wav = activate, deactivate ; Bro, what time is it in London? Thanks, peace out.
+cori-bro-alone.wav = activate ; Bro.
+cori-bro-start.wav = activate ; Bro, what time is it in London?
+cori-hey-bro.wav = activate ; Hey bro, what is the weather in Bangkok?
+cori-bro-end.wav = activate ; That was a good game, bro.
+cori-plain.wav = none ; Let's go to the castle and wait for the others.
+cori-brother.wav = none ; Brother, tell me a joke.
+cori-lookalike.wav = none ; I broke my bow, he brought the brown boat, nice bros.
+cori-peace-alone.wav = deactivate ; Peace out.
+cori-goodbye.wav = deactivate ; Thanks for the help. Peace out.
+cori-bro-then-peace.wav = activate, deactivate ; Bro, what time is it in London? Thanks, peace out.
+bella-bro-alone.wav = activate ; Bro.
+bella-bro-start.wav = activate ; Bro, what time is it in London?
+bella-hey-bro.wav = activate ; Hey bro, what is the weather in Bangkok?
+bella-bro-end.wav = activate ; That was a good game, bro.
+bella-plain.wav = none ; Let's go to the castle and wait for the others.
+bella-brother.wav = none ; Brother, tell me a joke.
+bella-lookalike.wav = none ; I broke my bow, he brought the brown boat, nice bros.
+bella-peace-alone.wav = deactivate ; Peace out.
+bella-goodbye.wav = deactivate ; Thanks for the help. Peace out.
+bella-bro-then-peace.wav = activate, deactivate ; Bro, what time is it in London? Thanks, peace out.
+adam-bro-alone.wav = activate ; Bro.
+adam-bro-start.wav = activate ; Bro, what time is it in London?
+adam-hey-bro.wav = activate ; Hey bro, what is the weather in Bangkok?
+adam-bro-end.wav = activate ; That was a good game, bro.
+adam-plain.wav = none ; Let's go to the castle and wait for the others.
+adam-brother.wav = none ; Brother, tell me a joke.
+adam-lookalike.wav = none ; I broke my bow, he brought the brown boat, nice bros.
+adam-peace-alone.wav = deactivate ; Peace out.
+adam-goodbye.wav = deactivate ; Thanks for the help. Peace out.
+adam-bro-then-peace.wav = activate, deactivate ; Bro, what time is it in London? Thanks, peace out.
+emma-bro-alone.wav = activate ; Bro.
+emma-bro-start.wav = activate ; Bro, what time is it in London?
+emma-hey-bro.wav = activate ; Hey bro, what is the weather in Bangkok?
+emma-bro-end.wav = activate ; That was a good game, bro.
+emma-plain.wav = none ; Let's go to the castle and wait for the others.
+emma-brother.wav = none ; Brother, tell me a joke.
+emma-lookalike.wav = none ; I broke my bow, he brought the brown boat, nice bros.
+emma-peace-alone.wav = deactivate ; Peace out.
+emma-goodbye.wav = deactivate ; Thanks for the help. Peace out.
+emma-bro-then-peace.wav = activate, deactivate ; Bro, what time is it in London? Thanks, peace out.
+george-bro-alone.wav = activate ; Bro.
+george-bro-start.wav = activate ; Bro, what time is it in London?
+george-hey-bro.wav = activate ; Hey bro, what is the weather in Bangkok?
+george-bro-end.wav = activate ; That was a good game, bro.
+george-plain.wav = none ; Let's go to the castle and wait for the others.
+george-brother.wav = none ; Brother, tell me a joke.
+george-lookalike.wav = none ; I broke my bow, he brought the brown boat, nice bros.
+george-peace-alone.wav = deactivate ; Peace out.
+george-goodbye.wav = deactivate ; Thanks for the help. Peace out.
+george-bro-then-peace.wav = activate, deactivate ; Bro, what time is it in London? Thanks, peace out.

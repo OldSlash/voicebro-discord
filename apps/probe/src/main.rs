@@ -10,6 +10,7 @@ mod answers;
 mod claude;
 mod codex;
 mod compare;
+mod corpus;
 mod credential;
 mod discord;
 mod hotkey;
@@ -168,6 +169,12 @@ const PROBES: &[Probe] = &[
         summary: "the wake corpus through Whisper and its phrase spotting, plus three noise-only clips; args: [--languages en,ru] [--no-prompt] [--model id] [--device cpu|gpu] [--threads n] [--corpus dir]",
         needs: "target\\wake-corpus\\<lang>\\ (scripts\\make-wake-corpus.ps1) and the Whisper files as for `whisper`",
         run: whisper::corpus,
+    },
+    Probe {
+        name: "voice-corpus-make",
+        summary: "records the English set of the voice corpus with voices whose output may be published (Piper ljspeech and cori, public domain; Kokoro v0.19 Bella, Adam, Emma and George, Apache-2.0): 10 cases per voice as 16 kHz mono WAVs, expect.txt and SOURCES.md in crates/voicebro-core/testdata/voice-corpus/en/tts/, which it rewrites whole; args: [--assets <dir>]",
+        needs: "the voices' files in --assets, VOICEBRO_WHISPER_DIR or target\\whisper-test\\assets (a missing one is downloaded from its pinned URL: Piper cori about 116 MB, ljspeech about 116 MB, Kokoro about 320 MB)",
+        run: corpus::make,
     },
     Probe {
         name: "tts",
