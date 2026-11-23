@@ -98,6 +98,8 @@ async function page(body) {
     const visible = (node) => Boolean(node) && !node.closest("[hidden]") && node.getClientRects().length > 0;
     const shownRows = () => [...document.querySelectorAll("#card-codex-body label, #card-codex-body .field")].filter(visible).flatMap((row) => [...row.querySelectorAll("input, select, textarea")].map((control) => control.id)).filter(Boolean);
     const choose = async (engine) => { const s = $("assistant-engine"); s.value = engine; s.dispatchEvent(new Event("change", { bubbles: true })); await sleep(900); };
+    const pickMode = async (mode) => { const s = $("assistant-mode"); s.value = mode; s.dispatchEvent(new Event("change", { bubbles: true })); await sleep(900); };
+    const claudeNoticeShown = () => [...document.querySelectorAll("[data-claude-notice]")].some((box) => visible(box));
     const dialogOpen = () => $("claude-notice-dialog").open;
     const filesDialog = () => $("wake-install").open && $("wake-install").dataset.subject === "whisper";
   `;
@@ -133,7 +135,7 @@ const scenarios = [
     expect(r.rows.includes("codex-voice") && !r.rows.includes("claude-model"), `rows ${r.rows}`);
     expect(r.help.includes("only engine with the realtime voice mode"), r.help);
   }],
-  ["Claude Code chosen in the realtime mode: one save with the Whisper mode, realtime disabled with its text", async () => {
+  ["Claude Code chosen in the realtime mode: one save with the Whisper mode, realtime stays selectable with the note", async () => {
     await load("?notice_shown");
     const r = await page(`
       tab("config");
@@ -146,8 +148,8 @@ const scenarios = [
     expect(r.saves.length === 1 && r.saves[0].assistant.engine === "claude" && r.saves[0].assistant.mode === "whisper", JSON.stringify(r.saves));
     expect(r.stored.engine === "claude" && r.stored.mode === "whisper", JSON.stringify(r.stored));
     expect(r.recognition === "Whisper", r.recognition);
-    expect(r.realtime, "realtime still selectable");
-    expect(r.note === "The voice mode works only with Codex; Claude Code answers in the Whisper mode.", r.note);
+    expect(!r.realtime, "the realtime voice was disabled with Claude Code");
+    expect(r.note === "The voice mode works only with Codex: choosing Realtime voice switches the engine to Codex.", r.note);
     expect(r.title === "Claude Code", r.title);
     for (const id of ["claude-executable", "claude-model", "speaker-labels", "save-chat-history", "post-answers", "codex-instructions"]) {
       expect(r.rows.includes(id) || (id === "claude-model" && r.rows.includes("claude-model-select")), `${id} missing: ${r.rows}`);
@@ -178,7 +180,7 @@ const scenarios = [
     expect(r.stored.engine === "codex" && r.stored.mode === "whisper", JSON.stringify(r.stored));
     expect(!r.realtime && r.note === "", "realtime still closed");
   }],
-  ["Claude Code and OpenCode in the text answers mode keep it; only the realtime mode is closed to them", async () => {
+  ["Claude Code and OpenCode in the text answers mode keep it; every mode stays selectable", async () => {
     await load("?text_answers&whisper&notice_shown");
     const r = await page(`
       tab("config");
@@ -187,8 +189,82 @@ const scenarios = [
       await choose("opencode");
       return { claude, opencode: stored().assistant.mode };`);
     expect(r.claude.stored.engine === "claude" && r.claude.stored.mode === "text", JSON.stringify(r.claude.stored));
-    expect(JSON.stringify(r.claude.options) === JSON.stringify([["realtime", true], ["whisper", false], ["text", false]]), JSON.stringify(r.claude.options));
+    expect(JSON.stringify(r.claude.options) === JSON.stringify([["realtime", false], ["whisper", false], ["text", false]]), JSON.stringify(r.claude.options));
     expect(r.opencode === "text", r.opencode);
+  }],
+  // ---- settings-ui "Realtime voice switches the engine to Codex" (change `realtime-switches-to-codex`)
+  ["Realtime voice from Claude Code in the Whisper mode: one save with Codex, the Codex card and Vosk", async () => {
+    await load("?engine=claude&whisper&notice_shown");
+    const r = await page(`
+      tab("config");
+      const before = calls("save_settings").length;
+      const option = $("assistant-mode").querySelector('option[value="realtime"]');
+      const label = option.textContent, disabled = option.disabled;
+      await pickMode("realtime");
+      const saves = calls("save_settings").slice(before);
+      return { label, disabled, saves: saves.map((c) => c.args.patch), stored: stored().assistant, engine: $("assistant-engine").value,
+        title: $("engine-card-title").textContent, recognition: $("recognition-engine").value, wake: visible($("wake-model")),
+        notice: claudeNoticeShown(), note: $("assistant-mode-note").textContent, rows: shownRows() };`);
+    expect(r.label === "Realtime voice (Codex voice call, Vosk wake word)" && !r.disabled, `${r.label} disabled=${r.disabled}`);
+    expect(r.saves.length === 1 && JSON.stringify(r.saves[0]) === JSON.stringify({ assistant: { mode: "realtime", engine: "codex" } }), JSON.stringify(r.saves));
+    expect(r.stored.engine === "codex" && r.stored.mode === "realtime", JSON.stringify(r.stored));
+    expect(r.engine === "codex" && r.title === "Codex", `${r.engine} ${r.title}`);
+    expect(r.recognition === "Vosk", r.recognition);
+    expect(r.wake, "the wake model row is hidden");
+    expect(!r.notice && r.note === "", `notice ${r.notice}, note ${r.note}`);
+    expect(r.rows.includes("codex-voice") && !r.rows.includes("claude-executable"), `rows ${r.rows}`);
+  }],
+  ["Realtime voice from OpenCode in the text answers mode keeps OpenCode's settings", async () => {
+    await load("?engine=opencode&text_answers&whisper&notice_shown");
+    const r = await page(`
+      tab("config");
+      await window.__TAURI__.core.invoke("save_settings", { patch: { opencode: { executable: "D:\\\\tools\\\\opencode.exe", model: "openai/gpt-5" } } });
+      await sleep(300);
+      const before = calls("save_settings").length;
+      await pickMode("realtime");
+      const saves = calls("save_settings").slice(before);
+      return { saves: saves.map((c) => c.args.patch), stored: stored() };`);
+    expect(r.saves.length === 1 && r.saves[0].assistant.engine === "codex" && r.saves[0].assistant.mode === "realtime" && !r.saves[0].opencode, JSON.stringify(r.saves));
+    expect(r.stored.assistant.engine === "codex" && r.stored.assistant.mode === "realtime", JSON.stringify(r.stored.assistant));
+    expect(r.stored.opencode.executable === "D:\\tools\\opencode.exe" && r.stored.opencode.model === "openai/gpt-5", JSON.stringify(r.stored.opencode));
+  }],
+  ["Claude Code again after the switch to the realtime voice: the Whisper mode and its card as set before", async () => {
+    await load("?engine=claude&whisper&notice_shown");
+    const r = await page(`
+      tab("config");
+      await window.__TAURI__.core.invoke("save_settings", { patch: { claude: { executable: "D:\\\\tools\\\\claude.exe", model: "sonnet" } } });
+      await sleep(300);
+      await pickMode("realtime");
+      const before = calls("save_settings").length;
+      await choose("claude");
+      const saves = calls("save_settings").slice(before);
+      return { saves: saves.map((c) => c.args.patch), stored: stored(), title: $("engine-card-title").textContent, executable: $("claude-executable").value };`);
+    expect(r.saves.length === 1 && r.saves[0].assistant.engine === "claude" && r.saves[0].assistant.mode === "whisper", JSON.stringify(r.saves));
+    expect(r.stored.claude.executable === "D:\\tools\\claude.exe" && r.stored.claude.model === "sonnet", JSON.stringify(r.stored.claude));
+    expect(r.title === "Claude Code" && r.executable === "D:\\tools\\claude.exe", `${r.title} ${r.executable}`);
+  }],
+  ["Realtime voice with Codex already the engine saves the mode alone", async () => {
+    await load("?whisper&notice_shown");
+    const r = await page(`
+      tab("config");
+      const before = calls("save_settings").length;
+      await pickMode("realtime");
+      return { saves: calls("save_settings").slice(before).map((c) => c.args.patch), stored: stored().assistant };`);
+    expect(r.saves.length === 1 && JSON.stringify(r.saves[0]) === JSON.stringify({ assistant: { mode: "realtime" } }), JSON.stringify(r.saves));
+    expect(r.stored.engine === "codex" && r.stored.mode === "realtime", JSON.stringify(r.stored));
+  }],
+  ["Realtime voice from Claude Code with the save refused: Whisper and Claude Code stay, the reason shows", async () => {
+    await load("?engine=claude&whisper&notice_shown");
+    const r = await page(`
+      tab("config");
+      window.__mock.failNextSave("could not save the settings: the disk is full");
+      await pickMode("realtime");
+      return { shown: $("assistant-mode").value, stored: stored().assistant, engine: $("assistant-engine").value,
+        message: document.querySelector('[data-for="assistant-mode"]').textContent, title: $("engine-card-title").textContent };`);
+    expect(r.shown === "whisper", `the list shows ${r.shown}`);
+    expect(r.stored.engine === "claude" && r.stored.mode === "whisper", JSON.stringify(r.stored));
+    expect(r.engine === "claude" && r.title === "Claude Code", `${r.engine} ${r.title}`);
+    expect(r.message.includes("the disk is full"), `message: ${r.message}`);
   }],
   // ---- settings-ui "The engine card follows the engine"
   ["an unsaved instruction edit survives a change of the engine", async () => {

@@ -420,6 +420,12 @@
         chooseEngine(control);
         return;
       }
+      // "Realtime voice" with Claude Code or OpenCode takes Codex in the same save (change
+      // `realtime-switches-to-codex`).
+      if (control.id === "assistant-mode") {
+        chooseMode(control);
+        return;
+      }
       // A Whisper model, device or voice saves at once; its card's notice lists what it
       // misses (change `models-in-settings`).
       if (WHISPER_CHOICES[control.id]) {
@@ -1472,8 +1478,9 @@
   }
 
   // ---------- The engine (change `claude-and-opencode-engines`) ----------
-  // The engine card's title and rows, the Status tab's engine buttons, and the realtime
-  // voice mode, which only Codex has.
+  // The engine card's title and rows, the Status tab's engine buttons, and the note under
+  // the mode: the realtime voice, which only Codex has, stays selectable and switches the
+  // engine to Codex (change `realtime-switches-to-codex`, design D3).
   function applyEngine() {
     const engine = engineOf();
     $("engine-card-title").textContent = engineProduct(engine);
@@ -1483,15 +1490,52 @@
     document.querySelectorAll("[data-engine-status]").forEach((node) => {
       node.hidden = node.dataset.engineStatus !== engine;
     });
-    const realtime = $("assistant-mode").querySelector('option[value="realtime"]');
-    realtime.disabled = engine !== "codex";
-    realtime.textContent = engine === "codex"
-      ? "Realtime voice (Codex voice call, Vosk wake word)"
-      : "Realtime voice (works only with Codex)";
     $("assistant-mode-note").textContent = engine === "codex"
       ? ""
-      : `The voice mode works only with Codex; ${engineProduct(engine)} answers in the Whisper mode.`;
+      : "The voice mode works only with Codex: choosing Realtime voice switches the engine to Codex.";
     renderClaudeNotice();
+  }
+
+  // After a save that changed the engine, from the Engine list or the mode list: the form,
+  // the field's saved mark, the new engine's lists and the status (design D2).
+  async function afterEngineSaved(select) {
+    setState(select.id, "clean");
+    fieldMessage(select.id, "");
+    fillForm();
+    markSaved(select);
+    capabilitiesKey = "";
+    await loadCapabilities();
+  }
+
+  // The mode list (change `realtime-switches-to-codex`, design D1): "Realtime voice" with
+  // Claude Code or OpenCode saves the engine Codex in the same save, the mirror of the
+  // Engine list; every other mode change saves the mode alone.
+  async function chooseMode(select) {
+    const engine = engineOf();
+    if (select.value !== "realtime" || engine === "codex") {
+      saveControl(select);
+      return;
+    }
+    const previous = readByPath(stored, "assistant.mode");
+    if (!invoke) return;
+    if (installDialog.open || claudeDialog.open) {
+      select.value = previous;
+      setState(select.id, "clean");
+      return;
+    }
+    setState(select.id, "saving");
+    try {
+      stored = await invoke("save_settings", {
+        patch: { assistant: { mode: "realtime", engine: "codex" } },
+      });
+    } catch (error) {
+      select.value = previous;
+      setState(select.id, "error");
+      fieldMessage(select.id, String(error));
+      return;
+    }
+    await afterEngineSaved(select);
+    refresh();
   }
 
   // The engine list: Claude Code and OpenCode take the Whisper mode in the same save; a
@@ -1528,12 +1572,7 @@
       fieldMessage(select.id, String(error));
       return;
     }
-    setState(select.id, "clean");
-    fieldMessage(select.id, "");
-    fillForm();
-    markSaved(select);
-    capabilitiesKey = "";
-    await loadCapabilities();
+    await afterEngineSaved(select);
     if (engine === "claude" && noticeApplies(kind) && !stored?.claude?.subscription_notice_shown) {
       openClaudeDialog();
     }

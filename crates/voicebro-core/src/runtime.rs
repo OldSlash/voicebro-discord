@@ -2674,6 +2674,71 @@ mod tests {
         runtime.shutdown();
     }
 
+    /// Change `realtime-switches-to-codex`, scenario "Claude Code in the Whisper mode back to
+    /// the realtime voice in a channel": one save sets Codex and the realtime mode; the bot
+    /// stays, Claude Code's session is detached and Codex's attached in the realtime mode.
+    #[test]
+    fn one_save_back_to_codex_realtime_keeps_the_bot_and_moves_the_session() {
+        use crate::assistant::switch::EngineSwitch;
+        use crate::settings::{AssistantEngine, AssistantMode};
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let codex = Arc::new(StubAssistant::new(Duration::ZERO));
+        let claude = Arc::new(StubAssistant::new(Duration::ZERO));
+        let opencode = Arc::new(StubAssistant::new(Duration::ZERO));
+        let switch = EngineSwitch::new(
+            vec![
+                (
+                    AssistantEngine::Codex,
+                    Arc::clone(&codex) as Arc<dyn Assistant>,
+                ),
+                (
+                    AssistantEngine::Claude,
+                    Arc::clone(&claude) as Arc<dyn Assistant>,
+                ),
+                (
+                    AssistantEngine::Opencode,
+                    Arc::clone(&opencode) as Arc<dyn Assistant>,
+                ),
+            ],
+            AssistantEngine::Codex,
+        );
+        let errors = Arc::new(ConnectionErrors::new(EventBus::new(16)));
+        let runtime = Runtime::with_assistant(
+            "0.1.0+test",
+            dir.path().to_path_buf(),
+            SettingsStore::new(dir.path().join("settings.json")),
+            Arc::new(MemoryStore::default()),
+            EventBus::new(64),
+            tokio_rt.handle().clone(),
+            errors,
+            Arc::new(switch),
+        );
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({
+                "session": { "mode": "always" },
+                "assistant": { "engine": "claude", "mode": "whisper" }
+            }))
+            .unwrap();
+        let (output, _source) = output_pair();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.on_join(42, output);
+        assert!(claude.session(42).is_some(), "Claude Code is attached");
+
+        runtime
+            .save_settings(&json!({ "assistant": { "engine": "codex", "mode": "realtime" } }))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(runtime.host.registry.get(42).is_some(), "the bot stays");
+        assert!(claude.session(42).is_none(), "Claude Code's session ended");
+        assert!(codex.session(42).is_some(), "Codex's session attached");
+        let settings = runtime.settings();
+        assert_eq!(settings.assistant.engine, AssistantEngine::Codex);
+        assert_eq!(settings.assistant.mode, AssistantMode::Realtime);
+        runtime.shutdown();
+    }
+
     /// Scenario "Switched to Whisper while in a channel" (change `whisper-mode`, task 8.2):
     /// the session ends, the assistant is attached again on a new gate on the same output,
     /// the bot stays, Vosk is off, and the missing Whisper files wait for the window.

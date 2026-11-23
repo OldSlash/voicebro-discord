@@ -100,7 +100,10 @@ The engine is what writes the answers. Choose it in **Config → Assistant → E
 | **OpenCode** | The AI providers you set up in OpenCode | Whisper, and Whisper with text answers |
 
 Only Codex has the realtime voice mode. Choosing Claude Code or OpenCode while the realtime
-voice mode is on switches to the [Whisper mode](#7-the-whisper-mode). No window opens for
+voice mode is on switches to the [Whisper mode](#7-the-whisper-mode). The way back is one
+step too: choosing **Realtime voice** as the **Assistant mode** while Claude Code or
+OpenCode is the engine switches the engine back to Codex (a note under the mode says so
+beforehand), and their settings stay stored for the next time. No window opens for
 its files: while they are not on this PC, a note in **Config → Assistant** says what is
 missing and **Open Settings** leads to the cards that download them. You can switch the
 engine at any time, also while the bot is in a voice channel: the running session ends and

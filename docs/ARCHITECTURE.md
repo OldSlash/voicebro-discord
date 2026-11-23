@@ -1636,7 +1636,10 @@ a new gate on the same output) and spawns `switch_engine`, which awaits the new 
 `prepare` for each guild before attaching it. A guild whose preparation fails stays in its
 channel with a gate and no session, and the `assistant` connection error says "<product>
 could not start for this channel: <reason>". The old engine's process stops as after its
-last leave. `VoiceHost::engine_name` gives `/status` and the panel the engine's name.
+last leave. `VoiceHost::engine_name` gives `/status` and the panel the engine's name. The
+way back from Claude Code or OpenCode to the Codex realtime voice is one save with both
+`engine` and `mode` (the window's mode list sends it): the engine part takes this path,
+the mode part reconfigures Vosk, Whisper and the voice.
 
 **Codec failures** (change `opus-codec-experiment`): `Runtime::start` spawns a task that
 drains the `CodecFailureHub` (4.1). For each report `handle_codec_failure` logs
@@ -1961,7 +1964,14 @@ error to "cannot post to #<channel> in <server>: <reason>" (the Status tab shows
       - "Assistant mode" (`assistant.mode`: Realtime voice or Whisper) is the first field;
         its help line says what runs on the PC and what leaves it in each mode, that
         `codex.model` and `codex.reasoning_effort` set how fast each answer comes in the
-        Whisper mode, and that Whisper and the voice are set in Settings.
+        Whisper mode, and that Whisper and the voice are set in Settings. "Realtime voice"
+        is never disabled (change `realtime-switches-to-codex`): with Claude Code or
+        OpenCode as the engine, `chooseMode` saves `{ mode: "realtime", engine: "codex" }`
+        in one save (the mirror of `chooseEngine`, which adds `mode: "whisper"`), both share
+        `afterEngineSaved` (the form, the saved mark, the new engine's lists), and a refused
+        save puts the stored mode back with the reason; `#assistant-mode-note` says
+        beforehand that the choice switches the engine to Codex. The core stays strict:
+        `Settings::validate` still refuses `realtime` with another engine.
       - In the Whisper mode, under the mode, the note `#whisper-missing`
         (`renderWhisperMissing`, from `status.whisper.missing` and `status.tts.missing`,
         never the form) names what is not on this PC ("Whisper's files for the model
