@@ -1008,6 +1008,35 @@
     };
   }
 
+  // A save as the app stores it: checked, kept, and announced with `settings_changed`. The
+  // window's Save goes through `save_settings`; `__mock.saveFromOutside(patch)` calls this
+  // directly, as a save the window did not make (the Discord panel's mode buttons, change
+  // `discord-panel-controls`).
+  function storePatch(patch) {
+    const next = merge(clone(settings), patch);
+    validate(next);
+    const wakeChanged = JSON.stringify(next.wake) !== JSON.stringify(settings.wake)
+      || next.session.mode !== settings.session.mode || next.assistant.mode !== settings.assistant.mode;
+    const whisperChanged = JSON.stringify([next.assistant.mode, next.whisper, next.tts])
+      !== JSON.stringify([settings.assistant.mode, settings.whisper, settings.tts]);
+    const reload = inVoice && (next.assistant.mode === "whisper" || next.assistant.mode === "text") && (next.assistant.mode !== settings.assistant.mode
+      || next.whisper.model !== settings.whisper.model || next.whisper.device !== settings.whisper.device
+      || next.tts.voice !== settings.tts.voice);
+    settings = next;
+    setTimeout(() => emit("app-event", { event: "settings_changed" }), 0);
+    // The app's wake engine publishes its new state after a wake or session change.
+    if (wakeChanged) setTimeout(() => emit("app-event", { event: "wake" }), 10);
+    // Whisper and the voice check their files in the save (design D10) and publish.
+    if (whisperChanged) {
+      setTimeout(() => {
+        emitPart("whisper");
+        emitPart("tts");
+      }, 10);
+    }
+    if (reload) loadWhisper();
+    return clone(settings);
+  }
+
   const commands = {
     status: () => status(),
     get_settings: () => ({ settings: clone(settings), secrets: { discord_token: { is_set: tokenSet } } }),
@@ -1017,28 +1046,7 @@
         failNextSave = null;
         throw message;
       }
-      const next = merge(clone(settings), patch);
-      validate(next);
-      const wakeChanged = JSON.stringify(next.wake) !== JSON.stringify(settings.wake)
-        || next.session.mode !== settings.session.mode || next.assistant.mode !== settings.assistant.mode;
-      const whisperChanged = JSON.stringify([next.assistant.mode, next.whisper, next.tts])
-        !== JSON.stringify([settings.assistant.mode, settings.whisper, settings.tts]);
-      const reload = inVoice && (next.assistant.mode === "whisper" || next.assistant.mode === "text") && (next.assistant.mode !== settings.assistant.mode
-        || next.whisper.model !== settings.whisper.model || next.whisper.device !== settings.whisper.device
-        || next.tts.voice !== settings.tts.voice);
-      settings = next;
-      setTimeout(() => emit("app-event", { event: "settings_changed" }), 0);
-      // The app's wake engine publishes its new state after a wake or session change.
-      if (wakeChanged) setTimeout(() => emit("app-event", { event: "wake" }), 10);
-      // Whisper and the voice check their files in the save (design D10) and publish.
-      if (whisperChanged) {
-        setTimeout(() => {
-          emitPart("whisper");
-          emitPart("tts");
-        }, 10);
-      }
-      if (reload) loadWhisper();
-      return clone(settings);
+      return storePatch(patch);
     },
     set_secret: ({ value }) => {
       if (!String(value).trim()) throw "the value is empty";
@@ -1473,6 +1481,11 @@
     },
     failNextSave(message = "could not save the settings: the disk is full") {
       failNextSave = message;
+    },
+    // A save the window did not make, as the Discord panel's mode buttons make it (change
+    // `discord-panel-controls`): stored and announced, not in `calls`.
+    saveFromOutside(patch) {
+      return storePatch(patch);
     },
     nextCheckAddsModel() {
       checkAddsModel = true;

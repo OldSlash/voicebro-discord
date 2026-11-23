@@ -6,7 +6,7 @@ use super::receive::ReceiveHandler;
 use super::{ConnectionState, Shared, VoiceChannelStatus};
 use crate::audio::opus_out::{self, DeliveryShared};
 use crate::audio::{output_pair, OutputHandle, CHANNELS, SAMPLE_RATE};
-use serenity::all::{ChannelId, GuildId};
+use serenity::all::{ChannelId, GuildId, MessageId};
 use serenity::async_trait;
 use songbird::driver::{DecodeConfig, DecodeMode, SampleRate};
 use songbird::events::{Event, EventContext, EventHandler as VoiceEventHandler, TrackEvent};
@@ -427,7 +427,22 @@ pub(crate) fn panel_message(
         engine: shared.host.engine_name(),
         muted: shared.host.is_muted(),
     };
-    Some((panel::embed(&view), panel::components(guild, view.muted)))
+    Some((
+        panel::embed(&view),
+        panel::components(guild, view.muted, shared.host.mode()),
+    ))
+}
+
+/// The message of `guild`'s current panel, while the bot is in a voice channel there and
+/// its panel was posted (change `discord-panel-controls`, design D3).
+pub(crate) fn panel_message_id(shared: &Shared, guild: GuildId) -> Option<MessageId> {
+    shared
+        .sessions
+        .lock()
+        .expect("sessions lock")
+        .get(&guild.get())
+        .and_then(|session| session.panel)
+        .map(|panel| panel.message)
 }
 
 pub(crate) fn remember_panel(shared: &Shared, guild: GuildId, panel: PanelRef) {

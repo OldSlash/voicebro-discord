@@ -8,8 +8,8 @@ use crate::audio::codec::{CodecFailure, CodecFailureHub, CodecFailures, OpusCode
 use crate::audio::{frame_channel, AudioPorts, Frame, OutputHandle, INPUT_CAPACITY};
 use crate::consent::{AgreeOutcome, ConsentRecord, ConsentState, WithdrawOutcome};
 use crate::discord::{
-    AnswerDestination, AssistantState, DiscordError, DiscordRuntime, JoinPreparation, PostOutcome,
-    TextChannelGroup, VoiceHost,
+    AnswerDestination, AssistantState, DiscordError, DiscordRuntime, JoinPreparation, ModeChange,
+    ModeChangeFuture, PostOutcome, TextChannelGroup, VoiceHost,
 };
 use crate::events::{AppEvent, EventBus};
 use crate::gate::{ErrorReporter, GateSettings, RelayGate, RelayRegistry};
@@ -17,7 +17,8 @@ use crate::owner::{CompleteOutcome, OwnerState, PendingCode};
 use crate::secrets::{SecretError, SecretKey, SecretStore};
 use crate::settings::store::{SettingsStore, StoreError};
 use crate::settings::{
-    AccessMode, AssistantSettings, PostAnswers, SessionMode, Settings, ValidationError,
+    AccessMode, AssistantEngine, AssistantMode, AssistantSettings, PostAnswers, SessionMode,
+    Settings, ValidationError,
 };
 use crate::status::{ConnectionErrors, HotkeyStatus, SecretStatus, Status};
 use crate::stt::manager::WhisperManager;
@@ -83,6 +84,53 @@ struct GateHost {
     /// The people in each joined guild's channel (account id, name), so that a change of
     /// the access filter can resend the names it lets through (design D6).
     people: Mutex<std::collections::HashMap<u64, Vec<(u64, String)>>>,
+    /// Where a mode button's press goes: the runtime's task saves it (change
+    /// `discord-panel-controls`, design D5), so the host needs no reference to the runtime.
+    mode_requests: tokio::sync::mpsc::UnboundedSender<ModeRequest>,
+}
+
+/// A mode button's press, waiting for the runtime's save (change `discord-panel-controls`).
+struct ModeRequest {
+    mode: AssistantMode,
+    reply: tokio::sync::oneshot::Sender<Result<ModeChange, String>>,
+}
+
+/// The reply when no task takes a mode change: the app is starting or stopping.
+const MODE_CHANGE_UNAVAILABLE: &str =
+    "Not switched: VoiceBro is starting or stopping; try again in a moment.";
+
+/// The refusal of a mode button whose mode needs files that are not on disk (change
+/// `discord-panel-controls`, design D6). It opens with neither "The Whisper mode needs
+/// downloads" nor "The wake word needs downloads", so the window opens no install dialog for
+/// a press in Discord. `items` are the missing files' names; the headless app (`terminal`)
+/// names its own command instead of the window.
+fn mode_refusal(mode: AssistantMode, items: &str, terminal: bool) -> String {
+    let (what, place) = match mode {
+        AssistantMode::Realtime => ("the wake word", "VoiceBro → Config, under Wake model"),
+        AssistantMode::Whisper => (
+            "the Whisper mode",
+            "VoiceBro → Settings, in the Whisper and Local voice cards",
+        ),
+        AssistantMode::Text => (
+            "the text answers mode",
+            "VoiceBro → Settings, in the Whisper card",
+        ),
+    };
+    let how = if terminal {
+        let engine = if mode == AssistantMode::Realtime {
+            " and assistant.engine to \"codex\""
+        } else {
+            ""
+        };
+        format!(
+            "The operator stops the bot, sets assistant.mode to \"{}\"{engine} in settings.json and runs voicebro-server {}.",
+            mode.name(),
+            crate::wake::INSTALL_ASSETS_ARG
+        )
+    } else {
+        format!("The operator downloads them in {place}.")
+    };
+    format!("Not switched: {what} needs files that are not downloaded yet ({items}). {how}")
 }
 
 impl GateHost {
@@ -327,6 +375,27 @@ impl VoiceHost for GateHost {
         } else {
             crate::discord::MODE_WHISPER
         }
+    }
+
+    fn mode(&self) -> AssistantMode {
+        self.settings.read().expect("settings lock").assistant.mode
+    }
+
+    fn owner_id(&self) -> Option<u64> {
+        self.owner.linked_id()
+    }
+
+    fn change_mode(&self, mode: AssistantMode) -> ModeChangeFuture<'_> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let sent = self.mode_requests.send(ModeRequest { mode, reply }).is_ok();
+        Box::pin(async move {
+            if !sent {
+                return Err(MODE_CHANGE_UNAVAILABLE.to_owned());
+            }
+            answer
+                .await
+                .unwrap_or_else(|_| Err(MODE_CHANGE_UNAVAILABLE.to_owned()))
+        })
     }
 
     fn toggle_mute(&self) -> bool {
@@ -765,6 +834,24 @@ pub struct Runtime {
     consent: Arc<ConsentState>,
     /// The access mode and its voice filter, shared with the gate host.
     access: Arc<AccessState>,
+    /// Held around a save's read, patch, store and apply, so a save from the window and one
+    /// from the Discord panel cannot drop one another's change (change
+    /// `discord-panel-controls`, design D5).
+    save_lock: Mutex<()>,
+    /// The mode buttons' presses, taken by `start` for the task that saves them.
+    mode_requests: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ModeRequest>>>,
+    /// That task; it ends with the runtime.
+    mode_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if let Ok(task) = self.mode_task.get_mut() {
+            if let Some(task) = task.take() {
+                task.abort();
+            }
+        }
+    }
 }
 
 impl Runtime {
@@ -829,6 +916,7 @@ impl Runtime {
             &crate::consent::recipient_key(&Settings::default()),
         ));
         let access = AccessState::new(Arc::clone(&owner), Arc::clone(&consent));
+        let (mode_sender, mode_requests) = tokio::sync::mpsc::unbounded_channel();
         let host = Arc::new(GateHost {
             registry,
             wake: wake.clone(),
@@ -847,6 +935,7 @@ impl Runtime {
             access: Arc::clone(&access),
             settings: Arc::clone(&settings),
             people: Mutex::new(std::collections::HashMap::new()),
+            mode_requests: mode_sender,
         });
         let weak = Arc::downgrade(&host);
         access.observe(Box::new(move || {
@@ -880,13 +969,17 @@ impl Runtime {
             owner,
             consent,
             access,
+            save_lock: Mutex::new(()),
+            mode_requests: Mutex::new(Some(mode_requests)),
+            mode_task: Mutex::new(None),
         }
     }
 
     /// Loads settings (writing the defaults on first start), learns which secrets are set,
     /// configures the wake engine, and connects to Discord whenever a token is stored.
-    /// Nothing of the assistant runs until the first `/join`.
-    pub fn start(&self) -> Result<(), RuntimeError> {
+    /// Nothing of the assistant runs until the first `/join`. The runtime is held in an `Arc`:
+    /// the task that saves the Discord panel's mode changes holds a weak reference to it.
+    pub fn start(self: &Arc<Self>) -> Result<(), RuntimeError> {
         self.start_checked(|settings| {
             if let Err(error) = settings.validate() {
                 self.events.log(format!(
@@ -903,7 +996,7 @@ impl Runtime {
     /// # Errors
     /// Returns a settings I/O, parsing, or validation error before starting Discord.
     pub fn start_checked(
-        &self,
+        self: &Arc<Self>,
         validate: impl FnOnce(&Settings) -> Result<(), ValidationError>,
     ) -> Result<(), RuntimeError> {
         self.store.cleanup_partial();
@@ -1005,6 +1098,7 @@ impl Runtime {
                 }
             }
         }
+        self.serve_mode_requests();
         log::info!("runtime started; data dir {}", self.data_dir.display());
 
         if self.is_secret_set(SecretKey::DiscordToken) {
@@ -1013,6 +1107,35 @@ impl Runtime {
             }
         }
         Ok(())
+    }
+
+    /// The task that saves the Discord panel's mode changes one after another (change
+    /// `discord-panel-controls`, design D5). It holds the runtime weakly, so the runtime can
+    /// drop; its drop ends the task.
+    fn serve_mode_requests(self: &Arc<Self>) {
+        let Some(mut requests) = self
+            .mode_requests
+            .lock()
+            .expect("mode requests lock")
+            .take()
+        else {
+            return;
+        };
+        let weak = Arc::downgrade(self);
+        let task = self.handle.spawn(async move {
+            while let Some(request) = requests.recv().await {
+                let Some(runtime) = weak.upgrade() else {
+                    break;
+                };
+                let mode = request.mode;
+                // A save applies the settings, which may read the disk: off the async threads.
+                let result = tokio::task::spawn_blocking(move || runtime.change_mode(mode))
+                    .await
+                    .unwrap_or_else(|error| Err(format!("Not switched: {error}")));
+                let _ = request.reply.send(result);
+            }
+        });
+        *self.mode_task.lock().expect("mode task lock") = Some(task);
     }
 
     /// Linux only (change `cross-platform-headless`, design D8; not tested): rewrites the
@@ -1101,8 +1224,79 @@ impl Runtime {
         &self.assistant
     }
 
-    /// Validates and stores a patched document, then applies the changed sections.
+    /// Validates and stores a patched document, then applies the changed sections. Saves run
+    /// one at a time (the save lock).
     pub fn save_settings(&self, patch: &Value) -> Result<Settings, RuntimeError> {
+        let _save = self.save_lock.lock().expect("save lock");
+        self.save_locked(patch)
+    }
+
+    /// A mode button pressed by the linked owner in Discord (change `discord-panel-controls`,
+    /// designs D5 and D6): the realtime voice with Claude Code or OpenCode also sets Codex,
+    /// a mode whose files are not on disk is refused before anything is saved, and the rest
+    /// is the window's save. An error is the reply for the owner.
+    pub fn change_mode(&self, mode: AssistantMode) -> Result<ModeChange, String> {
+        let _save = self.save_lock.lock().expect("save lock");
+        let current = self.settings();
+        let engine_switched =
+            mode == AssistantMode::Realtime && current.assistant.engine != AssistantEngine::Codex;
+        let mut assistant = serde_json::json!({ "mode": mode.name() });
+        if engine_switched {
+            assistant["engine"] = serde_json::json!(AssistantEngine::Codex.name());
+        }
+        if let Some(refusal) = self.mode_files_missing(mode, &current) {
+            return Err(refusal);
+        }
+        self.save_locked(&serde_json::json!({ "assistant": assistant }))
+            .map_err(|error| format!("Not switched: {error}"))?;
+        Ok(ModeChange { engine_switched })
+    }
+
+    /// The files `mode` needs that are not on disk, as the refusal for the owner (design
+    /// D6); `None` when nothing is missing. The same lists as the join refusals: Whisper's
+    /// runtime, model and VAD model (and the voice in the Whisper mode); Vosk and the wake
+    /// model for the realtime voice with the wake word only. Reads the disk only.
+    fn mode_files_missing(&self, mode: AssistantMode, settings: &Settings) -> Option<String> {
+        let missing = match mode {
+            AssistantMode::Realtime => {
+                if settings.session.mode != SessionMode::WakeWord {
+                    return None;
+                }
+                // An unknown model is the wake state's own error and needs no download, as
+                // for a join.
+                self.wake.requirements(&settings.wake.model).ok()?
+            }
+            AssistantMode::Whisper | AssistantMode::Text => {
+                let mut missing = match self
+                    .host
+                    .whisper
+                    .requirements(&settings.whisper.model, settings.whisper.device)
+                {
+                    Ok(missing) => missing,
+                    Err(error) => return Some(format!("Not switched: {error}")),
+                };
+                if mode == AssistantMode::Whisper {
+                    match self.host.tts.requirements(&settings.tts.voice) {
+                        Ok(voice) => missing.extend(voice),
+                        Err(error) => return Some(format!("Not switched: {error}")),
+                    }
+                }
+                missing
+            }
+        };
+        if missing.is_empty() {
+            return None;
+        }
+        let items = missing
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(mode_refusal(mode, &items, self.events.terminal_guidance()))
+    }
+
+    /// [`Self::save_settings`] with the save lock held.
+    fn save_locked(&self, patch: &Value) -> Result<Settings, RuntimeError> {
         let current = self.settings();
         let next = current.with_patch(patch)?;
         next.validate()?;
@@ -1475,15 +1669,15 @@ mod tests {
     use crate::secrets::MemoryStore;
     use serde_json::json;
 
-    fn runtime(dir: &tempfile::TempDir, tokio_rt: &tokio::runtime::Runtime) -> Runtime {
-        Runtime::new(
+    fn runtime(dir: &tempfile::TempDir, tokio_rt: &tokio::runtime::Runtime) -> Arc<Runtime> {
+        Arc::new(Runtime::new(
             "0.1.0+test 2026-11-09",
             dir.path().to_path_buf(),
             SettingsStore::new(dir.path().join("settings.json")),
             Arc::new(MemoryStore::default()),
             EventBus::new(16),
             tokio_rt.handle().clone(),
-        )
+        ))
     }
 
     #[test]
@@ -1734,10 +1928,10 @@ mod tests {
     fn owner_runtime(
         dir: &tempfile::TempDir,
         tokio_rt: &tokio::runtime::Runtime,
-    ) -> (Runtime, Arc<AccountAssistant>) {
+    ) -> (Arc<Runtime>, Arc<AccountAssistant>) {
         let events = EventBus::new(256);
         let assistant = Arc::new(AccountAssistant::default());
-        let runtime = Runtime::with_assistant(
+        let runtime = Arc::new(Runtime::with_assistant(
             "0.1.0+test 2026-11-16",
             dir.path().to_path_buf(),
             SettingsStore::new(dir.path().join("settings.json")),
@@ -1746,7 +1940,7 @@ mod tests {
             tokio_rt.handle().clone(),
             Arc::new(ConnectionErrors::new(events)),
             assistant.clone(),
-        );
+        ));
         runtime.start().unwrap();
         (runtime, assistant)
     }
@@ -2151,7 +2345,7 @@ mod tests {
             inner: StubAssistant::new(Duration::from_millis(10)),
             configured: std::sync::atomic::AtomicUsize::new(0),
         });
-        let runtime = Runtime::with_assistant(
+        let runtime = Arc::new(Runtime::with_assistant(
             "0.1.0+test 2026-11-16",
             dir.path().to_path_buf(),
             SettingsStore::new(dir.path().join("settings.json")),
@@ -2160,7 +2354,7 @@ mod tests {
             tokio_rt.handle().clone(),
             Arc::new(ConnectionErrors::new(events)),
             assistant.clone(),
-        );
+        ));
         runtime.start().unwrap();
         runtime
             .save_settings(&json!({ "session": { "mode": "always", "earcons": false } }))
@@ -2729,7 +2923,7 @@ mod tests {
             AssistantEngine::Codex,
         );
         let errors = Arc::new(ConnectionErrors::new(EventBus::new(16)));
-        let runtime = Runtime::with_assistant(
+        let runtime = Arc::new(Runtime::with_assistant(
             "0.1.0+test",
             dir.path().to_path_buf(),
             SettingsStore::new(dir.path().join("settings.json")),
@@ -2738,7 +2932,7 @@ mod tests {
             tokio_rt.handle().clone(),
             errors,
             Arc::new(switch),
-        );
+        ));
         runtime.start().unwrap();
         runtime
             .save_settings(&json!({ "session": { "mode": "always" } }))
@@ -2809,7 +3003,7 @@ mod tests {
             AssistantEngine::Codex,
         );
         let errors = Arc::new(ConnectionErrors::new(EventBus::new(16)));
-        let runtime = Runtime::with_assistant(
+        let runtime = Arc::new(Runtime::with_assistant(
             "0.1.0+test",
             dir.path().to_path_buf(),
             SettingsStore::new(dir.path().join("settings.json")),
@@ -2818,7 +3012,7 @@ mod tests {
             tokio_rt.handle().clone(),
             errors,
             Arc::new(switch),
-        );
+        ));
         runtime.start().unwrap();
         runtime
             .save_settings(&json!({
@@ -3167,7 +3361,7 @@ mod tests {
             dir.path(),
             &settings,
         );
-        let runtime = Runtime::with_assistant(
+        let runtime = Arc::new(Runtime::with_assistant(
             "0.1.0+test 2026-11-10",
             dir.path().to_path_buf(),
             SettingsStore::new(dir.path().join("settings.json")),
@@ -3176,7 +3370,7 @@ mod tests {
             tokio_rt.handle().clone(),
             errors,
             Arc::new(codex),
-        );
+        ));
         runtime.start().unwrap();
         std::thread::sleep(Duration::from_millis(300));
         let assistant = runtime.status().assistant;
@@ -3226,5 +3420,338 @@ mod tests {
             runtime.set_secret("password", "x"),
             Err(RuntimeError::UnknownSecret(_))
         ));
+    }
+
+    /// Whisper's runtime for the stored device, the VAD model and the stored model, placed as
+    /// a download leaves them (their markers), so a mode check finds them on disk.
+    fn place_whisper_files(runtime: &Runtime, dir: &tempfile::TempDir) {
+        let settings = runtime.settings();
+        let assets = crate::paths::assets_dir(dir.path());
+        for asset in [
+            crate::stt::catalog::runtime_for(settings.whisper.device, &assets),
+            crate::stt::catalog::VAD_MODEL,
+            crate::stt::catalog::find(&settings.whisper.model)
+                .expect("a catalog model")
+                .asset,
+        ] {
+            let folder = assets.join(asset.directory);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join(asset.marker), b"x").unwrap();
+        }
+    }
+
+    /// Change `discord-panel-controls`, task 1.2: the host names the linked owner in every
+    /// access mode and nobody after Unlink, and reports the stored mode as a value.
+    #[test]
+    fn the_host_names_the_linked_owner_in_every_access_mode() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, assistant) = owner_runtime(&dir, &tokio_rt);
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        assert_eq!(host.owner_id(), None, "nobody linked yet");
+        assistant.sign_in(Some("me@example.com"));
+        let pending = runtime.start_link().unwrap();
+        assert!(matches!(
+            host.complete_link(1091401169441656933, "Alex", &pending.code),
+            CompleteOutcome::Linked { .. }
+        ));
+        for access in ["everyone", "agreed", "owner"] {
+            runtime
+                .save_settings(&json!({ "discord": { "access": access } }))
+                .unwrap();
+            assert_eq!(host.owner_id(), Some(1091401169441656933), "{access}");
+        }
+        assert_eq!(host.mode(), AssistantMode::Realtime);
+        runtime
+            .save_settings(&json!({ "assistant": { "mode": "text" } }))
+            .unwrap();
+        assert_eq!(host.mode(), AssistantMode::Text);
+        assert!(runtime.unlink().unwrap());
+        assert_eq!(host.owner_id(), None, "after Unlink");
+        runtime.shutdown();
+    }
+
+    /// Task 2.1: saves of two sections from two threads at the same moment keep both
+    /// changes, in memory and in the file, every time (the save lock).
+    #[test]
+    fn two_saves_at_once_keep_both_changes() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        let store = SettingsStore::new(dir.path().join("settings.json"));
+        for round in 0..40u32 {
+            let gain = round as f32 / 10.0;
+            let guild = (964597969980620000u64 + u64::from(round)).to_string();
+            let first = {
+                let runtime = Arc::clone(&runtime);
+                std::thread::spawn(move || {
+                    runtime
+                        .save_settings(&json!({ "audio": { "input_gain": gain } }))
+                        .unwrap();
+                })
+            };
+            let second = {
+                let runtime = Arc::clone(&runtime);
+                let guild = guild.clone();
+                std::thread::spawn(move || {
+                    runtime
+                        .save_settings(&json!({ "discord": { "guild_id": guild } }))
+                        .unwrap();
+                })
+            };
+            first.join().unwrap();
+            second.join().unwrap();
+            let stored = store.load().unwrap().unwrap();
+            for settings in [runtime.settings(), stored] {
+                assert_eq!(settings.audio.input_gain, gain, "round {round}");
+                assert_eq!(settings.discord.guild_id, guild, "round {round}");
+            }
+        }
+        runtime.shutdown();
+    }
+
+    /// Task 2.2: a mode button's save. The realtime voice from Claude Code sets Codex and
+    /// keeps Claude Code's settings; a mode whose files are missing is refused before
+    /// anything is saved, with a reply that opens like no join refusal; the text answers
+    /// mode needs no voice; always listening needs no Vosk; OpenCode stays for the text
+    /// answers.
+    #[test]
+    fn a_mode_button_saves_like_the_window_and_checks_the_files_first() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        let mut events = runtime.events().subscribe();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+
+        runtime
+            .save_settings(&json!({
+                "session": { "mode": "always" },
+                "assistant": { "engine": "claude", "mode": "whisper" },
+                "claude": { "executable": "D:\\tools\\claude.exe", "model": "sonnet" }
+            }))
+            .unwrap();
+        let claude = serde_json::to_value(&runtime.settings().claude).unwrap();
+        assert_eq!(
+            runtime.change_mode(AssistantMode::Realtime),
+            Ok(ModeChange {
+                engine_switched: true
+            })
+        );
+        let stored = store.load().unwrap().unwrap();
+        assert_eq!(stored.assistant.engine, AssistantEngine::Codex);
+        assert_eq!(stored.assistant.mode, AssistantMode::Realtime);
+        assert_eq!(serde_json::to_value(&stored.claude).unwrap(), claude);
+
+        // The Whisper mode with nothing of Whisper on disk.
+        let before = std::fs::read(&path).unwrap();
+        let whisper = runtime.change_mode(AssistantMode::Whisper).unwrap_err();
+        assert!(
+            whisper.starts_with(
+                "Not switched: the Whisper mode needs files that are not downloaded yet ("
+            ) && whisper.ends_with(
+                "The operator downloads them in VoiceBro → Settings, in the Whisper and Local voice cards."
+            ),
+            "{whisper}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "settings.json unchanged"
+        );
+        assert_eq!(runtime.settings().assistant.mode, AssistantMode::Realtime);
+        let assets = crate::paths::assets_dir(dir.path());
+        assert!(
+            !assets
+                .join(crate::stt::catalog::VAD_MODEL.directory)
+                .exists(),
+            "nothing downloaded"
+        );
+
+        // Whisper's files on disk, the voice not: the text answers mode switches and
+        // OpenCode stays; the Whisper mode is refused for the voice alone.
+        place_whisper_files(&runtime, &dir);
+        runtime
+            .save_settings(&json!({ "assistant": { "engine": "opencode", "mode": "whisper" } }))
+            .unwrap();
+        assert_eq!(
+            runtime.change_mode(AssistantMode::Text),
+            Ok(ModeChange {
+                engine_switched: false
+            })
+        );
+        let stored = store.load().unwrap().unwrap();
+        assert_eq!(stored.assistant.engine, AssistantEngine::Opencode);
+        assert_eq!(stored.assistant.mode, AssistantMode::Text);
+        let voice = runtime.change_mode(AssistantMode::Whisper).unwrap_err();
+        assert!(voice.contains("Local voice"), "{voice}");
+        assert_eq!(runtime.settings().assistant.mode, AssistantMode::Text);
+
+        // The realtime voice with the wake word and no Vosk files.
+        runtime
+            .save_settings(&json!({ "session": { "mode": "wake_word" } }))
+            .unwrap();
+        let wake = runtime.change_mode(AssistantMode::Realtime).unwrap_err();
+        assert!(
+            wake.starts_with(
+                "Not switched: the wake word needs files that are not downloaded yet ("
+            ) && wake.contains("Vosk library")
+                && wake.ends_with(
+                    "The operator downloads them in VoiceBro → Config, under Wake model."
+                ),
+            "{wake}"
+        );
+        assert_eq!(
+            runtime.settings().assistant.engine,
+            AssistantEngine::Opencode
+        );
+
+        let openings = [
+            crate::stt::manager::JOIN_NEEDS_DOWNLOADS
+                .split(':')
+                .next()
+                .unwrap(),
+            crate::wake::JOIN_NEEDS_WAKE_FILES,
+        ];
+        assert_eq!(openings[0], "The Whisper mode needs downloads");
+        let mut texts = vec![whisper, voice, wake];
+        while let Ok(event) = events.try_recv() {
+            if let AppEvent::Log { line } = event {
+                texts.push(line);
+            }
+        }
+        for text in &texts {
+            for opening in openings {
+                assert!(!text.contains(opening), "«{opening}» in {text}");
+            }
+        }
+
+        // The headless app names its own command.
+        let terminal = mode_refusal(AssistantMode::Realtime, "Vosk library", true);
+        assert!(
+            terminal.contains("assistant.mode to \"realtime\" and assistant.engine to \"codex\"")
+                && terminal.ends_with("runs voicebro-server --install-assets."),
+            "{terminal}"
+        );
+        runtime.shutdown();
+    }
+
+    /// Task 2.2, scenario "The settings file cannot be written": the mode and the engine stay,
+    /// nothing running is switched, and the error is the reply. Windows only: elsewhere a
+    /// read-only file can still be replaced by the save's rename.
+    #[test]
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn a_mode_save_that_cannot_be_written_changes_nothing() {
+        if !cfg!(windows) {
+            return;
+        }
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({
+                "session": { "mode": "always" },
+                "assistant": { "engine": "claude", "mode": "whisper" }
+            }))
+            .unwrap();
+        let (output, _source) = output_pair();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.on_join(42, output);
+        let gate = runtime.host.registry.get(42).unwrap();
+        let path = dir.path().join("settings.json");
+        let before = std::fs::read(&path).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions.clone()).unwrap();
+
+        let error = runtime.change_mode(AssistantMode::Realtime).unwrap_err();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        assert!(error.starts_with("Not switched: "), "{error}");
+        let settings = runtime.settings();
+        assert_eq!(settings.assistant.engine, AssistantEngine::Claude);
+        assert_eq!(settings.assistant.mode, AssistantMode::Whisper);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(
+            Arc::ptr_eq(&gate, &runtime.host.registry.get(42).unwrap()),
+            "the session goes on"
+        );
+        host.on_leave(42);
+        runtime.shutdown();
+    }
+
+    /// Task 2.3: a mode change through the host's request channel, in a channel with the stub
+    /// assistant: stored, the gate rebuilt with the bot still in the channel, the settings
+    /// change published and the panels marked; once the runtime is dropped its task is gone
+    /// and a press gets the "try again" reply.
+    #[test]
+    fn a_mode_change_through_the_host_switches_the_channel_and_ends_with_the_runtime() {
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir, &tokio_rt);
+        runtime.start().unwrap();
+        runtime
+            .save_settings(&json!({
+                "session": { "mode": "always" },
+                "assistant": { "mode": "whisper" }
+            }))
+            .unwrap();
+        let (output, _source) = output_pair();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        host.on_join(42, output);
+        let old = runtime.host.registry.get(42).unwrap();
+        runtime.discord.take_panels_dirty();
+        let mut events = runtime.events().subscribe();
+
+        let changed = tokio_rt
+            .block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    host.change_mode(AssistantMode::Realtime),
+                )
+                .await
+            })
+            .expect("answered in time");
+        assert_eq!(
+            changed,
+            Ok(ModeChange {
+                engine_switched: false
+            })
+        );
+        assert_eq!(runtime.settings().assistant.mode, AssistantMode::Realtime);
+        assert_eq!(host.mode(), AssistantMode::Realtime);
+        assert_eq!(host.assistant_mode(), crate::discord::MODE_REALTIME);
+        let new = runtime
+            .host
+            .registry
+            .get(42)
+            .expect("the bot stays in the channel");
+        assert!(!Arc::ptr_eq(&old, &new), "a new gate in the new mode");
+        let mut published = false;
+        while let Ok(event) = events.try_recv() {
+            published |= matches!(event, AppEvent::SettingsChanged);
+        }
+        assert!(published, "the window hears of the change");
+        assert!(
+            runtime.discord.take_panels_dirty(),
+            "the panels are refreshed"
+        );
+
+        host.on_leave(42);
+        runtime.shutdown();
+        drop(runtime);
+        let after = tokio_rt
+            .block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    host.change_mode(AssistantMode::Text),
+                )
+                .await
+            })
+            .expect("answered in time");
+        assert_eq!(after, Err(MODE_CHANGE_UNAVAILABLE.to_owned()));
     }
 }

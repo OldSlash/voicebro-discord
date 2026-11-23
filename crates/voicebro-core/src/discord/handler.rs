@@ -1,14 +1,15 @@
 //! The serenity event handler: ready, slash commands, button presses, voice state updates.
 
-use super::panel::{self, PanelRef};
+use super::panel::{self, PanelAction, PanelButton, PanelRef};
 use super::session::{self, JoinOutcome};
-use super::{ConnectionState, Shared};
-use crate::settings::AccessMode;
+use super::{ConnectionState, ModeChange, Shared};
+use crate::settings::{AccessMode, AssistantMode};
 use serenity::all::{
     ButtonStyle, Command, CommandInteraction, CommandOptionType, ComponentInteraction, Context,
     CreateActionRow, CreateButton, CreateCommand, CreateCommandOption, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EditInteractionResponse, EventHandler, Interaction,
-    InteractionContext, Message, MessageType, Ready, VoiceState,
+    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, EditInteractionResponse,
+    EventHandler, GuildId, Interaction, InteractionContext, Message, MessageId, MessageType, Ready,
+    VoiceState,
 };
 use serenity::async_trait;
 use std::sync::atomic::Ordering;
@@ -185,6 +186,76 @@ fn access_line(access: AccessMode) -> Option<&'static str> {
             Some("Only the owner and people who ran /optin are heard here. See /privacy.")
         }
         AccessMode::Owner => Some("Only the owner's voice reaches the assistant here."),
+    }
+}
+
+/// Who pressed one of the panel's buttons, against the linked owner (change
+/// `discord-panel-controls`, design D2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presser {
+    Owner,
+    NotOwner,
+    NoOwnerLinked,
+}
+
+fn presser(owner: Option<u64>, user: u64) -> Presser {
+    match owner {
+        None => Presser::NoOwnerLinked,
+        Some(owner) if owner == user => Presser::Owner,
+        Some(_) => Presser::NotOwner,
+    }
+}
+
+const NOT_THE_OWNER: &str = "These buttons are for this bot's owner only.";
+const NO_OWNER_LINKED: &str = "No owner is linked to this bot yet, so its buttons work for nobody. The operator links their Discord account in VoiceBro → Config → Access.";
+/// The same for the headless app (change `cross-platform-headless`), which has no window.
+const NO_OWNER_LINKED_TERMINAL: &str = "No owner is linked to this bot yet, so its buttons work for nobody. The operator links their Discord account with voicebro-server --link-owner.";
+
+/// The reply only the presser sees when the press is refused; `None` for the owner.
+fn press_refusal(presser: Presser, terminal: bool) -> Option<&'static str> {
+    match presser {
+        Presser::Owner => None,
+        Presser::NotOwner => Some(NOT_THE_OWNER),
+        Presser::NoOwnerLinked if terminal => Some(NO_OWNER_LINKED_TERMINAL),
+        Presser::NoOwnerLinked => Some(NO_OWNER_LINKED),
+    }
+}
+
+/// Whether a press came from the panel of the bot's current voice session (design D3).
+fn is_current_panel(current: Option<MessageId>, pressed: MessageId) -> bool {
+    current == Some(pressed)
+}
+
+/// An old panel after the owner's press: its embed stays (an update leaves out what it does
+/// not name), its buttons go, and it says that `/join` posts a new one.
+fn old_panel_update() -> CreateInteractionResponse {
+    CreateInteractionResponse::UpdateMessage(
+        CreateInteractionResponseMessage::new()
+            .content(panel::OLD_PANEL_NOTE)
+            .components(Vec::new()),
+    )
+}
+
+/// The owner's reply to Leave channel (design D4): the channel left, or that there was none.
+fn leave_reply(left: Option<&str>) -> String {
+    match left {
+        Some(channel) => format!("Left {channel}."),
+        None => "I was not in a voice channel here.".to_owned(),
+    }
+}
+
+const ENGINE_SWITCHED: &str =
+    "Switched to the realtime voice. The engine is now Codex: the voice call works only with Codex.";
+
+/// What only the owner sees after a mode button (design D5): the engine switch, or why
+/// nothing changed; `None` for a plain switch, which the panel itself shows.
+fn mode_follow_up(result: &Result<ModeChange, String>) -> Option<String> {
+    match result {
+        Ok(ModeChange {
+            engine_switched: true,
+        }) => Some(ENGINE_SWITCHED.to_owned()),
+        Ok(_) => None,
+        Err(reason) => Some(reason.clone()),
     }
 }
 
@@ -428,15 +499,127 @@ impl Handler {
             self.handle_consent_button(ctx, component, button).await;
             return;
         }
-        let Some(button_guild) = panel::parse_mute_button_id(&component.data.custom_id) else {
+        let Some(button) = PanelButton::parse(&component.data.custom_id) else {
             return;
         };
         let Some(guild) = component.guild_id else {
             return;
         };
-        if guild.get() != button_guild {
+        if guild.get() != button.guild {
             return;
         }
+        self.handle_panel_button(ctx, component, guild, button.action)
+            .await;
+    }
+
+    /// Every press on the panel (change `discord-panel-controls`, designs D2 and D3): the
+    /// owner check first, then whether the panel is the current one, then the action.
+    async fn handle_panel_button(
+        &self,
+        ctx: &Context,
+        component: &ComponentInteraction,
+        guild: GuildId,
+        action: PanelAction,
+    ) {
+        let who = presser(self.shared.host.owner_id(), component.user.id.get());
+        if let Some(text) = press_refusal(who, self.shared.events.terminal_guidance()) {
+            self.shared.log(match who {
+                Presser::NoOwnerLinked => {
+                    "a press on the Discord panel was refused: no owner is linked"
+                }
+                _ => "a press on the Discord panel was refused: not the owner",
+            });
+            let _ = component.create_response(&ctx.http, ephemeral(text)).await;
+            return;
+        }
+        let current = session::panel_message_id(&self.shared, guild);
+        if !is_current_panel(current, component.message.id) {
+            let _ = component
+                .create_response(&ctx.http, old_panel_update())
+                .await;
+            return;
+        }
+        match action {
+            PanelAction::Mute => self.panel_mute(ctx, component, guild).await,
+            PanelAction::Leave => self.panel_leave(ctx, component, guild).await,
+            PanelAction::Mode(mode) => self.panel_mode(ctx, component, guild, mode).await,
+        }
+    }
+
+    /// Leave channel (design D4): as `/leave`, which also deletes the panel; the reply is
+    /// the owner's only and does not depend on the deleted message.
+    async fn panel_leave(&self, ctx: &Context, component: &ComponentInteraction, guild: GuildId) {
+        if component.defer_ephemeral(&ctx.http).await.is_err() {
+            return;
+        }
+        let channel = session::session_channel_name(&self.shared, guild);
+        let left = session::leave_voice(&self.shared, guild).await;
+        let channel = left.then(|| channel.unwrap_or_else(|| "the voice channel".to_owned()));
+        if let Some(name) = &channel {
+            self.shared
+                .log(format!("left {name} from the Discord panel"));
+        }
+        let _ = component
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new().content(leave_reply(channel.as_deref())),
+            )
+            .await;
+    }
+
+    /// A mode button (design D5): the save may take its time behind a deferred update; the
+    /// panel shows the new mode, and only the owner sees an engine switch or a refusal.
+    async fn panel_mode(
+        &self,
+        ctx: &Context,
+        component: &ComponentInteraction,
+        guild: GuildId,
+        mode: AssistantMode,
+    ) {
+        if component.defer(&ctx.http).await.is_err() {
+            return;
+        }
+        let result = self.shared.host.change_mode(mode).await;
+        match &result {
+            Ok(change) => {
+                self.shared.log(format!(
+                    "assistant mode {} from the Discord panel{}",
+                    mode.name(),
+                    if change.engine_switched {
+                        ", the engine switched to Codex"
+                    } else {
+                        ""
+                    }
+                ));
+                if let Some((embed, components)) = session::panel_message(&self.shared, guild) {
+                    let _ = component
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new()
+                                .embed(embed)
+                                .components(components),
+                        )
+                        .await;
+                }
+            }
+            Err(reason) => self.shared.log(format!(
+                "mode change from the Discord panel refused: {reason}"
+            )),
+        }
+        if let Some(text) = mode_follow_up(&result) {
+            let _ = component
+                .create_followup(
+                    &ctx.http,
+                    CreateInteractionResponseFollowup::new()
+                        .content(text)
+                        .ephemeral(true),
+                )
+                .await;
+        }
+    }
+
+    /// Mute assistant: the app-wide mute, as the window's button and the hotkey.
+    async fn panel_mute(&self, ctx: &Context, component: &ComponentInteraction, guild: GuildId) {
         if component.defer(&ctx.http).await.is_err() {
             return;
         }
@@ -804,5 +987,77 @@ mod tests {
             "{agreed}"
         );
         assert!(!off.contains("/optin"));
+    }
+
+    /// Change `discord-panel-controls`, requirement "Only the linked owner presses the panel's
+    /// buttons": the owner passes in every case, anyone else is refused, and with nobody
+    /// linked everyone is, with the note on how to link (the window's or the terminal's).
+    #[test]
+    fn only_the_linked_owner_passes_the_press_check() {
+        assert_eq!(presser(Some(7), 7), Presser::Owner);
+        assert_eq!(presser(Some(7), 8), Presser::NotOwner);
+        assert_eq!(presser(None, 7), Presser::NoOwnerLinked);
+        assert_eq!(press_refusal(Presser::Owner, false), None);
+        assert_eq!(press_refusal(Presser::Owner, true), None);
+        assert_eq!(
+            press_refusal(Presser::NotOwner, false),
+            Some("These buttons are for this bot's owner only.")
+        );
+        assert_eq!(
+            press_refusal(Presser::NotOwner, true),
+            press_refusal(Presser::NotOwner, false)
+        );
+        let window = press_refusal(Presser::NoOwnerLinked, false).unwrap();
+        assert!(
+            window.starts_with("No owner is linked to this bot yet")
+                && window.contains("VoiceBro → Config → Access"),
+            "{window}"
+        );
+        let terminal = press_refusal(Presser::NoOwnerLinked, true).unwrap();
+        assert!(
+            terminal.contains("voicebro-server --link-owner"),
+            "{terminal}"
+        );
+    }
+
+    /// Design D3: only the current session's panel counts; an old one's update keeps the
+    /// embed (it names none), takes every button away and says how to get a new panel.
+    #[test]
+    fn an_old_panel_loses_its_buttons() {
+        let current = MessageId::new(10);
+        assert!(is_current_panel(Some(current), MessageId::new(10)));
+        assert!(!is_current_panel(Some(current), MessageId::new(11)));
+        assert!(!is_current_panel(None, MessageId::new(10)));
+        let update = serde_json::to_value(old_panel_update()).unwrap();
+        assert_eq!(update["type"], 7, "an update of the pressed message");
+        assert_eq!(update["data"]["components"], serde_json::json!([]));
+        assert_eq!(
+            update["data"]["content"],
+            "This panel is from an earlier session. /join posts a new one."
+        );
+        assert!(update["data"].get("embeds").is_none(), "{update}");
+    }
+
+    /// Design D4 and D5: the replies only the owner sees.
+    #[test]
+    fn the_leave_and_mode_replies() {
+        assert_eq!(leave_reply(Some("General")), "Left General.");
+        assert_eq!(leave_reply(None), "I was not in a voice channel here.");
+        assert_eq!(
+            mode_follow_up(&Ok(ModeChange {
+                engine_switched: false
+            })),
+            None
+        );
+        let switched = mode_follow_up(&Ok(ModeChange {
+            engine_switched: true,
+        }))
+        .unwrap();
+        assert_eq!(
+            switched,
+            "Switched to the realtime voice. The engine is now Codex: the voice call works only with Codex."
+        );
+        let refused = mode_follow_up(&Err("Not switched: the disk is full".to_owned()));
+        assert_eq!(refused.as_deref(), Some("Not switched: the disk is full"));
     }
 }

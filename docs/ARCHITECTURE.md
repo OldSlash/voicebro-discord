@@ -349,8 +349,9 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   in a direct message to the bot; the guild's copies have no contexts (Discord takes them
   only on global commands). `/link` hands the sender's id from the interaction, a cleaned
   name (global name, else user name) and the typed code to `VoiceHost::complete_link` and
-  answers only the sender. No access mode limits a command: `/join`, `/leave` and the Mute
-  button work for everyone. `/status` and the reply to a successful `/join` add one line for
+  answers only the sender. No access mode limits a command: `/join`, `/leave` and `/status`
+  work for everyone; the panel's buttons are the linked owner's in every access mode
+  (below). `/status` and the reply to a successful `/join` add one line for
   a limited mode: "Only the owner's voice reaches the assistant here." (`owner`) or "Only the
   owner and people who ran /optin are heard here. See /privacy." (`agreed`). `/status` also
   names the assistant mode, "Mode: Realtime voice." or "Mode: Whisper mode."
@@ -373,10 +374,40 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   is the reply ("Not joined: …") and the bot stays out of the channel; only then does the
   join below run.
 - **Member panel** (`panel.rs`): an embed in the channel the command came from, with the
-  engine, the assistant's state (waiting for the wake word / listening / muted), the mode
-  ("Realtime voice" or "Whisper mode") and a "Mute GPT" button. A mode switch marks the
-  panels for a refresh. The button toggles the app-wide mute through `Runtime`; the panel is
-  refreshed from `AppEvent::Gate` and `AppEvent::MuteChanged`.
+  engine, the assistant's state (waiting for the wake word / listening / muted) and the mode
+  ("Realtime voice", "Whisper mode" or "Whisper mode, text answers"), and two rows of
+  buttons (change `discord-panel-controls`): "Mute assistant" ("Unmute assistant" while
+  muted) and "Leave channel" (danger style); then "Realtime voice", "Whisper mode" and
+  "Text answers", the current mode (`VoiceHost::mode`, an `AssistantMode`) primary and
+  disabled, the others secondary. Custom ids carry the guild: `voicebro:mute:<guild>` (as
+  before, so an older panel's Mute still parses), `voicebro:leave:<guild>` and
+  `voicebro:mode:<realtime|whisper|text>:<guild>`, parsed into one `PanelButton { guild,
+  action: Mute | Leave | Mode(AssistantMode) }`. A mode or engine switch and a mute mark
+  the panels for a refresh, at most one edit per second.
+  - `handle_component` parses the consent buttons first, then a `PanelButton` whose guild
+    is the interaction's. Every press goes through one order. **The owner check:**
+    `VoiceHost::owner_id()` (`OwnerState::linked_id()`, whatever `discord.access` is) must
+    be the presser's id; otherwise an ephemeral reply, "These buttons are for this bot's
+    owner only.", or with nobody linked "No owner is linked to this bot yet, so its buttons
+    work for nobody. The operator links their Discord account in VoiceBro → Config →
+    Access." (the headless app names `voicebro-server --link-owner`), one log line without
+    the presser's name, and the panel untouched. **The current-panel check:** a press on a
+    message that is not the session's `panel.message` (no session, or a leftover after a
+    leave, a rejoin or a restart) gets a message update that keeps the embed, removes every
+    button and says "This panel is from an earlier session. /join posts a new one."
+    **Then the action.**
+  - *Mute* toggles the app-wide mute through `VoiceHost::toggle_mute` and edits the panel.
+  - *Leave channel* defers an ephemeral reply, calls `session::leave_voice` as `/leave`
+    does (which deletes the panel) and answers "Left <channel>." or "I was not in a voice
+    channel here.".
+  - *A mode* defers a message update, awaits `VoiceHost::change_mode(mode)` (4.6, "A mode
+    from the panel") and edits the panel with the new state; an engine switched to Codex
+    ("Switched to the realtime voice. The engine is now Codex: the voice call works only
+    with Codex.") or a refusal is an ephemeral follow-up, and the refusal is logged.
+  - `probe discord-panel` posts `panel::sample_panel` for each mode, unmuted and muted, to
+    the test channel, reads each message back, checks the rows, labels, ids and the marked
+    mode as Discord stored them, and deletes them: Discord accepts the buttons. Presses need
+    a person.
 - **Join order is fixed:** get or create the `Call`, set its decode mode, register the
   `SpeakingStateUpdate` and `VoiceTick` handlers, then `join`. Discord announces a user's
   SSRC only the first time they speak.
@@ -432,7 +463,9 @@ songbird 0.6 with `receive`. DAVE is handled by songbird.
   0.6's packet-loss recovery for those modes is unproven), mixes it into reusable buffers,
   and calls the app's `VoiceHost::on_tick(guild, mixed, per_speaker)`. `VoiceHost` is the
   one trait the adapter needs from the rest of the app (ticks, speaker names, participants,
-  join and leave, the assistant state for the panel, mute); the session gate implements it.
+  join and leave, the assistant state and mode for the panel, mute, and since change
+  `discord-panel-controls` `owner_id()`, `mode()` and `change_mode(mode)`); the session
+  gate implements it.
   Participant identity is preserved up to the gate and the wake engine; the assistant hears
   the mix.
 - Output is one `Track` from `opus_out::live_input` (Opus packets songbird passes through),
@@ -530,7 +563,8 @@ state machine. A `RelayRegistry` holds all gates and the single app-wide mute fl
 
 - **Modes**: `always` (session is always wanted while connected) and `wake_word`.
 - **Mute** is one app-wide state with three sources: the app button, the global hotkey and
-  the Discord panel button. All three end in `Runtime::toggle_mute`, which goes through
+  the Discord panel button (the linked owner's only, change `discord-panel-controls`). All
+  three end in `Runtime::toggle_mute`, which goes through
   `RelayRegistry::set_muted` into every gate. Mute ends the session: the session is no
   longer wanted (the call closes, nothing is spent while muted),
   nothing is sent to the assistant, the output is flushed and discarded, and phrases are
@@ -1694,7 +1728,37 @@ change like any other: the sessions end with the falling tone and the gates are 
   mode", and the panels are refreshed.
 - `assistant_mode()` names the mode for `/status` and the panel (4.2): "Realtime voice",
   "Whisper mode" or "Whisper mode, text answers" (`MODE_TEXT`, read from the settings,
-  since the gates hear the same way in both Whisper modes).
+  since the gates hear the same way in both Whisper modes). `mode()` gives the stored
+  `assistant.mode` as a value for the panel's mode buttons (change
+  `discord-panel-controls`).
+- *A mode from the panel* (change `discord-panel-controls`, designs D5 and D6). The owner's
+  press of a mode button calls `VoiceHost::change_mode(mode)`. `GateHost` sends a
+  `ModeRequest` with a oneshot reply into an unbounded channel and awaits the answer, so
+  the host needs no reference to the runtime. `Runtime::start` (which takes
+  `self: &Arc<Self>`, so every shell holds the runtime in an `Arc`) spawns the one task
+  that serves the requests in order: it holds a `Weak<Runtime>`, runs
+  `Runtime::change_mode` on a blocking thread, and is aborted when the runtime drops; with
+  no task a press gets "Not switched: VoiceBro is starting or stopping; try again in a
+  moment." `change_mode` holds the save lock, builds the patch `{"assistant": {"mode":
+  …}}` (with `"engine": "codex"` for the realtime mode while the engine is another, the
+  Claude Code and OpenCode sections untouched), then checks the disk with the join
+  refusals' lists: Whisper's runtime, model and VAD model (`WhisperManager::requirements`),
+  in the Whisper mode also the voice (`TtsManager::requirements`), and for the realtime mode
+  with the wake word the Vosk library and wake model (`WakeManager::requirements`; always
+  listening needs none). A gap refuses with nothing saved: "Not switched: the Whisper mode
+  | the text answers mode | the wake word needs files that are not downloaded yet
+  (<labels>). The operator downloads them in VoiceBro → Settings, in the Whisper and Local
+  voice cards | in the Whisper card | VoiceBro → Config, under Wake model." (the headless
+  app: stop the bot, set `assistant.mode` in `settings.json`, run `voicebro-server
+  --install-assets`). These start with neither join refusal's opening, so the window opens
+  no install dialog for a press in Discord. Otherwise the save is the window's
+  (`save_locked`: patch, validate, store, `apply`, `SettingsChanged`), so `switch_mode` or
+  `switch_engine` switch the channels and mark every panel, and the window reloads its form
+  on `settings_changed` without touching the unsaved "Discord and Codex" fields; a save
+  error is the reply ("Not switched: <error>") and nothing changes.
+- *The save lock.* `Runtime::save_settings` and `change_mode` hold `save_lock` around the
+  read, the patch, the store and `apply`, so a save from the window and one from the panel
+  at the same moment cannot drop one another's change.
 - *Shutdown* configures both with the realtime mode, which unloads them.
 
 **The engine switch** (change `claude-and-opencode-engines`, design D1). The desktop shell
@@ -2730,9 +2794,12 @@ deactivation / idle timeout ─► gate: output muted + flushed, falling earcon,
 the people's transcript (realtime/transcript/delta, role user; done) while the call is live
    ─► CodexSession joins the turn's pieces ─► AudioPorts.heard ─► RelayRegistry
    ─► gate.on_heard: a deactivation phrase (closed, or held 300 ms) ─► the same deactivation
-mute (app button | hotkey | Discord panel) ─► Runtime::toggle_mute ─► RelayRegistry
+mute (app button | hotkey | Discord panel, the owner's) ─► Runtime::toggle_mute ─► RelayRegistry
    ─► every gate: session ends (session_wanted(false)), nothing sent, output flushed,
       mute tone ─► AppEvent::MuteChanged ─► UI, panel
+panel mode button (the owner's) ─► VoiceHost::change_mode ─► the runtime's task
+   ─► Runtime::change_mode: save lock, files on disk, the window's save ─► switch_mode or
+      switch_engine ─► every channel and panel; AppEvent::SettingsChanged ─► UI
 last /leave ─► Codex: app-server stops 0.5 s later; conversations kept
 voice delegates a task ─► Codex agent: turn/started, items, turn/completed (completed)
    ─► CodexSession: AgentAnswer {guild, task, last agent text} ─► AudioPorts.answers
