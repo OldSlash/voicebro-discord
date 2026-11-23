@@ -362,10 +362,12 @@ const scenarios = [
       $("claude-notice-owner").click();
       await until(() => !$("owner-code").hidden, 4000);
       return { open, focus, access: stored().discord.access, shown: stored().claude.subscription_notice_shown,
-        code: $("owner-command").textContent, closed: !dialogOpen(), engine: stored().assistant.engine };`);
+        code: $("owner-command").textContent, copy: !$("owner-copy").hidden, help: $("owner-copy-help").textContent,
+        closed: !dialogOpen(), engine: stored().assistant.engine };`);
     expect(r.open && r.focus === "claude-notice-later", JSON.stringify(r));
     expect(r.access === "owner" && r.shown && r.closed && r.engine === "claude", JSON.stringify(r));
-    expect(r.code === "/link K7QF-2M9X", r.code);
+    expect(r.code === "K7QF-2M9X", r.code);
+    expect(r.copy && r.help.includes("Press Copy"), `copy ${r.copy}, help ${r.help}`);
   }],
   ["Hear only me with an owner linked: the owner-only mode and no code", async () => {
     await load("?whisper&owner=linked");

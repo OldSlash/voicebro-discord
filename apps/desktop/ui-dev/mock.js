@@ -936,6 +936,8 @@
       discord: {
         state: tokenSet && connected ? "connected" : "disconnected",
         user_name: "Mock bot",
+        // The bot's account id while connected (change `owner-link-paste`, design D7).
+        user_id: tokenSet && connected ? "1234" : null,
         guild_count: 1,
         guilds: [{ id: "1091401169441656933", name: "Mock server" }],
         voice_channels: !inVoice ? {} : {

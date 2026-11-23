@@ -363,16 +363,17 @@
                   <span class="owner-state" id="owner-state">not linked</span>
                   <small class="field-help warning-text" id="owner-reason"></small>
                   <div class="owner-code" id="owner-code" hidden>
-                    <span>Send this in Discord, in a server with the bot or in a direct message to it:</span>
-                    <code id="owner-command">/link</code>
+                    <span class="owner-code-row"><code id="owner-command"></code><button type="button" class="button primary" id="owner-copy">Copy</button></span>
+                    <span id="owner-copy-help">Press Copy, then paste it in Discord and send it: in a direct message to the bot, in the chat of its voice channel or in another channel it can read. Or type /link and the code.</span>
                     <span class="owner-countdown" id="owner-countdown"></span>
+                    <small class="field-help" id="owner-copy-message"></small>
                   </div>
                   <span class="row-actions">
                     <button type="button" class="button" id="owner-link-start">Link my Discord account</button>
                     <button type="button" class="button" id="owner-link-cancel" hidden>Cancel</button>
                     <button type="button" class="button" id="owner-unlink" hidden>Unlink</button>
                   </span>
-                  <small class="field-help">Link reads the account of the engine in use (your ChatGPT account for Codex, your Claude account for Claude Code; OpenCode has none) and shows a one-time code for 10 minutes; send it with /link from your own Discord account. Five wrong codes end it. The link stays until you unlink, link another account, sign the engine into another account, or delete VoiceBro with its data; a change of the engine keeps it. It is stored encrypted for your Windows user, never in settings.json.</small>
+                  <small class="field-help">Link reads the account of the engine in use (your ChatGPT account for Codex, your Claude account for Claude Code; OpenCode has none) and shows a one-time code for 10 minutes. Copy it and paste it in Discord from your own account (in a direct message to the bot or in a channel it can read, where the copied message mentions it), or send it with /link. Five wrong codes end it. The link stays until you unlink, link another account, sign the engine into another account, or delete VoiceBro with its data; a change of the engine keeps it. It is stored encrypted for your Windows user, never in settings.json.</small>
                   <small class="field-help" id="owner-code-ended"></small>
                   <small class="field-message" id="owner-message"></small>
                 </div>

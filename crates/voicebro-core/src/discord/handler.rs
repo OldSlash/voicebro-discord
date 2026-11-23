@@ -8,7 +8,7 @@ use serenity::all::{
     ButtonStyle, Command, CommandInteraction, CommandOptionType, ComponentInteraction, Context,
     CreateActionRow, CreateButton, CreateCommand, CreateCommandOption, CreateInteractionResponse,
     CreateInteractionResponseMessage, EditInteractionResponse, EventHandler, Interaction,
-    InteractionContext, Ready, VoiceState,
+    InteractionContext, Message, MessageType, Ready, VoiceState,
 };
 use serenity::async_trait;
 use std::sync::atomic::Ordering;
@@ -476,6 +476,7 @@ impl EventHandler for Handler {
         self.shared.update(|status| {
             status.state = ConnectionState::Connected;
             status.user_name = Some(ready.user.name.clone());
+            status.user_id = Some(ready.user.id.get().to_string());
             status.guild_count = ready.guilds.len();
             status.last_error = None;
         });
@@ -526,6 +527,52 @@ impl EventHandler for Handler {
             },
             Interaction::Component(component) => self.handle_component(&ctx, &component).await,
             _ => {}
+        }
+    }
+
+    /// A pasted link code (change `owner-link-paste`, designs D2 and D3). Every other
+    /// message is dropped on the first checks, before its text is looked at.
+    async fn message(&self, ctx: Context, message: Message) {
+        let bot = ctx.cache.current_user().id;
+        let facts = super::link_message::MessageFacts {
+            from_bot: message.author.bot,
+            webhook: message.webhook_id.is_some(),
+            regular: matches!(
+                message.kind,
+                MessageType::Regular | MessageType::InlineReply
+            ),
+            direct: message.guild_id.is_none(),
+            mentions_bot: message.mentions_user_id(bot),
+        };
+        if !super::link_message::is_candidate(&facts) {
+            return;
+        }
+        let Some(attempt) = super::link_message::link_attempt(&message.content, bot.get()) else {
+            return;
+        };
+        let name = display_name(&message.author);
+        let outcome = super::link_message::complete(
+            self.shared.host.as_ref(),
+            &self.shared.events,
+            message.author.id.get(),
+            &name,
+            message.guild_id.map(|guild| guild.get()),
+            &attempt,
+        );
+        let reply = if self.shared.events.terminal_guidance() {
+            outcome.terminal_reply()
+        } else {
+            outcome.reply()
+        };
+        if let Err(error) = message
+            .channel_id
+            .send_message(&ctx.http, super::link_message::answer(&reply))
+            .await
+        {
+            self.shared.log(format!(
+                "owner link: could not answer in {}: {error}",
+                message.channel_id.get()
+            ));
         }
     }
 

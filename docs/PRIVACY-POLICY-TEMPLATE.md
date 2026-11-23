@@ -96,6 +96,10 @@ Contact: {{CONTACT_EMAIL}}
   there, as it does for every member of the channel.
 - Your Discord user ID and display name, and whether you are in the bot's voice channel.
 - The commands you send the bot, with your user ID.
+- For each message in the text channels the bot can see, an event without the message's
+  text, which the bot drops at once. The text of a direct message to the bot and of a
+  message that mentions the bot, with your user ID: it is read only for an owner link code
+  and kept nowhere; anything else in it is ignored.
 
 ## What happens to your voice
 

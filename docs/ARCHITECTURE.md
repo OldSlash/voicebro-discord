@@ -323,6 +323,22 @@ Owns the formats, queues and conversions shared by everything else.
 serenity 0.12 (gateway, HTTP, cache limited to guilds, voice states and members) and
 songbird 0.6 with `receive`. DAVE is handled by songbird.
 
+- **Intents**: `GUILDS | GUILD_VOICE_STATES | GUILD_MESSAGES | DIRECT_MESSAGES`, none
+  privileged (change `owner-link-paste`, D4). Without the Message Content intent Discord
+  sends the text only of direct messages to the bot and of messages that mention it; every
+  other message event comes without text and is dropped on the first check. Messages are
+  read only for a pasted link code (`discord/link_message.rs`, 4.11): `is_candidate` (a
+  person's regular message or reply, in a direct message or with the bot's user mention; a
+  role mention or `@everyone` does not count), then `link_attempt` (without the bot's
+  mentions, `link` or `/link` and the attempt, or a code alone). An attempt goes to
+  `VoiceHost::complete_link` as a `/link` from the author, after the log line "owner link:
+  a link message from <name> in a direct message | in server <id>", never the text. The
+  answer is a plain message in the same channel with empty `allowed_mentions` and no
+  reference (so Read Message History is not needed); a failed send is logged. The cache
+  keeps no messages (`max_messages = 0`).
+- **The status** carries `user_name` and `user_id` (the bot's account id as a string, for
+  the window's mention), both set in `ready` and cleared on a disconnect.
+
 - **Start**: the client starts whenever a token is stored, at launch and after a token is
   saved; Connect and Disconnect stay as manual controls. There is no auto-connect setting.
 - Slash commands `/join`, `/leave`, `/status`, `/link`, `/optin`, `/optout` and `/privacy`,
@@ -2195,7 +2211,11 @@ open to everyone.
   - It lives 10 minutes; 5 wrong codes in total, from anyone, end it; Link again replaces
     it; Cancel ends it.
   - `/link` hands the sender's id (from the interaction) to `VoiceHost::complete_link`,
-    and the outcome is the ephemeral reply.
+    and the outcome is the ephemeral reply. A pasted code (change `owner-link-paste`, 4.2)
+    takes the same path from a message's author, under the same rules (one use, 10
+    minutes, 5 wrong codes from either way), and its answer is posted in the chat it came
+    from. The window's Copy puts `<@bot id> link XXXX-XXXX` on the clipboard, built from
+    `status.discord.user_id` and the waiting code; the core never gets the code back.
   - The code reaches only the window, through the status and the event: `PendingCode`'s
     `Debug` prints `<hidden>`, and the log lines say only that a code was issued, a wrong
     code came (n of 5), or an account was linked.

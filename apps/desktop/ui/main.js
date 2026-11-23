@@ -53,12 +53,15 @@
   function appendLog(line) {
     appendLogLine(`[window][${new Date().toLocaleTimeString()}] ${line}`);
   }
+  // `true` once the text is on the clipboard; the Console line names only `what`.
   async function copyText(text, what) {
     try {
       await navigator.clipboard.writeText(text);
       appendLog(`${what} copied to the clipboard`);
+      return true;
     } catch (error) {
       appendLog(`copy failed: ${error}`);
+      return false;
     }
   }
   $("console-search").addEventListener("input", renderConsole);
@@ -2296,6 +2299,7 @@
     renderWhisperNow(status);
     renderWhisperNotices(status);
     renderWhisperInstall(status);
+    ownerBotId = status.discord?.user_id || "";
     renderOwner(status.owner);
     renderConsent(status.consent);
     const badge = $("token-badge");
@@ -2313,6 +2317,12 @@
   // every status; the switch above them is a form field like the others.
   let ownerStatus = {};
   let ownerTimer = 0;
+  // The bot's account id from the Discord status, for the copied mention (change
+  // `owner-link-paste`, design D5); empty while the bot is not connected.
+  let ownerBotId = "";
+  // The code Copy last put on the clipboard and what came of it; a new code clears it.
+  let ownerCopiedCode = "";
+  let ownerCopyResult = "";
   const sentence = (text) => (text ? `${text[0].toUpperCase()}${text.slice(1)}.` : "");
   function renderOwner(owner) {
     ownerStatus = owner || {};
@@ -2324,8 +2334,13 @@
     $("owner-reason").textContent = !linked && ownerStatus.link_ended ? `Not linked: ${ownerStatus.link_ended}.` : "";
     $("owner-code").hidden = !waiting;
     if (waiting) {
-      $("owner-command").textContent = `/link ${pending.code}`;
+      $("owner-command").textContent = pending.code;
       $("owner-countdown").textContent = `${Math.floor(left / 60)}:${pad2(left % 60)} left`;
+      // Copy needs the bot's id for its mention (design D6).
+      $("owner-copy").disabled = !ownerBotId;
+      setText("owner-copy-message", !ownerBotId
+        ? "Copy works once the bot is connected to Discord."
+        : pending.code === ownerCopiedCode ? ownerCopyResult : "");
     }
     const ended = pending && !waiting ? "the code expired" : ownerStatus.code_ended;
     $("owner-code-ended").textContent = !waiting && !linked ? sentence(ended) : "";
@@ -2365,6 +2380,18 @@
   }
   $("owner-link-start").addEventListener("click", () => ownerAction("owner_link_start", ownerBusyText()));
   $("owner-link-cancel").addEventListener("click", () => ownerAction("owner_link_cancel"));
+  // Copy (change `owner-link-paste`, design D6): the bot's mention, `link` and the code, one
+  // message to paste in Discord. The Console line names no code.
+  $("owner-copy").addEventListener("click", async () => {
+    const code = ownerStatus.pending?.code;
+    if (!code || !ownerBotId) return;
+    const copied = await copyText(`<@${ownerBotId}> link ${code}`, "link message");
+    ownerCopiedCode = code;
+    ownerCopyResult = copied
+      ? "Copied. Paste it in Discord and send it."
+      : "Copying failed: type /link and the code in Discord instead.";
+    setText("owner-copy-message", ownerCopyResult);
+  });
   $("owner-unlink").addEventListener("click", () => ownerAction("owner_unlink"));
 
   // ---------- Access card: the warnings of each mode (change `voice-consent`) ----------

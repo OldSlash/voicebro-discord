@@ -102,6 +102,12 @@ async function page(body) {
     const toggle = async (id) => { card(id).querySelector(".card-toggle").click(); await sleep(250); };
     const box = (node) => { const r = node.getBoundingClientRect(); return { top: r.top, mid: (r.top + r.bottom) / 2, width: r.width, height: r.height }; };
     const setValue = async (id, value, events = ["input", "change"]) => { const c = $(id); c.value = value; for (const e of events) c.dispatchEvent(new Event(e, { bubbles: true })); await sleep(300); };
+    // The clipboard is recorded in the page, so the check does not depend on the headless
+    // browser's clipboard permission (change \`owner-link-paste\`, design D7).
+    if (!window.__copied) {
+      window.__copied = [];
+      try { Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text) => { window.__copied.push(text); } } }); } catch (error) {}
+    }
   `;
   const result = await send("Runtime.evaluate", {
     expression: `(async () => { ${helpers} ${body} })()`,
@@ -585,9 +591,9 @@ const scenarios = [
       return { fields, options: [...$("access-mode").options].map((o) => [o.value, o.textContent]),
         modeHelp: $("access-mode").closest("label").querySelector(".field-help").textContent,
         urlHelp: $("privacy-url").closest("label").querySelector(".field-help").textContent,
-        linkHelp: $("owner-link").querySelector(".field-help:not(.warning-text):not(#owner-code-ended)").textContent,
+        linkHelp: $("owner-link").querySelector(".field-help:not(.warning-text):not(#owner-code-ended):not(#owner-copy-message)").textContent,
         listName: $("consent-list").querySelector(".field-name").textContent };`);
-    expect(same(r.fields, ["discord.access", "discord.privacy_url", "owner-link-start", "owner-link-cancel", "owner-unlink"]), `fields: ${r.fields}`);
+    expect(same(r.fields, ["discord.access", "discord.privacy_url", "owner-copy", "owner-link-start", "owner-link-cancel", "owner-unlink"]), `fields: ${r.fields}`);
     expect(same(r.options, [["everyone", "Everyone"], ["agreed", "People who agreed (/optin)"], ["owner", "Only my Discord account"]]), `options: ${JSON.stringify(r.options)}`);
     expect(["/optin", "/optout", "linked account", "/join", "hears the answers", "Applies at once", "Default: Everyone"].every((part) => r.modeHelp.includes(part)), `help: ${r.modeHelp}`);
     expect(["https://", "PRIVACY-POLICY-TEMPLATE", "/privacy", "refused", "Developer Portal"].every((part) => r.urlHelp.includes(part)), `help: ${r.urlHelp}`);
@@ -692,23 +698,56 @@ const scenarios = [
     expect(r.note === "No account is linked: the assistant hears nobody until you link one.", JSON.stringify(r));
     expect(r.feedback === "Saved: Who the assistant hears" && r.saveButton, `feedback ${r.feedback}`);
   }],
-  ["Link shows the code, the command and the countdown; Cancel ends it", async () => {
+  ["Link shows the code, Copy, where to paste and the countdown; Cancel ends it", async () => {
     await load();
     const r = await page(`
       tab("config");
       $("owner-link-start").click();
       await until(() => !$("owner-code").hidden, 3000);
       const waiting = { command: $("owner-command").textContent, countdown: $("owner-countdown").textContent,
+        copy: !$("owner-copy").hidden && !$("owner-copy").disabled, help: $("owner-copy-help").textContent,
         cancel: !$("owner-link-cancel").hidden, link: !$("owner-link-start").hidden, unlink: !$("owner-unlink").hidden };
       $("owner-link-cancel").click();
       await until(() => $("owner-code").hidden, 2000);
       return { waiting, ended: $("owner-code-ended").textContent, link: !$("owner-link-start").hidden, state: $("owner-state").textContent,
         starts: calls("owner_link_start").length, cancels: calls("owner_link_cancel").length };`);
-    expect(r.waiting.command === "/link K7QF-2M9X", `command ${r.waiting.command}`);
+    expect(r.waiting.command === "K7QF-2M9X", `command ${r.waiting.command}`);
+    expect(r.waiting.copy, "Copy is missing or disabled");
+    for (const words of ["Press Copy", "direct message to the bot", "chat of its voice channel", "another channel it can read", "/link"]) {
+      expect(r.waiting.help.includes(words), `${words}: ${r.waiting.help}`);
+    }
     expect(/^(10:00|9:5\\d) left$/.test(r.waiting.countdown), `countdown ${r.waiting.countdown}`);
     expect(r.waiting.cancel && !r.waiting.link && !r.waiting.unlink, JSON.stringify(r.waiting));
     expect(r.ended === "The code was cancelled." && r.link && r.state === "not linked", JSON.stringify(r));
     expect(r.starts === 1 && r.cancels === 1, JSON.stringify(r));
+  }],
+  ["Copy puts the bot's mention, link and the code on the clipboard and says so; the Console names no code", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      $("owner-link-start").click();
+      await until(() => !$("owner-code").hidden && !$("owner-copy").disabled, 3000);
+      $("owner-copy").click();
+      await until(() => window.__copied.length > 0, 2000);
+      await sleep(200);
+      await sleep(300);
+      const consoleText = $("console-output").value;
+      return { copied: window.__copied.slice(), message: $("owner-copy-message").textContent, consoleText };`);
+    expect(r.copied.length === 1 && r.copied[0] === "<@1234> link K7QF-2M9X", `copied ${JSON.stringify(r.copied)}`);
+    expect(r.message === "Copied. Paste it in Discord and send it.", r.message);
+    expect(!r.consoleText.includes("K7QF") && !r.consoleText.includes("K7QF2M9X"), "the Console holds the code");
+  }],
+  ["Copy while the bot is not connected: the code shows, Copy is unavailable and says why", async () => {
+    await load("?disconnected");
+    const r = await page(`
+      tab("config");
+      $("owner-link-start").click();
+      await until(() => !$("owner-code").hidden, 3000);
+      await sleep(300);
+      return { command: $("owner-command").textContent, disabled: $("owner-copy").disabled, message: $("owner-copy-message").textContent };`);
+    expect(r.command === "K7QF-2M9X", r.command);
+    expect(r.disabled, "Copy is enabled without the bot's id");
+    expect(r.message === "Copy works once the bot is connected to Discord.", r.message);
   }],
   ["the link completes in the card within a second of the code arriving from Discord", async () => {
     await load();
@@ -760,7 +799,7 @@ const scenarios = [
       return { folded, open: !collapsed("access"), command: $("owner-command").textContent, shown: box($("owner-command")).height > 0,
         countdown: $("owner-countdown").textContent };`);
     expect(r.folded && r.open, JSON.stringify(r));
-    expect(r.command === "/link K7QF-2M9X" && r.shown && r.countdown.endsWith("left"), JSON.stringify(r));
+    expect(r.command === "K7QF-2M9X" && r.shown && r.countdown.endsWith("left"), JSON.stringify(r));
   }],
 
   // ---- Phrase fields (change `voice-recognition-rework`)

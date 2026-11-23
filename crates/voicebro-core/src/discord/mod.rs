@@ -9,6 +9,7 @@
 pub mod answers;
 mod delivery;
 mod handler;
+pub mod link_message;
 mod panel;
 mod receive;
 mod session;
@@ -108,6 +109,10 @@ pub struct GuildInfo {
 pub struct DiscordStatus {
     pub state: ConnectionState,
     pub user_name: Option<String>,
+    /// The bot's account id while connected, as a string (a JavaScript number loses its
+    /// last digits): the window's Copy builds the bot's mention from it (change
+    /// `owner-link-paste`, design D5).
+    pub user_id: Option<String>,
     pub guild_count: usize,
     /// The servers in the cache, by name. Filled when the status is read.
     pub guilds: Vec<GuildInfo>,
@@ -122,6 +127,7 @@ impl Default for DiscordStatus {
         Self {
             state: ConnectionState::Disconnected,
             user_name: None,
+            user_id: None,
             guild_count: 0,
             guilds: Vec::new(),
             voice_channels: BTreeMap::new(),
@@ -405,7 +411,13 @@ impl DiscordRuntime {
         let shared = Arc::clone(&self.shared);
         let shard_slot = Arc::clone(&self.shard_manager);
         let task = self.handle.spawn(async move {
-            let intents = GatewayIntents::GUILDS | GatewayIntents::GUILD_VOICE_STATES;
+            // No privileged intent (change `owner-link-paste`, design D4): the messages come
+            // for a pasted link code, with their text only in a direct message to the bot
+            // or when they mention it.
+            let intents = GatewayIntents::GUILDS
+                | GatewayIntents::GUILD_VOICE_STATES
+                | GatewayIntents::GUILD_MESSAGES
+                | GatewayIntents::DIRECT_MESSAGES;
             let songbird_config = songbird::Config::default().decode_mode(DecodeMode::Decode(
                 DecodeConfig::new(Channels::Stereo, SampleRate::Hz48000),
             ));
@@ -479,6 +491,7 @@ impl DiscordRuntime {
             status.state = ConnectionState::Disconnected;
             status.voice_channels.clear();
             status.user_name = None;
+            status.user_id = None;
             status.guild_count = 0;
         });
         self.shared.log("Discord: disconnected");
@@ -558,5 +571,29 @@ mod tests {
         ));
         assert_eq!(discord.status().state, ConnectionState::Disconnected);
         assert!(!discord.is_running());
+    }
+
+    /// Change `owner-link-paste`, design D5: the bot's account id goes to the window as a
+    /// JSON string (a JavaScript number would lose its last digits) and a disconnect
+    /// clears it with the name.
+    #[test]
+    fn the_bots_id_is_a_string_and_a_disconnect_clears_it() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let discord = DiscordRuntime::new(
+            EventBus::new(8),
+            Arc::new(NullHost(AtomicBool::new(false))),
+            runtime.handle().clone(),
+        );
+        discord.shared.update(|status| {
+            status.state = ConnectionState::Connected;
+            status.user_name = Some("Adviser".to_owned());
+            status.user_id = Some("1568533518601031690".to_owned());
+        });
+        let json = serde_json::to_value(discord.status()).unwrap();
+        assert_eq!(json["user_id"], serde_json::json!("1568533518601031690"));
+        runtime.block_on(discord.stop());
+        let status = discord.status();
+        assert_eq!(status.user_id, None);
+        assert_eq!(status.user_name, None);
     }
 }
