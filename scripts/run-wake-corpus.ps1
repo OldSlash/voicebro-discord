@@ -20,6 +20,11 @@ param(
     [string[]]$Languages
 )
 $ErrorActionPreference = "Stop"
+# The old wake corpus is made with the Windows voices (change voice-corpus-tests, D10).
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+    Write-Output "run-wake-corpus.ps1 runs only on Windows: the old wake corpus is made with the Windows voices."
+    exit 0
+}
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 # Through -File, "de,fr" arrives as one string.
 $Languages = @($Languages | ForEach-Object { $_ -split "," } | Where-Object { $_ })

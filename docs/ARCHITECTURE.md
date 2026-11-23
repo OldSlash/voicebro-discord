@@ -91,7 +91,7 @@ voicebro-discord/
       ui/                      static HTML/CSS/JS, no bundler, `withGlobalTauri: true`
     server/                    native console shell for the existing bot and Codex realtime assistant
     probe/                     headless dev binary: live probes and self-tests, not shipped
-  scripts/                     build-release.ps1, third-party-notices.ps1, make-wake-corpus.ps1, measure.ps1
+  scripts/                     build-release.ps1, third-party-notices.ps1, make-wake-corpus.ps1, run-wake-corpus.ps1 (both Windows-only), run-voice-corpus.ps1, measure.ps1
   README.md                    the landing page: features, quick start, building from source, license
   docs/                        this file, the user guide (user-guide.md) and its images (images/)
   openspec/
@@ -876,6 +876,65 @@ pub struct Phrase { pub text: String, pub words: Vec<String> }
   worker), back to back, and through the ticks of design D1, in five phases; the D1 run must
   hear what the back-to-back run hears. It also measures the time from the end of a
   sentence to the deactivation, old worker against D1.
+- The old wake corpus runs only on Windows (change `voice-corpus-tests`, D10): it is made
+  with the Windows voices into `target\wake-corpus\`. Off Windows
+  `vosk_corpus_when_assets_are_provided` and `vosk_gaps_when_assets_are_provided` are
+  ignored with that reason, `stt::whisper::tests::whisper_runtime_when_enabled` checks the
+  runtime's defaults and skips its two corpus transcriptions, and
+  `scripts\make-wake-corpus.ps1` and `scripts\run-wake-corpus.ps1` say they are
+  Windows-only and exit with 0.
+- **The voice corpus** (change `voice-corpus-tests`), on every platform:
+  - *The corpus* is `crates/voicebro-core/testdata/voice-corpus/<language>/`, any depth;
+    only `en` is run, another language folder is named as not covered. Each folder's
+    `expect.txt` gives `<file>.wav = activate | deactivate | activate, deactivate | none
+    [; the words]` and optionally `phrases = <activation, ...> | <deactivation, ...>`,
+    which applies to the folders below that set none (without one: the catalog's English
+    defaults, "bro" | "peace out"). A list beginning with `deactivate` starts with a session
+    active. A WAV without a line is run and reported, not judged; a line naming a missing
+    file is an error. Folders named `local` are run and ignored by git, since the
+    repository is public; anything committed there is public.
+  - *The English set* is `en/tts/`, recorded by `probe voice-corpus-make` (4.9) with six
+    voices whose output may be published: Piper `en_US-ljspeech-high` and `en_GB-cori-high`
+    (public domain, trained from scratch) and Kokoro v0.19 `af_bella`, `am_adam`,
+    `bf_emma` and `bm_george` (Apache-2.0); its `SOURCES.md` says the files are machine
+    generated and names each voice, license and model card. The Windows voices are never
+    used: their terms do not allow publishing their output. Per voice: "bro" alone, at a
+    sentence's start, after "hey" and at its end (activate); a plain sentence, "Brother,
+    ..." and look-alike words (none); "peace out" alone and at a sentence's end
+    (deactivate); and an activation sentence, 1.5 s of silence and "Thanks, peace out."
+    (activate, deactivate). 16 kHz mono 16-bit WAVs, resampled from the voices' 22.05 and
+    24 kHz.
+  - *The test* `voice_corpus::voice_corpus_when_enabled` (a test-only module,
+    `src/voice_corpus.rs`) reads 16-bit and 24-bit PCM and 32-bit float WAVs at any rate,
+    mono or stereo (`WAVE_FORMAT_EXTENSIBLE` included), and plays each file as Discord
+    delivers a speaker: 48 kHz stereo frames, one per receive tick, a frame sent while its
+    peak is 256 or more and for 5 frames after, nothing in between while the ticks go on,
+    and 100 ticks after the file. Each file also runs with the old corpus test's steady
+    noise of peak 300 under it and for 3 s after it, every frame sent.
+  - *Vosk* (when `VOICEBRO_VOSK_DIR` is set): the English catalog model, a fresh
+    `SpeakerState` per run fed by `accept_discord` and `on_tick` as the worker feeds it; a
+    folder's phrase with a word the model does not know makes its labeled files errors.
+  - *Whisper* (when `VOICEBRO_WHISPER_DIR` is set): the runtime of the device, the VAD
+    model and the model (`VOICEBRO_WHISPER_MODEL`, default `stt::catalog::DEFAULT_MODEL`;
+    `VOICEBRO_WHISPER_DEVICE`, default `cpu`) must be installed: nothing is downloaded, and
+    a missing file fails the test with its name. A fresh `Cutter` per run, each utterance
+    transcribed in `en` with the phrases as the prompt, then `clean` and `decide` in the
+    wake word mode.
+  - *The rules of state* are the gate's (`Rules` copies them: activation only while
+    waiting, deactivation only while active, no activation within `REACTIVATION_GUARD` of a
+    deactivation, in the file's time). A change of the gate's rules in `gate.rs` must change
+    `Rules` too.
+  - *The report* gives per file, engine and run the wanted and the actual state changes
+    with `ok`, `WRONG`, `ERROR` or `--` (unlabeled); for Vosk each confirmed or ignored
+    phrase with its moment in the file and its delay after the phrase's end, a deactivation
+    seen but never confirmed, and what Vosk heard; for Whisper each utterance's span, its
+    text or why none, the decision with its phrase and question, the transcription time and
+    the delay after the speech. A summary per engine and run follows (right of labeled,
+    false activations, unlabeled, errors, Whisper's median time), then one verdict: the
+    test fails at the end on any wrong, missing or unreadable labeled file.
+  - `VOICEBRO_VOICE_CORPUS` points the test at another corpus folder;
+    `scripts\run-voice-corpus.ps1` runs it in release with this PC's asset folders and keeps
+    each report in `target\voice-corpus\runs\`.
 
 ### 4.5 Assistant (`assistant/`)
 
@@ -2543,6 +2602,12 @@ session against the fake Codex (4.5). The probes:
   [--prompt text]` prints the text, the language, the load time and the transcription
   time; `--bench` repeats the clip to 2, 5 and 10 s and prints the median of three runs
   each;
+- `probe voice-corpus-make [--assets <dir>]` (change `voice-corpus-tests`) records the
+  English set of the voice corpus (4.4) with its six publishable voices into
+  `crates/voicebro-core/testdata/voice-corpus/en/tts/`, which it rewrites whole with its
+  `expect.txt` and `SOURCES.md`. The voices' files come through the asset store (cori and
+  Kokoro from the voice list, ljspeech from an `Asset` the probe pins); each synthesis is
+  resampled to 16 kHz. The files are public once committed;
 - `probe whisper-corpus [--languages en,ru] [--no-prompt]` runs every WAV of the wake corpus
   (`target\wake-corpus\<lang>\`) through Whisper and `decide` with that language's default
   phrases, then three noise-only clips the probe makes (silence, steady noise of peak 300,
