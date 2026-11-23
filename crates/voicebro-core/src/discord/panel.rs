@@ -1,8 +1,9 @@
 //! The member panel: one message per guild with the assistant's state and its buttons (named
-//! for no engine since change `claude-and-opencode-engines`): Mute assistant and Leave
-//! channel in the first row, the three assistant modes in the second (change
-//! `discord-panel-controls`, design D1). Edits are coalesced to one per second by the
-//! refresher task.
+//! for no engine since change `claude-and-opencode-engines`): one row of Mute assistant,
+//! Text answers and Leave channel (change `discord-panel-controls`, design D1; the
+//! Realtime voice and Whisper mode buttons were dropped by change
+//! `console-and-panel-fixes`, D4). Edits are coalesced to one per second by the refresher
+//! task.
 
 use super::{AssistantState, Shared};
 use crate::settings::AssistantMode;
@@ -28,7 +29,10 @@ pub enum PanelAction {
 
 /// One of the panel's buttons: the guild of the panel and what it does. Its custom id is
 /// `voicebro:mute:<guild>` (as before the change, so an older panel's Mute still parses),
-/// `voicebro:leave:<guild>` or `voicebro:mode:<realtime|whisper|text>:<guild>`.
+/// `voicebro:leave:<guild>` or `voicebro:mode:<realtime|whisper|text>:<guild>`. The panel
+/// posts only Text answers now, but every mode name still parses, so a press on an older
+/// panel's Realtime voice or Whisper mode reaches the old-panel rule (change
+/// `console-and-panel-fixes`, D4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelButton {
     pub guild: u64,
@@ -129,8 +133,9 @@ pub fn embed(view: &PanelView<'_>) -> CreateEmbed {
         .field("In the channel", people, false)
 }
 
-/// The two rows of buttons (design D1): Mute assistant (Unmute assistant while muted) and
-/// Leave channel; then the three modes, the current one marked and not pressable.
+/// The one row of buttons (change `console-and-panel-fixes`, D4): Mute assistant (Unmute
+/// assistant while muted), Text answers (marked and not pressable while it is the mode) and
+/// Leave channel.
 pub fn components(guild: GuildId, muted: bool, mode: AssistantMode) -> Vec<CreateActionRow> {
     let id = |action| {
         PanelButton {
@@ -153,24 +158,16 @@ pub fn components(guild: GuildId, muted: bool, mode: AssistantMode) -> Vec<Creat
     let leave = CreateButton::new(id(PanelAction::Leave))
         .label("Leave channel")
         .style(ButtonStyle::Danger);
-    let modes = AssistantMode::ALL
-        .into_iter()
-        .map(|candidate| {
-            let current = candidate == mode;
-            CreateButton::new(id(PanelAction::Mode(candidate)))
-                .label(mode_button_label(candidate))
-                .style(if current {
-                    ButtonStyle::Primary
-                } else {
-                    ButtonStyle::Secondary
-                })
-                .disabled(current)
+    let text_current = mode == AssistantMode::Text;
+    let text = CreateButton::new(id(PanelAction::Mode(AssistantMode::Text)))
+        .label(mode_button_label(AssistantMode::Text))
+        .style(if text_current {
+            ButtonStyle::Primary
+        } else {
+            ButtonStyle::Secondary
         })
-        .collect();
-    vec![
-        CreateActionRow::Buttons(vec![mute, leave]),
-        CreateActionRow::Buttons(modes),
-    ]
+        .disabled(text_current);
+    vec![CreateActionRow::Buttons(vec![mute, text, leave])]
 }
 
 /// The panel as `/join` posts it for a sample state, for the `discord-panel` probe: the
@@ -316,50 +313,59 @@ mod tests {
         }
     }
 
-    /// Design D1: two rows; the first holds Mute (Unmute while muted) and Leave channel, the
-    /// second the three modes with only the current one primary and disabled.
+    /// Change `console-and-panel-fixes`, D4: one row of Mute (Unmute while muted), Text
+    /// answers and Leave channel; Text answers primary and disabled only in its own mode; no
+    /// Realtime voice or Whisper mode button.
     #[test]
-    fn the_components_hold_two_rows_for_every_mode_and_mute_state() {
+    fn the_components_hold_one_row_for_every_mode_and_mute_state() {
         let guild = GuildId::new(7);
         for mode in AssistantMode::ALL {
             for muted in [false, true] {
                 let rows = serde_json::to_value(components(guild, muted, mode)).unwrap();
                 let rows = rows.as_array().unwrap();
-                assert_eq!(rows.len(), 2);
-                let first = rows[0]["components"].as_array().unwrap();
-                assert_eq!(first.len(), 2);
-                assert_eq!(
-                    first[0]["label"],
-                    if muted {
-                        "Unmute assistant"
-                    } else {
-                        "Mute assistant"
-                    }
-                );
-                assert_eq!(first[0]["custom_id"], "voicebro:mute:7");
-                assert_eq!(first[1]["label"], "Leave channel");
-                assert_eq!(first[1]["custom_id"], "voicebro:leave:7");
-                assert_eq!(first[1]["style"], 4, "Leave channel is the danger style");
-                let second = rows[1]["components"].as_array().unwrap();
-                let labels: Vec<&str> = second
+                assert_eq!(rows.len(), 1, "{mode:?} muted {muted}");
+                let row = rows[0]["components"].as_array().unwrap();
+                let labels: Vec<&str> = row
                     .iter()
                     .map(|button| button["label"].as_str().unwrap())
                     .collect();
-                assert_eq!(labels, ["Realtime voice", "Whisper mode", "Text answers"]);
-                for (button, candidate) in second.iter().zip(AssistantMode::ALL) {
-                    let current = candidate == mode;
-                    assert_eq!(
-                        button["custom_id"],
-                        format!("voicebro:mode:{}:7", candidate.name())
-                    );
-                    assert_eq!(button["disabled"], current, "{mode:?} {candidate:?}");
-                    assert_eq!(
-                        button["style"],
-                        if current { 1 } else { 2 },
-                        "primary for the current mode, secondary for the others"
-                    );
-                }
+                let mute = if muted {
+                    "Unmute assistant"
+                } else {
+                    "Mute assistant"
+                };
+                assert_eq!(labels, [mute, "Text answers", "Leave channel"]);
+                assert_eq!(row[0]["custom_id"], "voicebro:mute:7");
+                assert_eq!(row[1]["custom_id"], "voicebro:mode:text:7");
+                assert_eq!(row[2]["custom_id"], "voicebro:leave:7");
+                assert_eq!(row[2]["style"], 4, "Leave channel is the danger style");
+                let text_current = mode == AssistantMode::Text;
+                assert_eq!(row[1]["disabled"], text_current, "{mode:?}");
+                assert_eq!(
+                    row[1]["style"],
+                    if text_current { 1 } else { 2 },
+                    "primary in the text answers mode, secondary otherwise"
+                );
             }
+        }
+    }
+
+    /// Design D4: the buttons of a panel posted before change `console-and-panel-fixes` still
+    /// parse, so their presses reach the old-panel rule.
+    #[test]
+    fn an_older_panels_mode_buttons_still_parse() {
+        for (id, mode) in [
+            ("voicebro:mode:realtime:42", AssistantMode::Realtime),
+            ("voicebro:mode:whisper:42", AssistantMode::Whisper),
+            ("voicebro:mode:text:42", AssistantMode::Text),
+        ] {
+            assert_eq!(
+                PanelButton::parse(id),
+                Some(PanelButton {
+                    guild: 42,
+                    action: PanelAction::Mode(mode)
+                })
+            );
         }
     }
 }

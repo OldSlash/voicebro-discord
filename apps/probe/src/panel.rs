@@ -1,9 +1,11 @@
-//! `discord-panel` (change `discord-panel-controls`, task 3.1): posts the panel as `/join`
-//! builds it, for each assistant mode, unmuted and muted, to the test channel's text chat;
-//! reads each message back and checks its embed and its two rows of buttons (the labels, the
-//! custom ids, Leave channel's danger style, the current mode marked and disabled, the other
-//! modes pressable); then deletes the messages. It shows that Discord accepts and stores the
-//! components, not that presses work: a press needs a person in Discord.
+//! `discord-panel` (change `discord-panel-controls`, task 3.1; one row since change
+//! `console-and-panel-fixes`, task 2.2): posts the panel as `/join` builds it, for each
+//! assistant mode, unmuted and muted, to the test channel's text chat; reads each message
+//! back and checks its embed and its one row of buttons (Mute or Unmute assistant, Text
+//! answers, Leave channel: the labels, the custom ids, Leave channel's danger style, Text
+//! answers marked and disabled only in the text answers mode); then deletes the messages. It
+//! shows that Discord accepts and stores the components, not that presses work: a press
+//! needs a person in Discord.
 
 use crate::discord::env;
 use crate::Outcome;
@@ -56,11 +58,12 @@ fn check(message: &Message, guild: u64, mode: AssistantMode, muted: bool) -> Vec
         problems.push(format!("{} embeds, not 1", message.embeds.len()));
     }
     let rows = rows(message);
-    if rows.len() != 2 {
-        problems.push(format!("{} rows, not 2", rows.len()));
+    if rows.len() != 1 {
+        problems.push(format!("{} rows, not 1", rows.len()));
         return problems;
     }
-    let first: Vec<(&str, &str)> = rows[0]
+    let row = &rows[0];
+    let found: Vec<(&str, &str)> = row
         .iter()
         .map(|button| (button.label.as_str(), button.custom_id.as_str()))
         .collect();
@@ -70,53 +73,43 @@ fn check(message: &Message, guild: u64, mode: AssistantMode, muted: bool) -> Vec
         "Mute assistant"
     };
     let mute_id = format!("voicebro:mute:{guild}");
+    let text_id = format!("voicebro:mode:text:{guild}");
     let leave_id = format!("voicebro:leave:{guild}");
-    if first
+    if found
         != [
             (mute, mute_id.as_str()),
+            (mode_button_label(AssistantMode::Text), text_id.as_str()),
             ("Leave channel", leave_id.as_str()),
         ]
     {
-        problems.push(format!("first row {first:?}"));
-    }
-    if rows[0].get(1).and_then(|button| button.style) != Some(ButtonStyle::Danger) {
-        problems.push("Leave channel is not the danger style".to_owned());
-    }
-    if rows[0].iter().any(|button| button.disabled) {
-        problems.push("a button of the first row is disabled".to_owned());
-    }
-    if rows[1].len() != AssistantMode::ALL.len() {
-        problems.push(format!("{} mode buttons", rows[1].len()));
+        problems.push(format!("row {found:?}"));
         return problems;
     }
-    for (button, candidate) in rows[1].iter().zip(AssistantMode::ALL) {
-        let current = candidate == mode;
-        let id = format!("voicebro:mode:{}:{guild}", candidate.name());
-        if button.label != mode_button_label(candidate) || button.custom_id != id {
-            problems.push(format!(
-                "mode button {:?} {:?}",
-                button.label, button.custom_id
-            ));
-        }
-        if button.disabled != current {
-            problems.push(format!(
-                "{} is {}",
-                button.label,
-                if button.disabled {
-                    "disabled"
-                } else {
-                    "pressable"
-                }
-            ));
-        }
-        let style = if current {
-            ButtonStyle::Primary
-        } else {
-            ButtonStyle::Secondary
-        };
-        if button.style != Some(style) {
-            problems.push(format!("{} has style {:?}", button.label, button.style));
-        }
+    if row[2].style != Some(ButtonStyle::Danger) {
+        problems.push("Leave channel is not the danger style".to_owned());
+    }
+    if row[0].disabled || row[2].disabled {
+        problems.push("Mute or Leave channel is disabled".to_owned());
+    }
+    let text_current = mode == AssistantMode::Text;
+    if row[1].disabled != text_current {
+        problems.push(format!(
+            "Text answers is {} in the {} mode",
+            if row[1].disabled {
+                "disabled"
+            } else {
+                "pressable"
+            },
+            mode.name()
+        ));
+    }
+    let style = if text_current {
+        ButtonStyle::Primary
+    } else {
+        ButtonStyle::Secondary
+    };
+    if row[1].style != Some(style) {
+        problems.push(format!("Text answers has style {:?}", row[1].style));
     }
     problems
 }
@@ -178,7 +171,7 @@ pub fn run(_args: &[String]) -> anyhow::Result<Outcome> {
                     mode.name(),
                     if muted { "muted" } else { "not muted" },
                     if problems.is_empty() {
-                        "two rows, labels, ids and the marked mode as built".to_owned()
+                        "one row, labels, ids and the Text answers state as built".to_owned()
                     } else {
                         problems.join("; ")
                     }
