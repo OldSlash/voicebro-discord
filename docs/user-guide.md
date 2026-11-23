@@ -72,7 +72,7 @@ In a folder such as `C:\Program Files` it shows a message and does not start.
 > `SHA256SUMS.txt` from the same release:
 >
 > ```powershell
-> Get-FileHash .\VoiceBro_1.3.0_x64-setup.exe -Algorithm SHA256
+> Get-FileHash .\VoiceBro_1.3.1_x64-setup.exe -Algorithm SHA256
 > ```
 
 ## 3. Connect the bot
