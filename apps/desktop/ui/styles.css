@@ -320,6 +320,7 @@ input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-
 .owner-code { display: flex; flex-direction: column; gap: 4px; }
 .owner-code[hidden] { display: none; }
 .owner-code code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 1.25em; letter-spacing: 0.06em; user-select: all; }
+.owner-code-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .owner-countdown { color: var(--ink-dim); font-size: 0.88em; }
 /* The people who agreed (change `voice-consent`): one row per record, the name, the time
    and Remove; the time gives way first on a narrow window. */

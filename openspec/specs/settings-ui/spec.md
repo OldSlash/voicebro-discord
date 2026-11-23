@@ -563,13 +563,25 @@ that a change applies at once.
 - **THEN** nothing is saved and the field says the URL must start with `https://`
 
 ### Requirement: Link code in the Access card
-While a code is waiting, the Access card SHALL show the code, the command to type with it,
-the time left and a Cancel button. When the code ends without a link, the card SHALL say why:
-expired, cancelled or ended after 5 wrong tries.
+While a code is waiting, the Access card SHALL show the code, a Copy button, where to paste
+the copied message in Discord, the time left and a Cancel button. Copy SHALL put on the
+clipboard one message of the bot's mention, the word `link` and the code, and the card
+SHALL then say it was copied. While the bot is not connected to Discord, Copy SHALL be
+unavailable and the card SHALL say that it works once the bot is connected. When the code
+ends without a link, the card SHALL say why: expired, cancelled or ended after 5 wrong
+tries.
 
 #### Scenario: Code shown
-- **WHEN** the user presses Link while Codex is signed in
-- **THEN** the card shows an 8-character code, `/link` with that code, a countdown from 10 minutes and a Cancel button
+- **WHEN** the user presses Link while Codex is signed in and the bot is connected
+- **THEN** the card shows an 8-character code, a Copy button, where to paste the copied message (a direct message to the bot, the chat of its voice channel or another channel it can read), a countdown from 10 minutes and a Cancel button
+
+#### Scenario: Copy
+- **WHEN** the code `K7QF-2M9X` waits, the bot's account id is `1234`, and the user presses Copy
+- **THEN** the clipboard holds `<@1234> link K7QF-2M9X`, and the card says the message was copied and to paste it in Discord and send it
+
+#### Scenario: Copy while the bot is not connected
+- **WHEN** a code waits and the bot is not connected to Discord
+- **THEN** the code is shown, Copy is unavailable, and the card says Copy works once the bot is connected
 
 #### Scenario: Link completed
 - **WHEN** the owner sends the code from Discord while the card shows it
@@ -577,7 +589,7 @@ expired, cancelled or ended after 5 wrong tries.
 
 #### Scenario: Cancel
 - **WHEN** the user presses Cancel
-- **THEN** the code disappears, a later `/link` with it links nothing, and the card shows the previous link state
+- **THEN** the code disappears, a later `/link` or message with it links nothing, and the card shows the previous link state
 
 ### Requirement: Assistant mode in the Assistant card
 The Config tab's Assistant card SHALL hold the assistant mode as its first field: "Realtime
@@ -791,7 +803,7 @@ should reach the assistant, with "Hear only me" and "Not now". Either answer SHA
 
 #### Scenario: Hear only me, nobody linked
 - **WHEN** the dialog is shown, no owner is linked, and the user presses "Hear only me"
-- **THEN** `discord.access` is saved as `owner`, the Access card opens with a link code shown, and the card says to type `/link` with the code in Discord
+- **THEN** `discord.access` is saved as `owner`, and the Access card opens with a link code shown, its Copy button and where to paste the copied message in Discord
 
 #### Scenario: Hear only me, owner linked
 - **WHEN** the dialog is shown, an owner is linked, and the user presses "Hear only me"

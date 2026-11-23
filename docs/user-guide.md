@@ -42,7 +42,7 @@ The bot needs these permissions:
 | **View Channels** | Seeing the voice channel and the text channel where you type `/join`. |
 | **Connect** | Joining the voice channel. |
 | **Speak** | Playing the assistant's answers in the voice channel. |
-| **Send Messages** | Keeping the panel that `/join` posts up to date. VoiceBro edits it whenever the state changes. Posting the assistant's answers, if you turn that on ([section 8](#posting-the-answers-to-discord)). |
+| **Send Messages** | Keeping the panel that `/join` posts up to date. VoiceBro edits it whenever the state changes. Posting the assistant's answers, if you turn that on ([section 8](#posting-the-answers-to-discord)). Answering a pasted owner link code in the chat it came from. |
 | **Embed Links** | Showing that panel, which is an embed, and the previews of the links in a posted answer. |
 
 When the bot joins your server, Discord gives it a role with these permissions. A channel's
@@ -618,12 +618,13 @@ Whisper mode, text answers.", and the panel that `/join` posts shows the same un
 | Say the deactivation phrase, or stay quiet | The session ends, at once or after the auto-stop time. |
 | `/status` | Shows what VoiceBro is doing, and the mode: realtime voice, Whisper, or Whisper with text answers. |
 | `/leave` | The bot leaves the channel. |
-| `/link` | With the code that **Link my Discord account** in **Config → Access** shows, makes your Discord account VoiceBro's owner. Also in a direct message to the bot ([Who the assistant hears](#who-the-assistant-hears)). |
+| `/link` | With the code that **Link my Discord account** in **Config → Access** shows, makes your Discord account VoiceBro's owner. Also in a direct message to the bot. Instead of the command you can paste the message the card's **Copy** makes ([Who the assistant hears](#who-the-assistant-hears)). |
 | `/optin` | Shows you the consent text and the privacy policy link, with **I agree** and **Cancel**. Also in a direct message to the bot. |
 | `/optout` | Withdraws your consent and deletes your record. Also in a direct message to the bot. |
 | `/privacy` | Shows the privacy policy link the operator set. Also in a direct message to the bot. |
 
-Only you see the replies to `/link`, `/optin`, `/optout` and `/privacy`.
+Only you see the replies to `/link`, `/optin`, `/optout` and `/privacy`. A pasted link
+code is a message, so the bot's answer to it is posted in the chat it came from.
 
 **Mute** ends the current session at once and sends nothing until you unmute. Use the
 **Mute assistant** button in Discord, the button on the **Status** tab, or the hotkey
@@ -776,12 +777,18 @@ To link your account:
 2. In **Config → Access**, press **Link my Discord account**. VoiceBro reads the engine's
    account (your ChatGPT account with Codex, your Claude account with Claude Code) and shows
    a code, for example `K7QF-2M9X`, for 10 minutes.
-3. In Discord, from your own account, send `/link` with that code, in any server the bot is
-   in or in a direct message to the bot. Only you see the bot's reply. Upper or lower case
-   and the dash do not matter.
+3. Press **Copy**. It puts one message on the clipboard: the bot's mention, `link` and the
+   code (Copy works once the bot is connected to Discord). In Discord, from your own
+   account, paste it and send it: in a direct message to the bot, in the chat of its voice
+   channel, or in another channel the bot can read. The bot answers in the same chat; in a
+   server channel everyone there sees the answer and your message, and the code is dead
+   once used. Or send `/link` with the code, in any server the bot is in or in a direct
+   message to it: only you see that reply. Upper or lower case and the dash do not matter.
 4. The card shows your Discord name. Choose **Only my Discord account** (or **People who
    agreed**, where your linked account needs no `/optin`).
 
+If the bot does not answer your pasted message (a channel it cannot read, or the mention
+was removed), press **Cancel**: others in that channel can read the code until it ends.
 The code works once. Five wrong codes, from anyone, end it; press **Link** for a new one.
 After a first install, `/link` can take up to an hour to appear in direct messages; in the
 server set as **Discord guild ID** it appears at once.

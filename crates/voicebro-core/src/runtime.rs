@@ -1813,6 +1813,111 @@ mod tests {
         runtime.shutdown();
     }
 
+    /// Change `owner-link-paste`, task 1.4 and "The code stays in the window": a link, a
+    /// wrong code and an expired code that come through a pasted message are logged with
+    /// the sender and the place, and no log line or event holds the code or the message.
+    #[test]
+    fn a_link_by_message_logs_neither_the_code_nor_the_text() {
+        use crate::discord::link_message::{complete, link_attempt};
+        const BOT: u64 = 1568533518601031690;
+        let tokio_rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, assistant) = owner_runtime(&dir, &tokio_rt);
+        let mut window = runtime.events().subscribe();
+        assistant.sign_in(Some("me@example.com"));
+        let pending = runtime.start_link().unwrap();
+        let host: Arc<dyn VoiceHost> = runtime.host.clone();
+        let wrong = format!("<@{BOT}> link WRONGCODE");
+        let attempt = link_attempt(&wrong, BOT).unwrap();
+        assert_eq!(
+            complete(
+                host.as_ref(),
+                runtime.events(),
+                7,
+                "Sam",
+                Some(1091401169441656933),
+                &attempt
+            ),
+            CompleteOutcome::Wrong { tries_left: 4 }
+        );
+        let right = format!("<@{BOT}> link {}", pending.code);
+        let attempt = link_attempt(&right, BOT).unwrap();
+        assert_eq!(
+            complete(host.as_ref(), runtime.events(), 42, "Alex", None, &attempt),
+            CompleteOutcome::Linked {
+                name: "Alex".to_owned()
+            }
+        );
+        assert_eq!(runtime.status().owner.linked.unwrap().id, "42");
+
+        // An expired code through a message, on an owner state with its own clock.
+        struct LinkHost(OwnerState);
+        impl VoiceHost for LinkHost {
+            fn on_tick(&self, _: u64, _: &crate::audio::Frame, _: &[(u32, &[i16])]) {}
+            fn set_speaker_name(&self, _: u64, _: u32, _: &str) {}
+            fn set_participants(&self, _: u64, _: &[(u64, String)]) {}
+            fn on_join(&self, _: u64, _: crate::audio::OutputHandle) {}
+            fn on_leave(&self, _: u64) {}
+            fn assistant_state(&self, _: u64) -> crate::discord::AssistantState {
+                crate::discord::AssistantState::Off
+            }
+            fn toggle_mute(&self) -> bool {
+                false
+            }
+            fn is_muted(&self) -> bool {
+                false
+            }
+            fn complete_link(&self, user: u64, name: &str, code: &str) -> CompleteOutcome {
+                self.0.complete(user, name, code)
+            }
+        }
+        let now = Arc::new(Mutex::new(std::time::Instant::now()));
+        let clock = Arc::clone(&now);
+        let events = runtime.events().clone();
+        let owner = OwnerState::with_clock(
+            Arc::new(crate::owner::MemoryLinkStore::default()),
+            events.clone(),
+            Box::new(move || *clock.lock().unwrap()),
+        );
+        let later = owner.issue_code_for("codex", "x".to_owned()).unwrap();
+        *now.lock().unwrap() += crate::owner::CODE_LIFETIME + Duration::from_secs(1);
+        let expired = format!("{} <@{BOT}>", later.code);
+        let attempt = link_attempt(&expired, BOT).unwrap();
+        assert_eq!(
+            complete(&LinkHost(owner), &events, 9, "Kim", None, &attempt),
+            CompleteOutcome::Expired
+        );
+
+        let mut places = Vec::new();
+        while let Ok(event) = window.try_recv() {
+            let shown = format!("{event:?}");
+            for code in [&pending.code, &later.code] {
+                assert!(
+                    !shown.contains(code.as_str()) && !shown.contains(&code.replace('-', "")),
+                    "{shown}"
+                );
+            }
+            assert!(
+                !shown.contains("WRONGCODE"),
+                "the typed value is not logged: {shown}"
+            );
+            if let AppEvent::Log { line } = event {
+                if line.starts_with("owner link: a link message from") {
+                    places.push(line);
+                }
+            }
+        }
+        assert_eq!(
+            places,
+            vec![
+                "owner link: a link message from Sam in server 1091401169441656933".to_owned(),
+                "owner link: a link message from Alex in a direct message".to_owned(),
+                "owner link: a link message from Kim in a direct message".to_owned(),
+            ]
+        );
+        runtime.shutdown();
+    }
+
     /// Scenario "Mode on, nothing linked" and the filter values the receive path reads.
     #[test]
     fn the_mode_and_the_link_set_the_voice_filter() {

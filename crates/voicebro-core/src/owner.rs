@@ -519,7 +519,7 @@ impl OwnerState {
             inner.waiting = None;
             inner.code_ended = Some("the code expired".to_owned());
             self.events
-                .log("owner link: a /link came after the code expired");
+                .log("owner link: a code came after the code expired");
             self.changed(&inner);
             return CompleteOutcome::Expired;
         }
