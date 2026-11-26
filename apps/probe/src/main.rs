@@ -141,12 +141,6 @@ const PROBES: &[Probe] = &[
         run: rtc::call,
     },
     Probe {
-        name: "codex-say",
-        summary: "the Codex voice reads a sentence aloud in its language, for test speech; args: <trigger.wav> <out.wav> <sentence>",
-        needs: "codex signed in with a ChatGPT account; a 48 kHz mono WAV of any short speech as the trigger",
-        run: rtc::say,
-    },
-    Probe {
         name: "credential",
         summary: "write, read, delete a VoiceBro/test credential in the Windows Credential Manager",
         needs: "nothing; args: [--keep] to leave the entry for a reboot check",
@@ -179,7 +173,7 @@ const PROBES: &[Probe] = &[
     },
     Probe {
         name: "tts",
-        summary: "a voice of the Whisper mode reads a sentence into a WAV, or with --bench the fixed sentences with 2, 4 and 8 threads (load, first audio, RTF, WAVs in target/tts-listen, Whisper reads them back); args: <voice id> [<text> <out.wav>] [--bench] [--threads n] [--steps n]",
+        summary: "a voice of the Whisper mode reads a sentence into a WAV, or with --bench the fixed sentences with 2, 4 and 8 threads (load, first audio, RTF, WAVs in target/tts-listen, Whisper reads them back); args: <voice id> [<text> <out.wav>] [--bench] [--threads n] [--steps n] [--rate hz] (--rate writes the WAV at that rate)",
         needs: "the voice files in --assets, VOICEBRO_WHISPER_DIR or target/whisper-test/assets (a missing one is downloaded from its pinned URL); --bench also a Whisper model",
         run: tts::run,
     },

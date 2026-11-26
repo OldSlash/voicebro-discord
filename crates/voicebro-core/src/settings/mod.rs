@@ -886,6 +886,11 @@ pub struct CodexSettings {
     /// (change `config-tab-and-codex-lists`). Off by default: the saved lists are shown, and
     /// Codex starts at app start only while none are saved. Read once, at start.
     pub refresh_lists_at_start: bool,
+    /// The user pressed Hide in the ChatGPT account notice of the Codex card: the notice is
+    /// not shown again (change `chatgpt-account-notice`, D3). The headless app does not
+    /// read it.
+    #[serde(deserialize_with = "account_notice_hidden_flag")]
+    pub account_notice_hidden: bool,
 }
 
 impl Default for CodexSettings {
@@ -897,8 +902,16 @@ impl Default for CodexSettings {
             voice: String::new(),
             handoff_mode: DEFAULT_HANDOFF_MODE.to_owned(),
             refresh_lists_at_start: false,
+            account_notice_hidden: false,
         }
     }
+}
+
+/// `codex.account_notice_hidden` takes only `true` or `false`.
+fn account_notice_hidden_flag<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<bool, D::Error> {
+    strict_flag(deserializer, "codex.account_notice_hidden")
 }
 
 /// The longest model name `claude.model` and `opencode.model` take.
@@ -922,13 +935,21 @@ pub struct ClaudeSettings {
     pub subscription_notice_hidden: bool,
 }
 
-/// `claude.subscription_notice_hidden` takes only `true` or `false`; anything else is
-/// refused with the field's path.
+/// `claude.subscription_notice_hidden` takes only `true` or `false`.
 fn notice_hidden_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    strict_flag(deserializer, "claude.subscription_notice_hidden")
+}
+
+/// A flag that takes only `true` or `false`; anything else is refused with the field's
+/// path.
+fn strict_flag<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    field: &str,
+) -> Result<bool, D::Error> {
     match Value::deserialize(deserializer)? {
-        Value::Bool(hidden) => Ok(hidden),
+        Value::Bool(flag) => Ok(flag),
         other => Err(serde::de::Error::custom(format!(
-            "claude.subscription_notice_hidden must be true or false, not {other}"
+            "{field} must be true or false, not {other}"
         ))),
     }
 }
@@ -2734,6 +2755,43 @@ mod tests {
             error
                 .to_string()
                 .contains("claude.subscription_notice_hidden"),
+            "{error}"
+        );
+    }
+
+    /// Requirement "ChatGPT account notice setting" (change `chatgpt-account-notice`): the
+    /// Hide flag of the Codex card's notice defaults to false, a 1.3.1 file loads it as false
+    /// with its other Codex settings kept and the next save writes it, a saved `true` is read
+    /// back, and only a boolean is taken.
+    #[test]
+    fn the_account_notice_flag_defaults_to_false_and_takes_only_a_boolean() {
+        assert!(!Settings::default().codex.account_notice_hidden);
+        let older: Settings = serde_json::from_value(json!({
+            "version": 2,
+            "codex": { "voice": "cove", "handoff_mode": "commentary", "refresh_lists_at_start": true }
+        }))
+        .unwrap();
+        assert!(!older.codex.account_notice_hidden);
+        assert_eq!(older.codex.voice, "cove");
+        assert_eq!(older.codex.handoff_mode, "commentary");
+        assert!(older.codex.refresh_lists_at_start);
+        let written = serde_json::to_value(&older).unwrap();
+        assert_eq!(written["codex"]["account_notice_hidden"], json!(false));
+
+        let hidden = Settings::default()
+            .with_patch(&json!({ "codex": { "account_notice_hidden": true } }))
+            .unwrap();
+        assert!(hidden.codex.account_notice_hidden);
+        assert_eq!(Settings::default().changed_sections(&hidden), vec!["codex"]);
+        let reread: Settings =
+            serde_json::from_value(serde_json::to_value(&hidden).unwrap()).unwrap();
+        assert!(reread.codex.account_notice_hidden);
+
+        let error = Settings::default()
+            .with_patch(&json!({ "codex": { "account_notice_hidden": "yes" } }))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("codex.account_notice_hidden"),
             "{error}"
         );
     }

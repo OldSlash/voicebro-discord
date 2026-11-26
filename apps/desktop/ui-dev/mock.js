@@ -64,7 +64,7 @@
     tts: { voice: "supertonic3:F1", speed: 1.0 },
     // `handoff_mode` and `refresh_lists_at_start` as the app fills them for a file without
     // the fields: the defaults.
-    codex: { executable: "", model: "", reasoning_effort: "", voice: "", handoff_mode: "items", refresh_lists_at_start: false },
+    codex: { executable: "", model: "", reasoning_effort: "", voice: "", handoff_mode: "items", refresh_lists_at_start: false, account_notice_hidden: false },
     claude: { executable: "", model: "", subscription_notice_shown: false, subscription_notice_hidden: false },
     opencode: { executable: "", model: "" },
     hotkey: { mute: "Ctrl+Alt+M" },
@@ -78,6 +78,20 @@
   let muted = false;
   // Codex as the status reports it, and the install offer: `__mock.setCodex(...)` switches.
   let codex = { installed: true, signedIn: true, accountRead: true, winget: true, nextExitCode: 0 };
+  // Change `chatgpt-account-notice`: `?codex_account=chatgpt|api_key|bedrock|gcp|none` is the
+  // account type Codex reads (a ChatGPT account by default; none is not signed in), and
+  // `?codex_notice_hidden` stores the notice as hidden. `__mock.setCodexAccount(kind)`
+  // changes the type as a sign-in outside VoiceBro would.
+  const CODEX_ACCOUNT_TYPES = { chatgpt: "chatgpt", api_key: "apiKey", bedrock: "amazonBedrock", gcp: "gcp", none: null };
+  function setCodexAccountKind(kind) {
+    if (!(kind in CODEX_ACCOUNT_TYPES)) throw new Error(`unknown Codex account kind ${kind}`);
+    codex.accountType = CODEX_ACCOUNT_TYPES[kind];
+    codex.signedIn = kind !== "none";
+    codex.accountRead = true;
+  }
+  setCodexAccountKind(new URLSearchParams(location.search).get("codex_account") || "chatgpt");
+  // The account type the status and Check carry; a `setCodex` without it is a ChatGPT one.
+  const codexAccountType = () => (codex.installed && codex.signedIn ? codex.accountType || "chatgpt" : null);
   let install = { kind: "idle" };
   let capabilities = {
     models: [
@@ -210,6 +224,7 @@
   }
   if (new URLSearchParams(location.search).has("notice_shown")) settings.claude.subscription_notice_shown = true;
   if (new URLSearchParams(location.search).has("notice_hidden")) settings.claude.subscription_notice_hidden = true;
+  if (new URLSearchParams(location.search).has("codex_notice_hidden")) settings.codex.account_notice_hidden = true;
   const claude = {
     installed: !new URLSearchParams(location.search).has("claude_missing"),
     signIn: new URLSearchParams(location.search).get("claude_signin") || "subscription",
@@ -820,6 +835,9 @@
     if (typeof doc.claude.subscription_notice_hidden !== "boolean") {
       throw `claude.subscription_notice_hidden must be true or false, not ${JSON.stringify(doc.claude.subscription_notice_hidden)}`;
     }
+    if (typeof doc.codex.account_notice_hidden !== "boolean") {
+      throw `codex.account_notice_hidden must be true or false, not ${JSON.stringify(doc.codex.account_notice_hidden)}`;
+    }
     const opencodeModel = String(doc.opencode.model).trim();
     if (/\s/.test(opencodeModel)) throw `opencode.model: «${opencodeModel}» must not contain spaces`;
     if (opencodeModel && !/^[^/]+\/.+$/.test(opencodeModel)) {
@@ -989,9 +1007,9 @@
         engine: "codex",
         summary: !codex.installed
           ? "codex not found: press Install Codex on the Status tab, or set the path of codex.exe in Config"
-          : codex.signedIn ? "signed in (chatgpt)" : codex.accountRead ? "not signed in" : "codex found; it starts at /join",
-        signed_in: codex.installed && codex.signedIn, account_type: codex.installed && codex.signedIn ? "chatgpt" : null,
-        email: null, plan: "plus",
+          : codex.signedIn ? `signed in (${codexAccountType()})` : codex.accountRead ? "not signed in" : "codex found; it starts at /join",
+        signed_in: codex.installed && codex.signedIn, account_type: codexAccountType(),
+        email: null, plan: codexAccountType() === "chatgpt" ? "plus" : null,
         executable: codex.installed ? "C:\\Users\\me\\AppData\\Local\\Microsoft\\WinGet\\Links\\codex.exe" : null,
         version: codex.installed ? "codex-cli 0.167.0" : null,
         running: codex.installed, error: null, model_in_use: null, reasoning_effort_in_use: null,
@@ -1159,7 +1177,7 @@
           });
         }
       }
-      return { signed_in: codex.signedIn, kind: codex.signedIn ? "chatgpt" : null, email: null, plan: codex.signedIn ? "plus" : null };
+      return { signed_in: codex.signedIn, kind: codexAccountType(), email: null, plan: codexAccountType() === "chatgpt" ? "plus" : null };
     },
     codex_install_info: () => ({
       winget: codex.winget, package: "OpenAI.Codex", source: "OpenAI's GitHub releases (github.com/openai/codex)",
@@ -1282,6 +1300,11 @@
     },
     setOpencodeProviders: (providers) => {
       opencode.providers = providers;
+      emit("app-event", { event: "assistant" });
+    },
+    // Change `chatgpt-account-notice`: chatgpt | api_key | bedrock | gcp | none.
+    setCodexAccount: (kind) => {
+      setCodexAccountKind(kind);
       emit("app-event", { event: "assistant" });
     },
     // How many times a command was called since the page loaded, or since `sinceIndex`

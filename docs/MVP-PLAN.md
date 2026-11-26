@@ -784,7 +784,7 @@ the measurements of the real-channel phase are recorded.
 | Global shortcut swallowed by a full-screen game or anti-cheat | Hotkey useless in the main use case | The hotkey probe; raw `RegisterHotKey` fallback |
 | Panel edits hit Discord rate limits | Stale panel | Coalesce to one edit per second; the state is also in `/status` |
 | Credential Manager entry limits or roaming surprises | Token lost | The credential probe; DPAPI blob fallback behind the same trait |
-| Terms: one personal ChatGPT account used by a whole channel | Legal gray area | The user decides before publishing |
+| Terms: one personal ChatGPT account used by a whole channel | Legal gray area | The user decides before publishing; since change `chatgpt-account-notice` the Codex card and the headless app advise the owner-only access mode and name the terms of ChatGPT's voice, enforcing nothing |
 
 ## 9. Decisions taken on 2026-11-09
 

@@ -35,6 +35,8 @@ const LIST_CONSENTS_ARG: &str = "--list-consents";
 const REMOVE_CONSENT_ARG: &str = "--remove-consent";
 const ANTHROPIC_TERMS: &str = "https://www.anthropic.com/legal/consumer-terms";
 const CLAUDE_CODE_LEGAL: &str = "https://code.claude.com/docs/en/legal-and-compliance";
+const OPENAI_TERMS: &str = "https://openai.com/policies/terms-of-use/";
+const OPENAI_SERVICE_TERMS: &str = "https://openai.com/policies/service-terms/";
 
 /// What the command line asks for.
 enum Command {
@@ -378,6 +380,13 @@ fn run_bot(
             }
         });
     }
+    // Change `chatgpt-account-notice`, D4: without reading the account, which would start
+    // Codex before a join.
+    if settings.assistant.engine == AssistantEngine::Codex
+        && settings.discord.access != AccessMode::Owner
+    {
+        chatgpt_account_notice();
+    }
     if link_owner {
         let runtime = Arc::clone(&runtime);
         let (codex, claude) = (engines.codex.clone(), engines.claude.clone());
@@ -441,6 +450,14 @@ fn report_access(runtime: &Runtime, settings: &Settings, owner: &OwnerStatus) {
 fn subscription_notice() {
     log::warn!(
         "Claude Code may be signed in with a Claude subscription, which only its holder may use (Anthropic's Consumer Terms: {ANTHROPIC_TERMS}; Claude Code: {CLAUDE_CODE_LEGAL}). While other people's voices reach the assistant, they use that subscription. To let only your own voice through, set discord.access to \"owner\" in settings.json and link your Discord account with voicebro-server {LINK_OWNER_ARG}, or sign Claude Code in with an API key. VoiceBro does not enforce this."
+    );
+}
+
+/// The ChatGPT account notice, which the window shows in the Codex card (change
+/// `chatgpt-account-notice`, D4).
+fn chatgpt_account_notice() {
+    log::warn!(
+        "If Codex is signed in with a ChatGPT account (any plan), only its holder may use it (OpenAI's Terms of Use: {OPENAI_TERMS}). While other people's voices reach the assistant, they use that account. In the realtime voice mode the assistant speaks with ChatGPT's voice, which OpenAI's Service Terms ({OPENAI_SERVICE_TERMS}) allow for non-commercial use only and not distributed as a recording or a sound file: do not record and publish what the assistant says. To let only your own voice through, set discord.access to \"owner\" in settings.json and link your Discord account with voicebro-server {LINK_OWNER_ARG}. This does not apply to an OpenAI API key, Amazon Bedrock or Google Cloud sign-in. VoiceBro does not enforce this."
     );
 }
 

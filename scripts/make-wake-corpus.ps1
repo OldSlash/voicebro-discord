@@ -7,13 +7,16 @@
 # Run from the repository root:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\make-wake-corpus.ps1
 #
-# -Codex also makes the sets of the eight other catalog languages, spoken by the Codex
-# voice through `probe codex-say` (Windows has no voices for them): 48 kHz mono WAVs in
-# target\wake-corpus\<cs|nl|fr|de|it|pl|pt|es>\, six per language, and the voice's
-# transcript of every attempt in transcripts.txt there. That is 48 real calls with the
-# ChatGPT sign-in (an existing file is kept, so a rerun only makes what is missing; -Force
-# makes them all again); build the probe first (cargo build -p probe). -CodexOnly skips
-# the Windows-voice sets; -Languages de,fr limits the Codex sets.
+# -Piper also makes the sets of the eight other catalog languages (Windows has no voices for
+# them), each spoken by one Piper voice of the app's catalog through `probe tts --rate 48000`
+# (change chatgpt-account-notice): 48 kHz mono WAVs in
+# target\wake-corpus\<cs|nl|fr|de|it|pl|pt|es>\, six per language, and sources.txt there
+# naming each file's voice, its license and its sentence. Offline once the voices are in the
+# probe's assets folder (a missing voice is downloaded with its pinned hash); no sign-in. A
+# file made from the same voice and sentence before is kept, so a rerun only makes what is
+# missing or changed; -Force makes them all again. Build the probe first (cargo build -p
+# probe). -PiperOnly skips the Windows-voice sets; -Languages de,fr limits the Piper sets;
+# -Assets names the probe's assets folder.
 #
 # -Deactivation makes the Russian deactivation set in target\wake-corpus\ru\ (Irina):
 # "отбой" alone, after "ладно", repeated and inside a sentence; "Отбой, братан." and
@@ -22,13 +25,16 @@
 # phrases of several words run on them.
 param(
     [string]$Out = "target\wake-corpus",
-    [switch]$Codex,
-    [switch]$CodexOnly,
+    [switch]$Piper,
+    [switch]$PiperOnly,
     [switch]$Deactivation,
     [switch]$Force,
     [string[]]$Languages,
-    # The probe that runs codex-say: a copy elsewhere lets cargo rebuild meanwhile.
-    [string]$Probe = "target\debug\probe.exe"
+    # The probe that runs tts: a copy elsewhere lets cargo rebuild meanwhile.
+    [string]$Probe = "target\debug\probe.exe",
+    # The probe's assets folder; empty is its own default (VOICEBRO_WHISPER_DIR or
+    # target\whisper-test\assets).
+    [string]$Assets = ""
 )
 $ErrorActionPreference = "Stop"
 # The old wake corpus is made with the Windows voices (change voice-corpus-tests, D10).
@@ -80,61 +86,65 @@ $deactivationSet = [ordered]@{
     "ru-deact-all"           = "Ну, братан, всё."
 }
 
-# The Codex-voiced sets: the activation phrase alone, at the start of a question and at the
+# The Piper-voiced sets: the activation phrase alone, at the start of a question and at the
 # end of a sentence, a plain sentence with neither phrase, and the deactivation phrase alone
 # and at the end of a sentence. The phrases (activation | deactivation) are the catalog's
-# defaults, the same that catalog_models_load_when_enabled checks.
-$codexCorpus = [ordered]@{
-    "cs" = @{ voice = "juniper"; phrases = "brácha | čau"; lines = [ordered]@{
+# defaults, the same that catalog_models_load_when_enabled checks. Each voice's license chain
+# was read on its model card and its datasets' pages on 2026-11-26: the voice's own dataset,
+# then the checkpoint it was fine-tuned from (rdh: CC0; hifi_tts_92: NVIDIA's Hi-Fi TTS,
+# CC BY 4.0, LibriVox audio); each allows publishing what the voice says. Where the catalog
+# has two voices, the one fine-tuned from rdh is taken.
+$piperCorpus = [ordered]@{
+    "cs" = @{ voice = "piper:cs_CZ-jirka-medium"; license = "dataset CC0; fine-tuned from hifi_tts_92 (CC BY 4.0)"; phrases = "brácha | čau"; lines = [ordered]@{
         "alone" = "Brácha."
         "start" = "Brácha, kolik je teď hodin v Praze?"
         "end" = "To byla dobrá hra, brácha."
         "plain" = "Pojďme k hradu a počkáme na ostatní."
         "goodbye-alone" = "Čau."
         "goodbye" = "Díky za pomoc. Čau." } }
-    "nl" = @{ voice = "cove"; phrases = "maat | doei doei"; lines = [ordered]@{
+    "nl" = @{ voice = "piper:nl_NL-pim-medium"; license = "dataset CC0; fine-tuned from rdh (CC0)"; phrases = "maat | doei doei"; lines = [ordered]@{
         "alone" = "Maat."
         "start" = "Maat, hoe laat is het nu in Amsterdam?"
         "end" = "Dat was een goed spel, maat."
         "plain" = "Laten we naar het kasteel gaan en op de anderen wachten."
         "goodbye-alone" = "Doei doei."
         "goodbye" = "Bedankt voor de hulp. Doei doei." } }
-    "fr" = @{ voice = "juniper"; phrases = "mon frère | à la prochaine, a la prochaine"; lines = [ordered]@{
+    "fr" = @{ voice = "piper:fr_FR-siwis-medium"; license = "SIWIS dataset CC BY 4.0; fine-tuned from hifi_tts_92 (CC BY 4.0)"; phrases = "mon frère | à la prochaine, a la prochaine"; lines = [ordered]@{
         "alone" = "Mon frère."
         "start" = "Mon frère, quelle heure est-il à Paris ?"
         "end" = "C'était une bonne partie, mon frère."
         "plain" = "Allons au château et attendons les autres."
         "goodbye-alone" = "À la prochaine."
         "goodbye" = "Merci pour l'aide. À la prochaine." } }
-    "de" = @{ voice = "cove"; phrases = "bruder | bis dann"; lines = [ordered]@{
+    "de" = @{ voice = "piper:de_DE-thorsten-medium"; license = "Thorsten-Voice dataset CC0; fine-tuned from rdh (CC0)"; phrases = "bruder | bis dann"; lines = [ordered]@{
         "alone" = "Bruder."
         "start" = "Bruder, wie spät ist es in Berlin?"
         "end" = "Das war ein gutes Spiel, Bruder."
         "plain" = "Lass uns zur Burg gehen und auf die anderen warten."
         "goodbye-alone" = "Bis dann."
         "goodbye" = "Danke für die Hilfe. Bis dann." } }
-    "it" = @{ voice = "juniper"; phrases = "fratello | arrivederci"; lines = [ordered]@{
+    "it" = @{ voice = "piper:it_IT-paola-medium"; license = "dataset CC0; fine-tuned from hifi_tts_92 (CC BY 4.0)"; phrases = "fratello | arrivederci"; lines = [ordered]@{
         "alone" = "Fratello."
         "start" = "Fratello, che ore sono a Roma?"
         "end" = "È stata una bella partita, fratello."
         "plain" = "Andiamo al castello e aspettiamo gli altri."
         "goodbye-alone" = "Arrivederci."
         "goodbye" = "Grazie per l'aiuto. Arrivederci." } }
-    "pl" = @{ voice = "cove"; phrases = "ziomek | do widzenia"; lines = [ordered]@{
+    "pl" = @{ voice = "piper:pl_PL-darkman-medium"; license = "dataset CC0; fine-tuned from rdh (CC0)"; phrases = "ziomek | do widzenia"; lines = [ordered]@{
         "alone" = "Ziomek."
         "start" = "Ziomek, która jest godzina w Warszawie?"
         "end" = "To była dobra gra, ziomek."
         "plain" = "Chodźmy do zamku i poczekajmy na resztę."
         "goodbye-alone" = "Do widzenia."
         "goodbye" = "Dzięki za pomoc. Do widzenia." } }
-    "pt" = @{ voice = "juniper"; phrases = "irmão | até mais"; lines = [ordered]@{
+    "pt" = @{ voice = "piper:pt_BR-faber-medium"; license = "dataset CC0; fine-tuned from hifi_tts_92 (CC BY 4.0)"; phrases = "irmão | até mais"; lines = [ordered]@{
         "alone" = "Irmão."
         "start" = "Irmão, que horas são em São Paulo?"
         "end" = "Foi um bom jogo, irmão."
         "plain" = "Vamos ao castelo esperar os outros."
         "goodbye-alone" = "Até mais."
         "goodbye" = "Obrigado pela ajuda. Até mais." } }
-    "es" = @{ voice = "cove"; phrases = "hermano | hasta luego"; lines = [ordered]@{
+    "es" = @{ voice = "piper:es_ES-davefx-medium"; license = "dataset CC0; fine-tuned from rdh (CC0)"; phrases = "hermano | hasta luego"; lines = [ordered]@{
         "alone" = "Hermano."
         "start" = "Hermano, ¿qué hora es en Madrid?"
         "end" = "Fue una buena partida, hermano."
@@ -146,9 +156,6 @@ $codexCorpus = [ordered]@{
 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $installed = $synth.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }
 $format = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000,
-    [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen,
-    [System.Speech.AudioFormat.AudioChannel]::Mono)
-$format48 = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(48000,
     [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen,
     [System.Speech.AudioFormat.AudioChannel]::Mono)
 
@@ -165,7 +172,7 @@ if ($Deactivation) {
     }
 }
 
-if (-not $CodexOnly) {
+if (-not $PiperOnly) {
     foreach ($language in $corpus.Keys) {
         $dir = Join-Path $Out $language
         New-Item -ItemType Directory -Force $dir | Out-Null
@@ -187,53 +194,39 @@ if (-not $CodexOnly) {
     }
 }
 
-if ($Codex -or $CodexOnly) {
+if ($Piper -or $PiperOnly) {
     $probe = $Probe
     if (-not (Test-Path $probe)) {
         throw "Build the probe first: cargo build -p probe (with CMake on PATH)."
     }
-    $codexDir = Join-Path $Out "codex"
-    New-Item -ItemType Directory -Force $codexDir | Out-Null
-    # Any short speech makes the voice answer; the instruction tells it what to read.
-    $trigger = Join-Path (Resolve-Path $codexDir) "trigger.wav"
-    $synth.SelectVoice("Microsoft David Desktop")
-    $synth.SetOutputToWaveFile($trigger, $format48)
-    $synth.Speak("Go ahead.")
-    $synth.SetOutputToNull()
-    foreach ($language in $codexCorpus.Keys) {
+    $assetArgs = if ($Assets) { @("--assets", $Assets) } else { @() }
+    foreach ($language in $piperCorpus.Keys) {
         if ($Languages -and $Languages -notcontains $language) { continue }
-        $set = $codexCorpus[$language]
+        $set = $piperCorpus[$language]
+        Write-Output "${language}: $($set.voice) ($($set.license))"
         $dir = Join-Path $Out $language
         New-Item -ItemType Directory -Force $dir | Out-Null
-        $log = Join-Path (Resolve-Path $dir) "transcripts.txt"
+        $sources = Join-Path (Resolve-Path $dir) "sources.txt"
+        $known = if (Test-Path $sources) { @(Get-Content -Encoding utf8 $sources) } else { @() }
+        $lines = @()
         foreach ($name in $set.lines.Keys) {
-            $path = Join-Path (Resolve-Path $dir) "$language-$name.wav"
+            $file = "$language-$name.wav"
+            $path = Join-Path (Resolve-Path $dir) $file
             $sentence = $set.lines[$name]
-            # A file made from the same sentence before is kept, unless -Force.
-            $madeFrom = if (Test-Path $log) {
-                Select-String -Path $log -SimpleMatch "$language-$name.wav," -Encoding utf8 |
-                    Where-Object { $_.Line -match "PASS; wanted: (.*?);" -and $Matches[1] -eq $sentence } |
-                    Select-Object -Last 1
-            }
-            if (-not $Force -and (Test-Path $path) -and $madeFrom) {
+            $line = "$file = $($set.voice) ($($set.license)): $sentence"
+            $lines += $line
+            # A file made from the same voice and sentence before is kept, unless -Force.
+            if (-not $Force -and (Test-Path $path) -and $known -contains $line) {
                 Write-Output "$path (kept)"
                 continue
             }
-            $env:VOICEBRO_PROBE_VOICE = $set.voice
-            $done = $false
-            for ($attempt = 1; $attempt -le 3 -and -not $done; $attempt++) {
-                $output = & $probe codex-say $trigger $path $sentence | Out-String
-                $done = $LASTEXITCODE -eq 0
-                $said = ($output -split "`r?`n" | Where-Object { $_ -match "transcript assistant:" }) -join " "
-                $result = if ($done) { "PASS" } else { "FAIL" }
-                Add-Content -Encoding utf8 $log "$language-$name.wav, $($set.voice), attempt ${attempt}: $result; wanted: $sentence; $($said.Trim())"
-            }
-            if (-not $done) {
-                throw "The Codex voice did not read '$sentence' word for word in 3 attempts; see $log."
+            $output = & $probe tts $set.voice $sentence $path --rate 48000 @assetArgs 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $path)) {
+                throw "The voice $($set.voice) did not read '$sentence':`n$output"
             }
             Write-Output $path
         }
+        [IO.File]::WriteAllLines($sources, [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
     }
-    Remove-Item Env:VOICEBRO_PROBE_VOICE -ErrorAction SilentlyContinue
 }
 $synth.Dispose()

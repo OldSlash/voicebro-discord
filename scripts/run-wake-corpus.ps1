@@ -1,7 +1,7 @@
 ﻿# Runs the whole wake-word corpus, one file per run so that a wrong file never hides the
 # others, without noise and with noise 300, and prints one line per run with what Vosk
 # heard. Needs the assets (VOICEBRO_VOSK_DIR layout) in target\wake-corpus\assets and the
-# WAVs made by scripts\make-wake-corpus.ps1 (-Codex for the eight Codex-voiced sets).
+# WAVs made by scripts\make-wake-corpus.ps1 (-Piper for the eight Piper-voiced sets).
 # Run from the repository root:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-wake-corpus.ps1 [-Languages de,fr]
 # The phrases (activation | deactivation) are the catalog's default phrases of each model
@@ -54,7 +54,7 @@ foreach ($voice in "david", "zira") {
     foreach ($name in "brother", "lookalike", "plain") { $files["en\$voice-en-$name.wav"] = "" }
     foreach ($name in "peace-alone", "goodbye") { $files["en\$voice-en-$name.wav"] = "Deactivate" }
 }
-$codex = [ordered]@{
+$others = [ordered]@{
     "cs" = @("vosk-model-small-cs-0.4-rhasspy", "brácha | čau")
     "nl" = @("vosk-model-small-nl-0.22", "maat | doei doei")
     "fr" = @("vosk-model-small-fr-0.22", "mon frère | à la prochaine, a la prochaine")
@@ -64,8 +64,8 @@ $codex = [ordered]@{
     "pt" = @("vosk-model-small-pt-0.3", "irmão | até mais")
     "es" = @("vosk-model-small-es-0.42", "hermano | hasta luego")
 }
-foreach ($lang in $codex.Keys) {
-    $sets[$lang] = @($codex[$lang][0], $codex[$lang][1], [ordered]@{
+foreach ($lang in $others.Keys) {
+    $sets[$lang] = @($others[$lang][0], $others[$lang][1], [ordered]@{
         "$lang\$lang-alone.wav" = "Activate"; "$lang\$lang-start.wav" = "Activate"
         "$lang\$lang-end.wav" = "Activate"; "$lang\$lang-plain.wav" = ""
         "$lang\$lang-goodbye-alone.wav" = "Deactivate"; "$lang\$lang-goodbye.wav" = "Deactivate" })

@@ -380,10 +380,11 @@
       if (control.dataset.path === "assistant.mode") applyAssistantMode();
       if (control.dataset.path === "assistant.one_speaker_at_a_time") applyInterruptSwitch();
       // The access mode's warnings follow a saved mode or URL at once, and so does the
-      // Claude subscription notice.
+      // Claude subscription notice and the ChatGPT account notice.
       if (control.dataset.path.startsWith("discord.")) {
         renderAccessNotes();
         renderClaudeNotice();
+        renderCodexNotice();
       }
       // The CUDA runtime's notice follows the chosen device at once.
       if (control.id === "whisper-device" && lastStatus) renderWhisperNotices(lastStatus);
@@ -1497,6 +1498,7 @@
       ? ""
       : "The voice mode works only with Codex: choosing Realtime voice switches the engine to Codex.";
     renderClaudeNotice();
+    renderCodexNotice();
   }
 
   // After a save that changed the engine, from the Engine list or the mode list: the form,
@@ -1586,10 +1588,42 @@
   const ANTHROPIC_TERMS = "https://www.anthropic.com/legal/consumer-terms";
   const CLAUDE_CODE_LEGAL = "https://code.claude.com/docs/en/legal-and-compliance";
   const claudeDialog = $("claude-notice-dialog");
-  const claudeNotice = { kind: null, busy: false };
+  const claudeNotice = { kind: null };
+  // One save at a time for both account notices (Claude's and ChatGPT's): Hear only me
+  // and Hide.
+  let noticeBusy = false;
   // A subscription, or a sign-in not known yet (not read, not signed in): the notice
   // applies. An API key or a cloud provider: it does not.
   const noticeApplies = (kind) => !["api_key", "cloud"].includes(kind || "unknown");
+  function noticeLink(href, label) {
+    const anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.target = "_blank";
+    anchor.rel = "noopener";
+    anchor.textContent = label;
+    return anchor;
+  }
+  // The notice's two buttons and the line for a refused save; Hide runs `onHide(container)`.
+  function noticeActions(container, onHide) {
+    const actions = document.createElement("span");
+    actions.className = "row-actions";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button primary";
+    button.textContent = "Hear only me";
+    button.addEventListener("click", () => hearOnlyMe(false));
+    // Change `claude-notice-hide`: the notice goes for good; the choice is the user's.
+    const hide = document.createElement("button");
+    hide.type = "button";
+    hide.className = "button";
+    hide.textContent = "Hide";
+    hide.addEventListener("click", () => onHide(container));
+    actions.append(button, hide);
+    const message = document.createElement("small");
+    message.className = "field-message";
+    message.dataset.noticeMessage = "";
+    container.append(actions, message);
+  }
   function noticeParagraphs(container, withButton) {
     container.replaceChildren();
     const text = document.createElement("p");
@@ -1598,36 +1632,9 @@
     advice.textContent = "Let only your own voice through with \"Only my Discord account\" in the Access card (everyone still hears the answers), or sign Claude Code in with an API key, which Anthropic's Commercial Terms cover. VoiceBro does not enforce this: the choice is yours.";
     const links = document.createElement("p");
     links.className = "notice-links";
-    const link = (href, label) => {
-      const anchor = document.createElement("a");
-      anchor.href = href;
-      anchor.target = "_blank";
-      anchor.rel = "noopener";
-      anchor.textContent = label;
-      return anchor;
-    };
-    links.append(link(ANTHROPIC_TERMS, "Anthropic's Consumer Terms"), " · ", link(CLAUDE_CODE_LEGAL, "Claude Code: legal and compliance"));
+    links.append(noticeLink(ANTHROPIC_TERMS, "Anthropic's Consumer Terms"), " · ", noticeLink(CLAUDE_CODE_LEGAL, "Claude Code: legal and compliance"));
     container.append(text, advice, links);
-    if (withButton) {
-      const actions = document.createElement("span");
-      actions.className = "row-actions";
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "button primary";
-      button.textContent = "Hear only me";
-      button.addEventListener("click", () => hearOnlyMe(false));
-      // Change `claude-notice-hide`: the notice goes for good; the choice is the user's.
-      const hide = document.createElement("button");
-      hide.type = "button";
-      hide.className = "button";
-      hide.textContent = "Hide";
-      hide.addEventListener("click", () => hideClaudeNotice(container));
-      actions.append(button, hide);
-      const message = document.createElement("small");
-      message.className = "field-message";
-      message.dataset.noticeMessage = "";
-      container.append(actions, message);
-    }
+    if (withButton) noticeActions(container, hideClaudeNotice);
   }
   // Shown at the top of the Claude Code card (change `claude-notice-hide`) while the engine
   // is Claude Code, its sign-in is a subscription or not known, more voices than the owner's
@@ -1644,17 +1651,22 @@
   // Hide: stores `claude.subscription_notice_hidden`; the notice then never shows again. A
   // refused save leaves it with the reason under it.
   async function hideClaudeNotice(box) {
-    if (!invoke || claudeNotice.busy) return;
-    claudeNotice.busy = true;
+    await hideNotice(box, { claude: { subscription_notice_hidden: true } });
+  }
+  // Saves a notice's Hide flag; a refused save leaves the notice with the reason under it.
+  async function hideNotice(box, patch) {
+    if (!invoke || noticeBusy) return;
+    noticeBusy = true;
     const message = box.querySelector("[data-notice-message]");
     try {
-      stored = await invoke("save_settings", { patch: { claude: { subscription_notice_hidden: true } } });
+      stored = await invoke("save_settings", { patch });
       if (message) message.textContent = "";
       renderClaudeNotice();
+      renderCodexNotice();
     } catch (error) {
       if (message) message.textContent = `Not hidden: ${error}`;
     } finally {
-      claudeNotice.busy = false;
+      noticeBusy = false;
     }
   }
   function openClaudeDialog() {
@@ -1677,13 +1689,14 @@
   }
   // "Hear only me": the owner-only access mode, and a link code when nobody is linked.
   async function hearOnlyMe(fromDialog) {
-    if (!invoke || claudeNotice.busy) return;
-    claudeNotice.busy = true;
+    if (!invoke || noticeBusy) return;
+    noticeBusy = true;
     try {
       stored = await invoke("save_settings", { patch: { discord: { access: "owner" } } });
       fillField($("access-mode"), true);
       renderAccessNotes();
       renderClaudeNotice();
+      renderCodexNotice();
       if (fromDialog) await closeClaudeDialog();
       if (!ownerStatus.linked) {
         // Open the Access card and show the code there.
@@ -1697,7 +1710,7 @@
     } catch (error) {
       appendLog(`Hear only me failed: ${error}`);
     } finally {
-      claudeNotice.busy = false;
+      noticeBusy = false;
     }
   }
   $("claude-notice-owner").addEventListener("click", () => hearOnlyMe(true));
@@ -1707,6 +1720,40 @@
     event.preventDefault();
     closeClaudeDialog();
   });
+
+  // ---------- The ChatGPT account notice (change `chatgpt-account-notice`, D1 and D2) ----
+  const OPENAI_TERMS = "https://openai.com/policies/terms-of-use/";
+  const OPENAI_SERVICE_TERMS = "https://openai.com/policies/service-terms/";
+  // The Codex account's `type` from the last Codex status; none before Codex has read it.
+  const codexNotice = { kind: null };
+  // A ChatGPT account, none read yet or a type this window does not know: the notice
+  // applies. An API key, Amazon Bedrock or Google Cloud: it does not.
+  const codexNoticeApplies = (kind) => !["apiKey", "amazonBedrock", "gcp"].includes(kind);
+  function codexNoticeParagraphs(container) {
+    container.replaceChildren();
+    const text = document.createElement("p");
+    text.textContent = "A ChatGPT account (Free, Go, Plus, Pro, Business, Enterprise or another ChatGPT plan) may be used only by you. OpenAI's Terms of Use do not let you make your account available to anyone else. While other people's voices reach the assistant, they use your account.";
+    const voice = document.createElement("p");
+    voice.textContent = "In the realtime voice mode the assistant speaks with ChatGPT's voice. OpenAI's Service Terms allow that voice for non-commercial use only and do not allow distributing it as a recording or a sound file: do not record and publish what the assistant says.";
+    const advice = document.createElement("p");
+    advice.textContent = "Let only your own voice through with \"Only my Discord account\" in the Access card (everyone still hears the answers). VoiceBro does not enforce this: the choice is yours.";
+    const links = document.createElement("p");
+    links.className = "notice-links";
+    links.append(noticeLink(OPENAI_TERMS, "OpenAI Terms of Use"), " · ", noticeLink(OPENAI_SERVICE_TERMS, "OpenAI Service Terms"));
+    container.append(text, voice, advice, links);
+    noticeActions(container, (box) => hideNotice(box, { codex: { account_notice_hidden: true } }));
+  }
+  // Shown at the top of the Codex card while the engine is Codex, its account is ChatGPT or
+  // not known, more voices than the owner's pass, and the user has not hidden it. It never
+  // starts Codex and opens no dialog.
+  function renderCodexNotice() {
+    const show = engineOf() === "codex" && codexNoticeApplies(codexNotice.kind)
+      && (stored?.discord?.access || "everyone") !== "owner" && !stored?.codex?.account_notice_hidden;
+    document.querySelectorAll("[data-codex-notice]").forEach((box) => {
+      if (show && !box.childElementCount) codexNoticeParagraphs(box);
+      box.hidden = !show;
+    });
+  }
 
   // ---- A model, device or voice: saved at once in both modes (change `models-in-settings`,
   // D3); its card's notice lists what it misses, with Download.
@@ -2238,6 +2285,8 @@
     setText("status-account-label", engine === "claude" ? "Claude Code sign-in" : engine === "opencode" ? "OpenCode providers" : "Codex account");
     setText("status-codex", assistant.summary || "—");
     renderCodexSetup(engine === "codex" ? assistant : { signed_in: true, executable: "-" });
+    // The ChatGPT account notice follows the account type Codex last read.
+    if (engine === "codex") codexNotice.kind = assistant.account_type || null;
     renderClaudeSetup(engine === "claude" ? assistant : null);
     renderOpencodeSetup(engine === "opencode" ? assistant : null);
     const calls = assistant.calls || [];
@@ -2251,6 +2300,7 @@
         ? `${assistant.model_in_use || "default model"}, reasoning ${assistant.reasoning_effort_in_use || "default"}`
         : "—");
     renderClaudeNotice();
+    renderCodexNotice();
     const hotkey = status.hotkey || {};
     setText("status-hotkey", !hotkey.shortcut
       ? "none configured"
