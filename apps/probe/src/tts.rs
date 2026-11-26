@@ -64,8 +64,10 @@ fn word_score(source: &str, heard: &str) -> f64 {
     hits as f64 / wanted.len().max(1) as f64
 }
 
-/// `probe tts <voice id> "<text>" <out.wav> [--threads n] [--steps n] [--assets dir]`, or
-/// `probe tts <voice id> --bench [--whisper-model id] [--whisper-device gpu]`.
+/// `probe tts <voice id> "<text>" <out.wav> [--threads n] [--steps n] [--assets dir]
+/// [--rate hz]`, or `probe tts <voice id> --bench [--whisper-model id] [--whisper-device gpu]`.
+/// `--rate` writes the WAV at that rate instead of the voice's own (change
+/// `chatgpt-account-notice`: the old wake corpus reads 16 or 48 kHz).
 pub fn run(args: &[String]) -> anyhow::Result<Outcome> {
     let rest = positional(
         args,
@@ -76,6 +78,7 @@ pub fn run(args: &[String]) -> anyhow::Result<Outcome> {
             "--whisper-model",
             "--whisper-device",
             "--language",
+            "--rate",
         ],
         &["--bench"],
     );
@@ -95,6 +98,10 @@ pub fn run(args: &[String]) -> anyhow::Result<Outcome> {
             bail!("usage: probe tts <voice id> \"<text>\" <out.wav>");
         };
         let threads: Option<i32> = flag(args, "--threads").map(str::parse).transpose()?;
+        let rate: Option<u32> = flag(args, "--rate").map(str::parse).transpose()?;
+        if rate.is_some_and(|rate| !(8_000..=192_000).contains(&rate)) {
+            bail!("--rate takes 8000 to 192000 Hz");
+        }
         let started = Instant::now();
         let mut synth = RealLoader {
             threads,
@@ -114,9 +121,16 @@ pub fn run(args: &[String]) -> anyhow::Result<Outcome> {
             .unwrap_or_default();
         let seconds = started.elapsed().as_secs_f64();
         let length = audio.len() as f64 / f64::from(synth.sample_rate());
-        std::fs::write(out, wav_bytes(&audio, synth.sample_rate()))?;
+        let (written, written_rate) = match rate {
+            Some(rate) if rate != synth.sample_rate() => (
+                voicebro_core::audio::dsp::Resampler::convert(&audio, synth.sample_rate(), rate),
+                rate,
+            ),
+            _ => (audio, synth.sample_rate()),
+        };
+        std::fs::write(out, wav_bytes(&written, written_rate))?;
         details.push(format!(
-            "{length:.2} s of audio at {} Hz in {seconds:.3} s (RTF {:.3}); wrote {out}",
+            "{length:.2} s of audio at {} Hz in {seconds:.3} s (RTF {:.3}); wrote {out} at {written_rate} Hz",
             synth.sample_rate(),
             seconds / length.max(1e-6)
         ));

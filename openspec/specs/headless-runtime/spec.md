@@ -133,7 +133,7 @@ On Linux (not tested) headless SHALL encrypt the stored Discord token, the owner
 - **THEN** the CPU runtime is installed, since there is no Linux CUDA runtime, and Whisper later runs on the CPU with the existing fallback message
 
 ### Requirement: Headless engine guidance
-Every message that sends the desktop user to a window control SHALL have a terminal variant in headless: Codex, Claude Code or OpenCode not found or not signed in, missing files, and a log line that asks to link the owner again, whose terminal variant names `voicebro-server --link-owner`. The terminal variant SHALL name the setting in `settings.json` or the terminal command to use. At startup with Claude Code as the engine, a Claude subscription or an unknown sign-in kind, and an access mode other than `owner`, headless SHALL print the subscription notice once; the notice SHALL NOT refuse a join or change a setting.
+Every message that sends the desktop user to a window control SHALL have a terminal variant in headless: Codex, Claude Code or OpenCode not found or not signed in, missing files, and a log line that asks to link the owner again, whose terminal variant names `voicebro-server --link-owner`. The terminal variant SHALL name the setting in `settings.json` or the terminal command to use. At startup with Claude Code as the engine, a Claude subscription or an unknown sign-in kind, and an access mode other than `owner`, headless SHALL print the subscription notice once; the notice SHALL NOT refuse a join or change a setting. At startup with Codex as the engine and an access mode other than `owner`, headless SHALL print the ChatGPT account notice once without starting Codex; it SHALL NOT refuse a join or change a setting.
 
 #### Scenario: Claude Code missing at join
 - **WHEN** a member runs `/join` on the headless app with Claude Code as the engine and no Claude Code is found
@@ -142,6 +142,14 @@ Every message that sends the desktop user to a window control SHALL have a termi
 #### Scenario: Subscription notice at start
 - **WHEN** headless starts with Claude Code signed in with a Claude subscription and `discord.access` set to `everyone`
 - **THEN** the terminal shows that a Claude subscription may be used only by its holder and how to let only the holder's voice through, and the bot starts normally
+
+#### Scenario: ChatGPT account notice at start
+- **WHEN** headless starts with Codex as the engine and `discord.access` set to `everyone`
+- **THEN** the terminal shows once that a ChatGPT account may be used only by its holder, that ChatGPT's voice is for non-commercial use and may not be recorded and published, and how to let only the holder's voice through with `discord.access` and `--link-owner`, with the links to OpenAI's terms; no Codex process starts for it, and the bot starts normally
+
+#### Scenario: Owner only at start
+- **WHEN** headless starts with Codex as the engine and `discord.access` set to `owner`
+- **THEN** no ChatGPT account notice is printed
 
 ### Requirement: Graceful console shutdown
 The binary SHALL invoke shared runtime shutdown on Ctrl+C on either platform and SIGTERM on Linux (not tested). On a Windows console close notification, it SHALL attempt the same cleanup within the time the OS allows. On Linux (not tested) every engine's child process SHALL run in its own process group and SHALL be stopped as a group, so a terminal Ctrl+C reaches only `voicebro-server` and no launcher script leaves its native process running.

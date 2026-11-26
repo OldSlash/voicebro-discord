@@ -420,9 +420,10 @@ const scenarios = [
     await load();
     const r = await page(`
       const body = $("card-codex-body");
-      // Change \`claude-and-opencode-engines\`: the rows of the other engines are hidden.
+      // Change \`claude-and-opencode-engines\`: the rows of the other engines are hidden. The
+      // account notices' buttons (change \`chatgpt-account-notice\`) are not fields.
       const fields = [...body.querySelectorAll("input, select, textarea, button")]
-        .filter((node) => !node.classList.contains("listed") && !node.closest("[data-engine][hidden]"))
+        .filter((node) => !node.classList.contains("listed") && !node.closest("[data-engine][hidden]") && !node.closest(".account-notice"))
         .map((node) => node.dataset.path || node.id);
       return { fields, values: { post: $("post-answers").value, history: $("save-chat-history").checked } };`);
     expect(same(r.fields, [

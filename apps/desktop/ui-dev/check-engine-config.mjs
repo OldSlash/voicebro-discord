@@ -1,7 +1,8 @@
 // Runs the window's scenarios of change `claude-and-opencode-engines` against the command
 // mock in a headless Edge and stops at the first failure with its name (exit code 1): the
 // Engine list and the realtime mode only Codex has, the engine card, the Claude subscription
-// notice and its dialog (no download dialog after it since change `models-in-settings`), the Status tab of each
+// notice and its dialog (no download dialog after it since change `models-in-settings`), the
+// ChatGPT account notice of the Codex card (change `chatgpt-account-notice`), the Status tab of each
 // engine with its install offer and sign-in, the Chat tab's labels and the System tab's
 // memory share. Each scenario loads the page afresh. Needs Node 24 (built-in WebSocket) and
 // Microsoft Edge; writes its browser profile under target\. Local only; never shipped.
@@ -340,7 +341,7 @@ const scenarios = [
       const notice = { shown: visible(box), card: box.closest(".card")?.dataset.card, title: $("engine-card-title").textContent,
         links: [...box.querySelectorAll("a")].map((a) => a.href), buttons: [...box.querySelectorAll("button")].map((b) => b.textContent),
         elsewhere: [...document.querySelectorAll("[data-claude-notice]")].filter((n) => n !== box).length,
-        inAssistant: Boolean($("card-assistant-body").querySelector(".claude-notice")), inAccess: Boolean($("card-access-body").querySelector(".claude-notice")) };
+        inAssistant: Boolean($("card-assistant-body").querySelector(".account-notice")), inAccess: Boolean($("card-access-body").querySelector(".account-notice")) };
       const s = $("access-mode"); s.value = "owner"; s.dispatchEvent(new Event("change", { bubbles: true }));
       await sleep(600);
       return { notice, after: visible(box) };`);
@@ -376,6 +377,105 @@ const scenarios = [
       window.__mock.setClaudeSignIn("cloud"); await sleep(600);
       return { key, cloud: visible($("claude-notice-card")) };`);
     expect(!r.key && !r.cloud, JSON.stringify(r));
+  }],
+  // ---- settings-ui "The ChatGPT account notice in the window" (change `chatgpt-account-notice`)
+  ["the ChatGPT account notice shows only in the Codex card, with both links, Hear only me and Hide, and goes with the owner-only mode", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      await sleep(400);
+      const box = $("codex-notice-card");
+      const notice = { shown: visible(box), card: box.closest(".card")?.dataset.card, title: $("engine-card-title").textContent,
+        links: [...box.querySelectorAll("a")].map((a) => a.href), buttons: [...box.querySelectorAll("button")].map((b) => b.textContent),
+        text: box.textContent, claude: claudeNoticeShown(),
+        elsewhere: [...document.querySelectorAll("[data-codex-notice]")].filter((n) => n !== box).length,
+        inAssistant: Boolean($("card-assistant-body").querySelector(".account-notice")), inAccess: Boolean($("card-access-body").querySelector(".account-notice")) };
+      const s = $("access-mode"); s.value = "owner"; s.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(600);
+      return { notice, after: visible(box), dialogs: document.querySelectorAll("dialog[open]").length };`);
+    expect(r.notice.shown && r.notice.card === "codex" && r.notice.title === "Codex" && !r.notice.claude, `notice: ${JSON.stringify(r.notice)}`);
+    expect(r.notice.elsewhere === 0 && !r.notice.inAssistant && !r.notice.inAccess, `the notice is in another card too: ${JSON.stringify(r.notice)}`);
+    expect(r.notice.links.includes("https://openai.com/policies/terms-of-use/") && r.notice.links.includes("https://openai.com/policies/service-terms/"), JSON.stringify(r.notice.links));
+    expect(JSON.stringify(r.notice.buttons) === JSON.stringify(["Hear only me", "Hide"]), JSON.stringify(r.notice.buttons));
+    expect(r.notice.text.includes("may be used only by you") && r.notice.text.includes("non-commercial use only") && r.notice.text.includes("does not enforce"), r.notice.text);
+    expect(!r.after && r.dialogs === 0, `after owner-only: ${JSON.stringify(r)}`);
+  }],
+  ["Hear only me in the ChatGPT notice with nobody linked: the owner-only mode and a link code in the Access card, no dialog", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      await sleep(400);
+      [...$("codex-notice-card").querySelectorAll("button")].find((b) => b.textContent === "Hear only me").click();
+      await until(() => !$("owner-code").hidden, 4000);
+      return { access: stored().discord.access, code: $("owner-command").textContent, notice: visible($("codex-notice-card")),
+        dialogs: document.querySelectorAll("dialog[open]").length, engine: stored().assistant.engine };`);
+    expect(r.access === "owner" && r.code === "K7QF-2M9X" && !r.notice && r.dialogs === 0 && r.engine === "codex", JSON.stringify(r));
+  }],
+  ["Hide in the ChatGPT notice: the flag is saved, the access mode stays, and neither a switch to Claude Code and back nor a restart brings it back", async () => {
+    await load("?notice_shown");
+    const r = await page(`
+      tab("config");
+      await sleep(400);
+      const before = visible($("codex-notice-card"));
+      [...$("codex-notice-card").querySelectorAll("button")].find((b) => b.textContent === "Hide").click();
+      await sleep(600);
+      const after = { shown: visible($("codex-notice-card")), hidden: stored().codex.account_notice_hidden, access: stored().discord.access, links: calls("owner_link_start").length };
+      await choose("claude"); await choose("codex"); await sleep(600);
+      return { before, after, again: visible($("codex-notice-card")), engine: stored().assistant.engine };`);
+    expect(r.before, "no notice before Hide");
+    expect(!r.after.shown && r.after.hidden === true && r.after.access === "everyone" && r.after.links === 0, JSON.stringify(r.after));
+    expect(!r.again && r.engine === "codex", `back after a switch: ${JSON.stringify(r)}`);
+    await load("?codex_notice_hidden");
+    const reload = await page(`tab("config"); await sleep(600); return visible($("codex-notice-card"));`);
+    expect(!reload, "the hidden ChatGPT notice came back after a restart");
+  }],
+  ["a refused Hide leaves the ChatGPT notice with the reason under it", async () => {
+    await load();
+    const r = await page(`
+      tab("config");
+      await sleep(400);
+      window.__mock.failNextSave("the settings file could not be written");
+      [...$("codex-notice-card").querySelectorAll("button")].find((b) => b.textContent === "Hide").click();
+      await sleep(600);
+      return { shown: visible($("codex-notice-card")), message: $("codex-notice-card").querySelector("[data-notice-message]").textContent,
+        hidden: stored().codex.account_notice_hidden };`);
+    expect(r.shown && r.hidden === false && r.message.startsWith("Not hidden:") && r.message.includes("could not be written"), JSON.stringify(r));
+  }],
+  ["an API key, Amazon Bedrock or Google Cloud shows no ChatGPT notice; not signed in and a ChatGPT account show it", async () => {
+    await load("?codex_account=api_key");
+    const r = await page(`
+      tab("config");
+      await sleep(600);
+      const shown = () => visible($("codex-notice-card"));
+      const out = { key: shown() };
+      for (const kind of ["bedrock", "gcp", "none", "chatgpt"]) {
+        window.__mock.setCodexAccount(kind);
+        await sleep(700);
+        out[kind] = shown();
+      }
+      return out;`);
+    expect(!r.key && !r.bedrock && !r.gcp && r.none && r.chatgpt, JSON.stringify(r));
+  }],
+  ["another engine shows no ChatGPT notice", async () => {
+    await load("?engine=claude&whisper&notice_shown&notice_hidden");
+    const claude = await page(`tab("config"); await sleep(600); return visible($("codex-notice-card"));`);
+    await load("?engine=opencode&whisper");
+    const opencode = await page(`tab("config"); await sleep(600); return visible($("codex-notice-card"));`);
+    expect(!claude && !opencode, `claude ${claude}, opencode ${opencode}`);
+  }],
+  ["no dialog for the ChatGPT notice: picking Codex, Check Codex and Sign in open none", async () => {
+    await load("?engine=claude&whisper&notice_shown&notice_hidden");
+    const r = await page(`
+      tab("config");
+      await choose("codex");
+      const afterChoice = document.querySelectorAll("dialog[open]").length;
+      tab("status");
+      $("codex-check").click(); await sleep(800);
+      $("codex-sign-in").click(); await sleep(800);
+      const afterCheck = document.querySelectorAll("dialog[open]").length;
+      tab("config"); await sleep(300);
+      return { afterChoice, afterCheck, notice: visible($("codex-notice-card")), engine: stored().assistant.engine };`);
+    expect(r.afterChoice === 0 && r.afterCheck === 0 && r.notice && r.engine === "codex", JSON.stringify(r));
   }],
   // ---- settings-ui "The Claude subscription dialog"
   ["Hear only me with nobody linked: the owner-only mode and a link code in the Access card", async () => {

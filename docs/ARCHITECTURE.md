@@ -1110,7 +1110,14 @@ assistant is given, so the app never panics on an unknown engine setting.
   status shows the running server's version, or else the found executable's: one
   `codex --version` per file, cached by its path, size and modification time
   (`CodexAssistant::executable_version`), so a status read starts no process unless
-  Codex was replaced.
+  Codex was replaced. `AssistantStatus.account_type` carries the account's `type`
+  (`chatgpt`, `apiKey`, `amazonBedrock`, `gcp`; none before the first read of the run) for
+  the window's ChatGPT account notice (change `chatgpt-account-notice`): `renderCodexNotice`
+  in `main.js` shows it at the top of the engine card while the engine is Codex, the type is
+  `chatgpt`, none or unknown, `discord.access` is not `owner` and
+  `codex.account_notice_hidden` is false. It shares the Claude notice's `.account-notice`
+  style and `hearOnlyMe`; Hide saves the flag. There is no dialog, and the notice never
+  starts Codex.
 - `thread.rs`: one ephemeral, read-only thread per guild (`sandbox: read-only`,
   `approvalPolicy: "untrusted"`, so the agent's
   server-side tools such as web search run; client-side approval requests are still
@@ -1523,7 +1530,7 @@ pub struct Settings {
     pub audio: AudioSettings,              // input_gain, output_gain: 0.0..=4.0, default 1.0 (a file without the section gets the defaults)
     pub wake: WakeSettings,                // engine id, model id (catalog id or local:<folder>), phrases: { <model id>: { activation?, deactivation? } } (an absent list: the model's defaults)
     pub assistant: AssistantSettings,      // engine: codex (default) | claude | opencode (its own `engine` part; realtime is refused with claude or opencode), mode: realtime (default) | whisper | text (the text answers mode, change `text-answers-mode`: Whisper without the voice; `AssistantMode::hears_with_whisper()` is true for whisper and text, `speaks_locally()` for whisper only; its own `mode` part in changed_sections), speaker_labels: start | changes | off, instructions (the user's, for every engine, no default; its own `instructions` part; moved from codex.instructions at load), save_chat_history (default false), post_answers: off (default) | voice_channel | command_channel | channel, answers_channel (a channel id, digits or empty; required by channel, kept while another value is chosen), interrupt_on_speech (default false, a boolean only; change `interrupt-on-speech`, the `assistant` part, applied to the gates without a rebuild)
-    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), handoff_mode: items (default) | commentary | bem_tags | thinking, refresh_lists_at_start (default false, read at start)
+    pub codex: CodexSettings,              // executable (empty = auto-detect), model, reasoning_effort, voice (empty = server default, the default), handoff_mode: items (default) | commentary | bem_tags | thinking, refresh_lists_at_start (default false, read at start), account_notice_hidden (default false; Hide in the Codex card's ChatGPT account notice, which then never shows again; only true or false; the headless app does not read it; change `chatgpt-account-notice`)
     pub claude: ClaudeSettings,            // executable (empty = found automatically), model (empty = Claude Code's default; no spaces, at most 200 characters), subscription_notice_shown (default false; the window's one-time dialog, 4.5), subscription_notice_hidden (default false; Hide in the Claude Code card's notice, which then never shows again; only true or false, change `claude-notice-hide`)
     pub opencode: OpencodeSettings,        // executable (empty = found automatically), model (empty = OpenCode's default, else provider/model; the model part may hold more /)
     pub hotkey: HotkeySettings,            // mute: shortcut string, empty disables it
@@ -1673,8 +1680,10 @@ account as Check does, then prints `Runtime::start_link`'s code on standard outp
 (`apps/server/src/records.rs`) open `OwnerState`, `ConsentState` or the token store
 directly, as Unlink, the Access card's list and Remove, and clearing the token do, for a
 stopped bot.
-At start it prints the access mode, the owner and the number of consents, and with Claude
-Code on a subscription the subscription notice. Its logger writes the core's filtered lines
+At start it prints the access mode, the owner and the number of consents, with Claude
+Code on a subscription the subscription notice, and with Codex as the engine and an access
+mode other than `owner` the ChatGPT account notice (change `chatgpt-account-notice`, D4;
+Codex is not started to read the account). Its logger writes the core's filtered lines
 to stderr and `logs/voicebro.log`; its build script makes the desktop's build stamp. The
 console invokes `Runtime::shutdown` outside the async context so the blocking teardown can
 use its still-running executor.

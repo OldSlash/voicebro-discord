@@ -56,7 +56,8 @@ For the desktop app; see [Native headless mode](#native-headless-mode) for the c
 - Windows 10 or 11, 64-bit
 - A Discord server where you can add a bot
 - One of the engines:
-  - a ChatGPT account with access to Codex (the realtime voice and the Whisper modes);
+  - a ChatGPT account with access to Codex (the realtime voice and the Whisper modes; see
+    [A ChatGPT account is yours alone](#a-chatgpt-account-is-yours-alone));
   - Claude Code with a Claude account or an Anthropic API key (the Whisper modes; see
     [A Claude subscription is yours alone](#a-claude-subscription-is-yours-alone));
   - OpenCode with an AI provider set up in it (the Whisper modes).
@@ -114,6 +115,33 @@ its owner. VoiceBro gives you optional tools for them; using them is your choice
   application in the Discord Developer Portal.
 
 The [user guide](docs/user-guide.md#who-the-assistant-hears) explains each of them.
+
+The account behind the engine has its own terms too. VoiceBro is open source and enforces
+none of them: it tells you what they say and offers the switch, and the choice is yours.
+
+### A ChatGPT account is yours alone
+
+Codex answers with your ChatGPT account (Free, Go, Plus, Pro, Business, Enterprise or
+another ChatGPT plan), and that account is for you alone.
+[OpenAI's Terms of Use](https://openai.com/policies/terms-of-use/) do not let you make your
+account available to anyone else. When everyone in the voice channel can talk to the
+assistant, the others use your account.
+
+In the realtime voice mode the assistant speaks with ChatGPT's voice.
+[OpenAI's Service Terms](https://openai.com/policies/service-terms/) (section 8) allow it for
+non-commercial use only and do not allow distributing it as a recording or a sound file.
+The people in the channel hear it live; do not record what the assistant says and publish
+it, in a clip, a stream or otherwise. The Whisper modes do not use ChatGPT's voice: a local
+voice on your PC reads the answer, or it is posted as text.
+
+So with a ChatGPT account, choose **Only my Discord account** in Config → Access: then only
+your own voice reaches Codex, and everyone still hears the answers and can use the bot's
+commands. VoiceBro shows this notice in the Codex card with **Hear only me**, which switches
+for you, and **Hide**, which puts it away for good; the headless app prints it once at start.
+An OpenAI API key, Amazon Bedrock or Google Cloud sign-in, set up in Codex outside VoiceBro,
+falls under other terms, and VoiceBro shows no notice for it. VoiceBro never reads, stores or
+passes your OpenAI credentials: you sign in through Codex itself.
+See the [user guide](docs/user-guide.md#a-chatgpt-account-is-yours-alone).
 
 ### A Claude subscription is yours alone
 
@@ -216,7 +244,9 @@ the mode, model or voice. A normal start lists what is missing and downloads not
 Use `/join` in Discord. The log goes to the terminal (stderr) and to `logs/voicebro.log`
 in the data folder, the build stamp first; what people say is in it only with
 `diagnostics.verbose_log` on. With Claude Code signed in with a Claude subscription, the
-start prints the same notice as the desktop's Claude Code card.
+start prints the same notice as the desktop's Claude Code card; with Codex as the engine
+and `discord.access` other than `owner`, it prints the ChatGPT account notice of the
+desktop's Codex card, without starting Codex.
 
 **Access.** `discord.access` works as on the desktop. To link yourself as the owner, run
 `voicebro-server --link-owner` from an interactive terminal: it starts the bot, reads the
