@@ -23,8 +23,9 @@ first of all on **Config → Access → Who the assistant hears**. To use it:
 5. Update the policy and its date whenever you change a setting it describes. A change of
    the engine (Config → Assistant → Engine), of OpenCode's model to another provider, or of
    the consent text also cancels the consents given so far: people run `/optin` again.
-6. With Claude Code on a Claude subscription, the subscription is yours alone (see the
-   README's "A Claude subscription is yours alone"): use the *[Access: Only my Discord
+6. With Codex on a ChatGPT account or Claude Code on a Claude subscription, VoiceBro
+   advises the owner-only mode (see the README's "Your ChatGPT account and OpenAI's terms"
+   and "A Claude subscription is yours alone"): then use the *[Access: Only my Discord
    account]* paragraphs.
 
 What people agree to with `/optin` (consent text version 1, shown with your policy URL).

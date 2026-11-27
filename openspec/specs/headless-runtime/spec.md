@@ -145,7 +145,7 @@ Every message that sends the desktop user to a window control SHALL have a termi
 
 #### Scenario: ChatGPT account notice at start
 - **WHEN** headless starts with Codex as the engine and `discord.access` set to `everyone`
-- **THEN** the terminal shows once that a ChatGPT account may be used only by its holder, that ChatGPT's voice is for non-commercial use and may not be recorded and published, and how to let only the holder's voice through with `discord.access` and `--link-owner`, with the links to OpenAI's terms; no Codex process starts for it, and the bot starts normally
+- **THEN** the terminal shows once that VoiceBro hands the account to nobody and saves nothing of ChatGPT's voice to a file, that OpenAI's terms neither clearly forbid nor clearly allow this use, what they say about making an account available and about ChatGPT's voice, and how to let only the holder's voice through with `discord.access` and `--link-owner`, with the links to OpenAI's terms; no Codex process starts for it, and the bot starts normally
 
 #### Scenario: Owner only at start
 - **WHEN** headless starts with Codex as the engine and `discord.access` set to `owner`

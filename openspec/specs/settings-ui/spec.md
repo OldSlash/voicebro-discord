@@ -932,7 +932,7 @@ engine as they were, with the reason under the mode list.
 - **THEN** the mode list shows Whisper again, the engine stays Claude Code, and the reason shows under the mode list
 
 ### Requirement: The ChatGPT account notice in the window
-While requirement "The ChatGPT account notice" of `codex-assistant` calls for it, the Codex card SHALL show the notice at its top and no other card SHALL show it. It SHALL link to OpenAI's Terms of Use and Service Terms and offer "Hear only me", which acts as the Claude notice's button does, and "Hide", which saves `codex.account_notice_hidden` as `true`. No dialog SHALL open for it.
+While requirement "The ChatGPT account notice" of `codex-assistant` calls for it, the Codex card SHALL show the notice at its top and no other card SHALL show it. It SHALL link to OpenAI's Terms of Use, Services Agreement and Service Terms and offer "Hear only me", which acts as the Claude notice's button does, and "Hide", which saves `codex.account_notice_hidden` as `true`. No dialog SHALL open for it.
 
 #### Scenario: Notice in the Codex card
 - **WHEN** the engine is Codex with a ChatGPT account and the access mode is "Everyone"

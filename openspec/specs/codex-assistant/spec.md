@@ -316,7 +316,7 @@ In the text answers mode the join SHALL load the Whisper model as in the Whisper
 - **THEN** the bot stays out of the channel and the reply says to stop the bot and run `voicebro-server --install-assets`, then run `/join` again
 
 ### Requirement: The ChatGPT account notice
-While the engine is Codex, Codex's sign-in is a ChatGPT account of any plan or not known yet, the access mode is not `owner`, and `codex.account_notice_hidden` is `false`, the window SHALL show a notice that a ChatGPT account may be used only by its holder, that ChatGPT's voice is for non-commercial use and may not be recorded and published, and how to let only the holder's voice through. An API key, Amazon Bedrock or Google Cloud sign-in SHALL show none.
+While the engine is Codex, Codex's sign-in is a ChatGPT account of any plan or not known yet, the access mode is not `owner`, and `codex.account_notice_hidden` is `false`, the window SHALL show a notice that VoiceBro hands the account to nobody and saves nothing of ChatGPT's voice to a file, that OpenAI's terms neither clearly forbid nor clearly allow this use, what they say about making an account available and about ChatGPT's voice, that the assistant's words are not to be recorded and published, and how to let only the holder's voice through. An API key, Amazon Bedrock or Google Cloud sign-in SHALL show none.
 
 #### Scenario: ChatGPT account, everyone heard
 - **WHEN** the engine is Codex, Codex is signed in with a ChatGPT Plus account and the access mode is "Everyone"

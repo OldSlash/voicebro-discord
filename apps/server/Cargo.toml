@@ -1,6 +1,6 @@
 [package]
 name = "voicebro-server"
-version = "1.3.1"
+version = "1.3.2"
 description = "VoiceBro's native headless Discord voice bot"
 publish = false
 edition.workspace = true

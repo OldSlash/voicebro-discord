@@ -57,7 +57,7 @@ For the desktop app; see [Native headless mode](#native-headless-mode) for the c
 - A Discord server where you can add a bot
 - One of the engines:
   - a ChatGPT account with access to Codex (the realtime voice and the Whisper modes; see
-    [A ChatGPT account is yours alone](#a-chatgpt-account-is-yours-alone));
+    [Your ChatGPT account and OpenAI's terms](#your-chatgpt-account-and-openais-terms));
   - Claude Code with a Claude account or an Anthropic API key (the Whisper modes; see
     [A Claude subscription is yours alone](#a-claude-subscription-is-yours-alone));
   - OpenCode with an AI provider set up in it (the Whisper modes).
@@ -117,51 +117,68 @@ its owner. VoiceBro gives you optional tools for them; using them is your choice
 The [user guide](docs/user-guide.md#who-the-assistant-hears) explains each of them.
 
 The account behind the engine has its own terms too. VoiceBro is open source and enforces
-none of them: it tells you what they say and offers the switch, and the choice is yours.
+none of them, nor could it: it shows what they say and offers a switch, and whether to use
+it is up to you.
 
-### A ChatGPT account is yours alone
+**Within both OpenAI's and Anthropic's terms:** the Whisper modes on your own account or
+subscription, with your Discord account linked and **Only my Discord account** on. Only you
+talk to the engine, with your own account and through the engine's own sign-in, and a local
+voice reads the answer or it is posted as text: ChatGPT's voice is not used.
 
-Codex answers with your ChatGPT account (Free, Go, Plus, Pro, Business, Enterprise or
-another ChatGPT plan), and that account is for you alone.
-[OpenAI's Terms of Use](https://openai.com/policies/terms-of-use/) do not let you make your
-account available to anyone else. When everyone in the voice channel can talk to the
-assistant, the others use your account.
+### Your ChatGPT account and OpenAI's terms
 
-In the realtime voice mode the assistant speaks with ChatGPT's voice.
+Codex answers with your ChatGPT account. VoiceBro hands that account to nobody and saves
+nothing of ChatGPT's voice to a file. OpenAI's terms neither clearly forbid nor clearly
+allow the way VoiceBro uses the account.
+
+What they say: for Free, Go, Plus and Pro,
+[OpenAI's Terms of Use](https://openai.com/policies/terms-of-use/) do not let you share your
+sign-in or make your account available to anyone else; for Business and Enterprise, the
+[OpenAI Services Agreement](https://openai.com/policies/services-agreement/) gives each user
+account to one person and does not let users share a login. In the realtime voice mode the
+assistant speaks with ChatGPT's voice, and for every plan
 [OpenAI's Service Terms](https://openai.com/policies/service-terms/) (section 8) allow it for
-non-commercial use only and do not allow distributing it as a recording or a sound file.
-The people in the channel hear it live; do not record what the assistant says and publish
-it, in a clip, a stream or otherwise. The Whisper modes do not use ChatGPT's voice: a local
-voice on your PC reads the answer, or it is posted as text.
+non-commercial use only and do not allow distributing or repackaging it as a standalone audio
+recording or other sound file. The Whisper modes do not use ChatGPT's voice: a local voice on
+your PC reads the answer, or it is posted as text.
 
-So with a ChatGPT account, choose **Only my Discord account** in Config → Access: then only
+The reading here is that VoiceBro's use does not break these terms, but it may be wrong:
+OpenAI has not said what making an account available covers, and its terms clearly rule out
+saving ChatGPT's voice to a file, but not clearly a live stream of it into a Discord
+channel. Do not record what the assistant says and publish it, in a clip, a stream or
+otherwise.
+
+To be on the safe side, choose **Only my Discord account** in Config → Access: then only
 your own voice reaches Codex, and everyone still hears the answers and can use the bot's
 commands. VoiceBro shows this notice in the Codex card with **Hear only me**, which switches
 for you, and **Hide**, which puts it away for good; the headless app prints it once at start.
 An OpenAI API key, Amazon Bedrock or Google Cloud sign-in, set up in Codex outside VoiceBro,
 falls under other terms, and VoiceBro shows no notice for it. VoiceBro never reads, stores or
 passes your OpenAI credentials: you sign in through Codex itself.
-See the [user guide](docs/user-guide.md#a-chatgpt-account-is-yours-alone).
+The [user guide](docs/user-guide.md#your-chatgpt-account-and-openais-terms) quotes the terms.
 
 ### A Claude subscription is yours alone
 
-If Claude Code answers with a Claude subscription (Free, Pro, Max, Team, Enterprise or
-another plan you sign in to on claude.ai), that subscription is for you alone.
-[Anthropic's Consumer Terms](https://www.anthropic.com/legal/consumer-terms) do not let you
-make your account available to anyone else, and
-[Claude Code's legal page](https://code.claude.com/docs/en/legal-and-compliance) says that
-subscription plans are meant for ordinary, individual use and that subscription
-credentials may not carry other people's requests. When everyone in the voice channel can
-talk to the assistant, the others use your subscription.
+If Claude Code answers with a Claude subscription, that subscription is for you alone. For
+Free, Pro, Max and Ultra, [Anthropic's Consumer Terms](https://www.anthropic.com/legal/consumer-terms)
+do not let you share your sign-in or make your account available to anyone else; Team and
+Enterprise fall under [Anthropic's Commercial Terms](https://www.anthropic.com/legal/commercial-terms)
+and your organization's agreement. For every plan,
+[Claude Code's legal page](https://code.claude.com/docs/en/legal-and-compliance) says that a
+subscription sign-in is meant for ordinary use by the people who bought the plan, and that
+an app may not send its users' requests through a Free, Pro, Max or Ultra sign-in. When
+everyone in the voice channel can talk to the assistant, the others use your subscription.
 
 So with a subscription, choose **Only my Discord account** in Config → Access: then only
 your own voice reaches Claude, and everyone still hears the answers and can use the bot's
-commands. VoiceBro shows this notice when you pick Claude Code and offers to switch for you;
-it does not enforce it, and **Hide** in the Claude Code card puts the notice away for good. An Anthropic API key or a cloud provider (Amazon Bedrock, Google
-Vertex AI, Microsoft Foundry) falls under
-[Anthropic's Commercial Terms](https://www.anthropic.com/legal/commercial-terms) instead, and
-VoiceBro shows no notice for it. VoiceBro never reads, stores or passes your Claude
-credentials: you sign in through Claude Code itself.
+commands. The same page lets you sign in to the unmodified Claude Code with your own
+subscription, which is how VoiceBro runs it. VoiceBro shows this notice when you pick Claude
+Code and offers to switch for you; it does not enforce it, and **Hide** in the Claude Code
+card puts the notice away for good. An Anthropic API key or a cloud provider (Amazon
+Bedrock, Google Vertex AI, Microsoft Foundry) falls under Anthropic's Commercial Terms or
+the provider's terms instead, and VoiceBro shows no notice for it. VoiceBro never reads,
+stores or passes your Claude credentials: you sign in through Claude Code itself.
+The [user guide](docs/user-guide.md#a-claude-subscription-is-yours-alone) quotes the terms.
 
 This is not legal advice; read the terms that apply to your account.
 

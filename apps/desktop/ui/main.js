@@ -1627,9 +1627,9 @@
   function noticeParagraphs(container, withButton) {
     container.replaceChildren();
     const text = document.createElement("p");
-    text.textContent = "A Claude subscription (Free, Pro, Max, Team, Enterprise or another claude.ai plan) may be used only by you. Anthropic's Consumer Terms do not let you make your account available to anyone else, and Claude Code's terms say a subscription is meant for ordinary, individual use. While other people's voices reach the assistant, they use your subscription.";
+    text.textContent = "A Claude subscription may be used only by you. Anthropic's Consumer Terms (Free, Pro, Max, Ultra) do not let you make your account available to anyone else, Team and Enterprise fall under the Commercial Terms, and Claude Code's legal page says a subscription sign-in is meant for ordinary use by the people who bought the plan. While other people's voices reach the assistant, they use your subscription.";
     const advice = document.createElement("p");
-    advice.textContent = "Let only your own voice through with \"Only my Discord account\" in the Access card (everyone still hears the answers), or sign Claude Code in with an API key, which Anthropic's Commercial Terms cover. VoiceBro does not enforce this: the choice is yours.";
+    advice.textContent = "Let only your own voice through with \"Only my Discord account\" in the Access card (everyone still hears the answers): that keeps it within Anthropic's terms. Or sign Claude Code in with an API key, which Anthropic's Commercial Terms cover. VoiceBro does not enforce this: the choice is yours.";
     const links = document.createElement("p");
     links.className = "notice-links";
     links.append(noticeLink(ANTHROPIC_TERMS, "Anthropic's Consumer Terms"), " · ", noticeLink(CLAUDE_CODE_LEGAL, "Claude Code: legal and compliance"));
@@ -1724,6 +1724,7 @@
   // ---------- The ChatGPT account notice (change `chatgpt-account-notice`, D1 and D2) ----
   const OPENAI_TERMS = "https://openai.com/policies/terms-of-use/";
   const OPENAI_SERVICE_TERMS = "https://openai.com/policies/service-terms/";
+  const OPENAI_SERVICES_AGREEMENT = "https://openai.com/policies/services-agreement/";
   // The Codex account's `type` from the last Codex status; none before Codex has read it.
   const codexNotice = { kind: null };
   // A ChatGPT account, none read yet or a type this window does not know: the notice
@@ -1732,14 +1733,14 @@
   function codexNoticeParagraphs(container) {
     container.replaceChildren();
     const text = document.createElement("p");
-    text.textContent = "A ChatGPT account (Free, Go, Plus, Pro, Business, Enterprise or another ChatGPT plan) may be used only by you. OpenAI's Terms of Use do not let you make your account available to anyone else. While other people's voices reach the assistant, they use your account.";
+    text.textContent = "VoiceBro hands your ChatGPT account to nobody and saves nothing of ChatGPT's voice to a file. OpenAI's terms neither clearly forbid nor clearly allow this use: they do not let you make your account available to anyone else (Terms of Use: Free, Go, Plus, Pro; Services Agreement: Business, Enterprise), but do not say whether people who talk to your bot count. That is an open question.";
     const voice = document.createElement("p");
-    voice.textContent = "In the realtime voice mode the assistant speaks with ChatGPT's voice. OpenAI's Service Terms allow that voice for non-commercial use only and do not allow distributing it as a recording or a sound file: do not record and publish what the assistant says.";
+    voice.textContent = "In the realtime voice mode the assistant speaks with ChatGPT's voice. OpenAI's Service Terms allow it for non-commercial use only and rule out a standalone recording or any other sound file of it, but do not say whether a live voice in a Discord channel counts. Do not record and publish what the assistant says.";
     const advice = document.createElement("p");
-    advice.textContent = "Let only your own voice through with \"Only my Discord account\" in the Access card (everyone still hears the answers). VoiceBro does not enforce this: the choice is yours.";
+    advice.textContent = "To be on the safe side, let only your own voice through with \"Only my Discord account\" in the Access card (everyone still hears the answers): the Whisper modes then stay within OpenAI's terms. VoiceBro does not enforce this: the choice is yours.";
     const links = document.createElement("p");
     links.className = "notice-links";
-    links.append(noticeLink(OPENAI_TERMS, "OpenAI Terms of Use"), " · ", noticeLink(OPENAI_SERVICE_TERMS, "OpenAI Service Terms"));
+    links.append(noticeLink(OPENAI_TERMS, "OpenAI Terms of Use"), " · ", noticeLink(OPENAI_SERVICES_AGREEMENT, "OpenAI Services Agreement"), " · ", noticeLink(OPENAI_SERVICE_TERMS, "OpenAI Service Terms"));
     container.append(text, voice, advice, links);
     noticeActions(container, (box) => hideNotice(box, { codex: { account_notice_hidden: true } }));
   }

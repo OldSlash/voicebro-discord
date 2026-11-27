@@ -1,6 +1,6 @@
 [package]
 name = "voicebro-desktop"
-version = "1.3.1"
+version = "1.3.2"
 description = "VoiceBro: a Discord voice bot with a wake word and an AI assistant (Codex, Claude Code or OpenCode), as a Windows desktop app."
 publish = false
 edition.workspace = true

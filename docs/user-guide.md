@@ -72,7 +72,7 @@ In a folder such as `C:\Program Files` it shows a message and does not start.
 > `SHA256SUMS.txt` from the same release:
 >
 > ```powershell
-> Get-FileHash .\VoiceBro_1.3.1_x64-setup.exe -Algorithm SHA256
+> Get-FileHash .\VoiceBro_1.3.2_x64-setup.exe -Algorithm SHA256
 > ```
 
 ## 3. Connect the bot
@@ -135,24 +135,38 @@ reasoning levels and voices of your account; VoiceBro saves them in `codex-lists
 the lists in **Config → Codex** are there at the next start without starting Codex. The
 first start after installing reads them once on its own when Codex is installed.
 
-#### A ChatGPT account is yours alone
+#### Your ChatGPT account and OpenAI's terms
 
-Codex runs on your ChatGPT account (Free, Go, Plus, Pro, Business, Enterprise or another
-ChatGPT plan), and that account may be used only by you:
-[OpenAI's Terms of Use](https://openai.com/policies/terms-of-use/) do not let you make your
-account available to anyone else. While everyone in the channel is heard, the others use
-your account.
+Codex runs on your ChatGPT account. VoiceBro hands that account to nobody and saves nothing
+of ChatGPT's voice to a file. OpenAI's terms neither clearly forbid nor clearly allow the
+way VoiceBro uses the account.
 
-In the realtime voice mode the assistant speaks with ChatGPT's voice.
+What they say: for Free, Go, Plus and Pro,
+[OpenAI's Terms of Use](https://openai.com/policies/terms-of-use/) (section "Registration and
+access") say that you may not share your account credentials or "make your account
+available to anyone else". For Business and Enterprise, the
+[OpenAI Services Agreement](https://openai.com/policies/services-agreement/) (sections 3.1
+and 3.2) gives each user account to a single person and does not let users share a login.
+
+In the realtime voice mode the assistant speaks with ChatGPT's voice. For every plan,
 [OpenAI's Service Terms](https://openai.com/policies/service-terms/) (section 8, "Voice
-Conversations") allow that voice for non-commercial use only and do not allow distributing
-it as a recording or a sound file. Everyone in the voice channel hears it live; do not
-record what the assistant says and publish it, for example in a clip or a stream. The
+Conversations") allow that voice for non-commercial use only, and it may not be
+"distributed or repackaged as a standalone audio recording or any other sound file". The
 Whisper and text answers modes do not use ChatGPT's voice: there your PC speaks the answer
 with a local voice, or it is posted as text.
 
-So VoiceBro shows a notice at the top of the **Codex** card on the **Config** tab while
-Codex runs on a ChatGPT account, or VoiceBro has not read the account yet, and more voices
+The reading in this guide is that VoiceBro's use does not break these terms, but it may be
+wrong: OpenAI has not said what making an account available covers, and its terms clearly
+rule out saving ChatGPT's voice to a file, but not clearly a live stream of it into a
+Discord channel. Do not record what the assistant says and publish it, for example in a
+clip or a stream.
+
+**Within OpenAI's terms either way:** the Whisper modes with your Discord account linked and
+**Only my Discord account** on. Only you talk to Codex, with your own account, and
+ChatGPT's voice is not used.
+
+To be on the safe side, VoiceBro shows a notice at the top of the **Codex** card on the
+**Config** tab while Codex runs on a ChatGPT account, or VoiceBro has not read the account yet, and more voices
 than yours reach it:
 
 - **Hear only me** chooses **Only my Discord account** in the Access card and, if your
@@ -166,9 +180,9 @@ headless app prints the same notice once at start (see
 [Native headless mode](../README.md#native-headless-mode)). If Codex is signed in with an
 OpenAI API key, Amazon Bedrock or Google Cloud (set up outside VoiceBro, which offers only
 the ChatGPT sign-in), OpenAI's
-[Services Agreement](https://openai.com/policies/business-terms/) or your cloud provider's
-terms apply instead and VoiceBro shows no notice. This is not legal advice; read the terms
-of your own account.
+[Services Agreement](https://openai.com/policies/services-agreement/) or your cloud
+provider's terms apply instead and VoiceBro shows no notice. This is not legal advice; read
+the terms of your own account.
 
 ### Claude Code
 
@@ -199,13 +213,22 @@ the next `/join`.
 
 #### A Claude subscription is yours alone
 
-If you sign Claude Code in with a Claude subscription (Free, Pro, Max, Team, Enterprise or
-another plan of claude.ai), that subscription may be used only by you:
-[Anthropic's Consumer Terms](https://www.anthropic.com/legal/consumer-terms) do not let you
-make your account available to anyone else, and
-[Claude Code's legal page](https://code.claude.com/docs/en/legal-and-compliance) says that
-subscriptions are meant for ordinary, individual use. While everyone in the channel is
-heard, the others use your subscription.
+If you sign Claude Code in with a Claude subscription, that subscription may be used only
+by you. For Free, Pro, Max and Ultra,
+[Anthropic's Consumer Terms](https://www.anthropic.com/legal/consumer-terms) (section 2) do
+not let you share your sign-in and say: "You also may not make your Account available to
+anyone else." Team and Enterprise fall under
+[Anthropic's Commercial Terms](https://www.anthropic.com/legal/commercial-terms) and your
+organization's agreement. For every plan,
+[Claude Code's legal page](https://code.claude.com/docs/en/legal-and-compliance) says that a
+subscription sign-in is meant for ordinary use by the people who bought the plan, that the
+usage limits of Pro, Max and Ultra assume ordinary, individual use, and that an app may not
+send its users' requests through a Free, Pro, Max or Ultra sign-in. While everyone in the
+channel is heard, the others use your subscription.
+
+**Within Anthropic's terms:** Claude Code with **Only my Discord account**. Only you talk to
+it, with your own subscription, and you sign in to the unmodified Claude Code through
+Anthropic's own sign-in, which the same page allows.
 
 So VoiceBro shows a notice at the top of the **Claude Code** card on the **Config** tab while
 Claude Code runs on a subscription and more voices than yours reach it. The first time you
@@ -222,7 +245,7 @@ next to **Hear only me**: it removes the notice for good, also after a restart, 
 nothing else. VoiceBro does not enforce the choice:
 it is yours. With an Anthropic API key or a cloud provider (Amazon Bedrock, Google Vertex
 AI, Microsoft Foundry), [Anthropic's Commercial Terms](https://www.anthropic.com/legal/commercial-terms)
-apply instead and VoiceBro shows no notice. This is not legal advice; read the terms of
+or the provider's terms apply instead and VoiceBro shows no notice. This is not legal advice; read the terms of
 your own account.
 
 ### OpenCode
@@ -795,10 +818,10 @@ which one you use is up to you.
 - **People who agreed (/optin)**: your linked Discord account and everyone who ran `/optin`
   in Discord and pressed **I agree**. Nobody else's voice starts a session or gets into a
   question, and neither does a music bot's.
-- **Only my Discord account**: the account you linked, nobody else. The assistant runs on
-  your own subscription, and a subscription is meant for one person; with a ChatGPT
-  account or a Claude subscription VoiceBro advises you to choose this
-  ([A ChatGPT account is yours alone](#a-chatgpt-account-is-yours-alone),
+- **Only my Discord account**: the account you linked, nobody else. With a ChatGPT account
+  or a Claude subscription VoiceBro advises this choice: with it the Whisper modes stay
+  within OpenAI's and Anthropic's terms
+  ([Your ChatGPT account and OpenAI's terms](#your-chatgpt-account-and-openais-terms),
   [A Claude subscription is yours alone](#a-claude-subscription-is-yours-alone)).
 
 Everything else stays open in every mode: anyone can use `/join`, `/leave` and `/status`,
@@ -1025,7 +1048,7 @@ longer need them.
 | With OpenCode the bot says nothing, and the **Chat** tab shows "OpenCode: the answer failed: Request failed: 401." | The provider no longer accepts OpenCode's stored sign-in, although `opencode auth list` still says "stored". Connect it again in a terminal, for example `opencode auth login openai`, then ask again. |
 | With OpenCode the **Chat** tab shows "Free usage limit reached" | The answer went to one of OpenCode's own free models, whose use is limited. OpenCode picks one of them as its default even when your provider is connected: choose a model of your provider in **Config → OpenCode → Model**. |
 | The notice "A Claude subscription is for you alone" | Claude Code runs on your Claude subscription while other voices reach it. Choose **Only my Discord account** in **Config → Access**, or sign Claude Code in with an API key ([section 4](#a-claude-subscription-is-yours-alone)). |
-| A notice at the top of the **Codex** card about your ChatGPT account | Codex runs on your ChatGPT account while other voices reach it. Choose **Only my Discord account** in **Config → Access** (or **Hear only me** in the notice), or press **Hide** if you have decided otherwise ([section 4](#a-chatgpt-account-is-yours-alone)). |
+| A notice at the top of the **Codex** card about your ChatGPT account | Codex runs on your ChatGPT account while other voices reach it. Choose **Only my Discord account** in **Config → Access** (or **Hear only me** in the notice), or press **Hide** if you have decided otherwise ([section 4](#your-chatgpt-account-and-openais-terms)). |
 | The wake phrase does nothing | Look at **Wake word** on the **Status** tab: it says when the model still waits for its download (press **Download** under **Wake model** in **Config → Assistant**, or put the files there yourself as section 5 describes), when no phrases are set, or which words the model does not know. The **Console** shows a "heard:" line for everything the recognizer understood, so you can pick phrases it hears correctly. |
 | The bot joins but does not hear or speak | Check that the bot has **Connect** and **Speak** in that channel, and look for errors in the **Console**. |
 | The answers are not posted in Discord | Check **Post answers to Discord** in the engine's card. In the realtime mode only answers Codex looked up are posted, not what the voice answers on its own. With **A chosen channel**, only answers from that channel's server go there. Look for an `answers` error on the **Status** tab: it names the channel and what Discord refused, usually a missing **Send Messages** or **Embed Links** ([section 8](#posting-the-answers-to-discord)). |

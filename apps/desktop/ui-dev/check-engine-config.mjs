@@ -397,7 +397,7 @@ const scenarios = [
     expect(r.notice.elsewhere === 0 && !r.notice.inAssistant && !r.notice.inAccess, `the notice is in another card too: ${JSON.stringify(r.notice)}`);
     expect(r.notice.links.includes("https://openai.com/policies/terms-of-use/") && r.notice.links.includes("https://openai.com/policies/service-terms/"), JSON.stringify(r.notice.links));
     expect(JSON.stringify(r.notice.buttons) === JSON.stringify(["Hear only me", "Hide"]), JSON.stringify(r.notice.buttons));
-    expect(r.notice.text.includes("may be used only by you") && r.notice.text.includes("non-commercial use only") && r.notice.text.includes("does not enforce"), r.notice.text);
+    expect(r.notice.text.includes("open question") && r.notice.text.includes("standalone recording") && r.notice.text.includes("non-commercial use only") && r.notice.text.includes("does not enforce"), r.notice.text);
     expect(!r.after && r.dialogs === 0, `after owner-only: ${JSON.stringify(r)}`);
   }],
   ["Hear only me in the ChatGPT notice with nobody linked: the owner-only mode and a link code in the Access card, no dialog", async () => {
